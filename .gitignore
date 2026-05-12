@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.env
+.env.*
+*.log
+.cache/
+output/
+data/
+tmp/
+.DS_Store
+.vscode/
+playwright-report/
+test-results/
+.wrangler/
