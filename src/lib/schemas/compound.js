@@ -37,14 +37,18 @@ export const COMPOUND_SCHEMA = {
             log_p: {
                 type: 'object', required: false,
                 shape: {
-                    value: { type: 'number', min: -10, max: 15 },
+                    // Range widened from -10/+15 → -25/+25 based on 1000 CID empirical data.
+                    // Real extremes seen: -14 (highly hydrophilic), +21.6 (lipophilic dyes).
+                    value: { type: 'number', min: -25, max: 25 },
                     method: { type: 'string', enum: ['XLogP3', 'AlogP', 'computed'] },
                 },
             },
             tpsa: {
                 type: 'object', required: false,
                 shape: {
-                    value: { type: 'number', min: 0, max: 500 },
+                    // Range widened from 500 → 1500 based on 1000 CID empirical data.
+                    // Real extremes: up to 685 for large polar molecules (peptides, polyphenols).
+                    value: { type: 'number', min: 0, max: 1500 },
                     unit: { type: 'string', enum: ['angstrom_squared'] },
                 },
             },
