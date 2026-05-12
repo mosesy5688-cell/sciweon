@@ -37,9 +37,9 @@ export const COMPOUND_SCHEMA = {
             log_p: {
                 type: 'object', required: false,
                 shape: {
-                    // Range widened from -10/+15 → -25/+25 based on 1000 CID empirical data.
-                    // Real extremes seen: -14 (highly hydrophilic), +21.6 (lipophilic dyes).
-                    value: { type: 'number', min: -25, max: 25 },
+                    // Range widened progressively from 5000 CID empirical data.
+                    // Real extremes: -14 (hydrophilic), +26.8 (extreme lipophilic dyes).
+                    value: { type: 'number', min: -25, max: 30 },
                     method: { type: 'string', enum: ['XLogP3', 'AlogP', 'computed'] },
                 },
             },
@@ -53,9 +53,11 @@ export const COMPOUND_SCHEMA = {
                 },
             },
             complexity: { type: 'number', required: false, min: 0 },
-            h_bond_donors: { type: 'integer', required: false, min: 0, max: 50 },
-            h_bond_acceptors: { type: 'integer', required: false, min: 0, max: 50 },
-            rotatable_bonds: { type: 'integer', required: false, min: 0, max: 100 },
+            // Widened max 50 → 100 based on 5000 CID data (CID 3807/4672 had 53/54 acceptors).
+            // Large peptides / oligosaccharides routinely exceed 50 H-bond sites.
+            h_bond_donors: { type: 'integer', required: false, min: 0, max: 100 },
+            h_bond_acceptors: { type: 'integer', required: false, min: 0, max: 100 },
+            rotatable_bonds: { type: 'integer', required: false, min: 0, max: 200 },
             // Lipinski Rule of Five — computed from above 4 fields
             // Drug-likeness quick check. AI Agent screening uses this heavily.
             lipinski_violations: { type: 'integer', required: false, min: 0, max: 4 },
