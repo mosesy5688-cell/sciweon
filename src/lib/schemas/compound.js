@@ -15,7 +15,9 @@ export const COMPOUND_SCHEMA = {
     // ─── Structure ───
     smiles_canonical: { type: 'string', required: true, maxLength: 4000 },
     inchi: { type: 'string', required: true, maxLength: 4000 },
-    molecular_formula: { type: 'string', required: true, pattern: /^([A-Z][a-z]?\d*)+$/ },
+    // Molecular formula: allows elements (C, Ca, Fe...) + counts + charge (+/-) suffixes
+    // Examples: C9H18NO4+, [Fe+3], C6H12O6
+    molecular_formula: { type: 'string', required: true, pattern: /^([A-Z][a-z]?\d*)+[+\-\d]*$/ },
     molecular_weight: {
         type: 'object', required: true,
         shape: {
