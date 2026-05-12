@@ -41,13 +41,33 @@ export function scoreEntity(entity) {
     const structuralMatch = entity.confidence?.cross_source_agreement?.structural_match ?? false;
     const conflicts = entity.confidence?.cross_source_agreement?.conflicts ?? [];
 
+    // Bioactivity confidence: score if entity has chembl source AND any bioactivity data exists
+    const hasChembl = sources.includes('chembl');
+    const bioactivityCount = (entity.stats?.bioactivity_count_active ?? 0) + (entity.stats?.bioactivity_count_inactive ?? 0);
+    const hasBioactivity = hasChembl && bioactivityCount > 0;
+
+    // Clinical confidence: score if entity has trial source
+    const hasTrial = sources.includes('clinicaltrials');
+    const trialCount = (entity.stats?.trial_count_active ?? 0) + (entity.stats?.trial_count_terminated ?? 0);
+    const hasClinical = hasTrial && trialCount > 0;
+
     const structural = scoreDataPoint(sources, { structuralMatch, conflicts });
-    const bioactivity = entity.bioactivity_count > 0 ? scoreDataPoint(sources.filter(s => s === 'chembl').length > 0 ? sources : []) : 0;
-    const clinical = entity.trial_count > 0 ? scoreDataPoint(sources.filter(s => s === 'clinicaltrials').length > 0 ? sources : []) : 0;
+    const bioactivity = hasBioactivity ? scoreDataPoint(sources, { structuralMatch }) : 0;
+    const clinical = hasClinical ? scoreDataPoint(sources, { structuralMatch }) : 0;
     const provenanceCompleteness = sources.length > 0 ? 100 : 0;
 
+    // Weighted overall (only count dimensions that have data)
+    // This prevents penalizing single-vertical entities (e.g., a pure structural compound)
+    const dimensions = [
+        { score: structural, weight: 0.4, present: true },
+        { score: bioactivity, weight: 0.3, present: hasBioactivity },
+        { score: clinical, weight: 0.2, present: hasClinical },
+        { score: provenanceCompleteness, weight: 0.1, present: true },
+    ];
+    const activeDims = dimensions.filter(d => d.present);
+    const totalWeight = activeDims.reduce((s, d) => s + d.weight, 0);
     const overall = Math.round(
-        0.4 * structural + 0.3 * bioactivity + 0.2 * clinical + 0.1 * provenanceCompleteness
+        activeDims.reduce((s, d) => s + d.score * d.weight, 0) / totalWeight
     );
 
     return {

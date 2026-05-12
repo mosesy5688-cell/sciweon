@@ -12,6 +12,7 @@
  */
 
 import { computeLipinskiViolations } from '../../factory/lib/lipinski.js';
+import { scoreEntity } from '../../factory/lib/confidence-scorer.js';
 
 const PUBCHEM_BASE = 'https://pubchem.ncbi.nlm.nih.gov/rest/pug';
 const REQUEST_TIMEOUT_MS = 15000;
@@ -65,7 +66,7 @@ export function normalize(raw, synonyms = []) {
 
     const timestamp = new Date().toISOString();
 
-    return {
+    const entity = {
         id: `sciweon::compound::CID:${raw.CID}`,
         pubchem_cid: raw.CID,
         chembl_id: null,
@@ -90,14 +91,7 @@ export function normalize(raw, synonyms = []) {
             }],
             last_updated: timestamp,
         },
-        confidence: {
-            overall: 70,
-            structural: 70,
-            bioactivity: 0,
-            clinical: 0,
-            method: 'cross_source_consensus_v1',
-            cross_source_agreement: { structural_match: false, conflicts: [] },
-        },
+        confidence: { cross_source_agreement: { structural_match: false, conflicts: [] } },
         stats: {
             paper_count: 0,
             trial_count_active: 0,
@@ -106,6 +100,9 @@ export function normalize(raw, synonyms = []) {
             bioactivity_count_inactive: 0,
         },
     };
+    // Compute confidence consistently via scoreEntity (single-source baseline)
+    entity.confidence = scoreEntity(entity);
+    return entity;
 }
 
 /**

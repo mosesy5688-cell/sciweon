@@ -68,7 +68,9 @@ export const COMPOUND_SCHEMA = {
     drug_status: {
         type: 'object', required: false,
         shape: {
-            max_phase: { type: 'integer', required: false, enum: [0, 1, 2, 3, 4] },
+            // ChEMBL uses fractional values for early phases:
+            //   0.5 = Preclinical, 1.0 = Phase 1, 2.0 = Phase 2, 3.0 = Phase 3, 4.0 = Approved
+            max_phase: { type: 'number', required: false, enum: [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4] },
             first_approval_year: { type: 'integer', required: false, min: 1800, max: 2100 },
             withdrawn: { type: 'boolean', required: true },
             withdrawn_reason: { type: 'string', required: false, maxLength: 2000 },
