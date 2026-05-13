@@ -121,6 +121,40 @@ export const COMPOUND_SCHEMA = {
         },
     },
 
+    // ─── KEGG Drug Network (V0.3.5 #3) ───
+    // Kyoto University KEGG Drug entry: target genes (NCBI Gene IDs) +
+    // pathway IDs + disease indications + ATC codes. Enables Agent to
+    // answer "what pathway does this drug act on / what diseases?"
+    // PRIMARY-only: international IDs (NCBI Gene / WHO ATC / KEGG pathway).
+    // NOT consumed: CLASS DG-hierarchy / EFFICACY prose (KEGG team derived).
+    kegg_drug: {
+        type: 'object', required: false,
+        shape: {
+            d_number: { type: 'string', required: false, pattern: /^D\d{5}$/ },
+            // ATC codes from KEGG REMARK (cross-source with ChEMBL atc_codes)
+            atc_codes: { type: 'array', required: false, itemType: 'string', maxItems: 10 },
+            // Drug-target genes (NCBI Gene primary IDs, international)
+            targets: {
+                type: 'array', required: false, maxItems: 50,
+                itemShape: {
+                    gene_symbol: { type: 'string', required: true, maxLength: 50 },
+                    ncbi_gene_id: { type: 'string', required: false, pattern: /^\d+$/ },
+                    kegg_orthology: { type: 'string', required: false, pattern: /^K\d+$/ },
+                },
+            },
+            // KEGG pathway map IDs (international pathway taxonomy)
+            pathways: { type: 'array', required: false, itemType: 'string', maxItems: 50 },
+            // Disease indications with KEGG disease IDs
+            diseases: {
+                type: 'array', required: false, maxItems: 50,
+                itemShape: {
+                    indication: { type: 'string', required: true, maxLength: 200 },
+                    kegg_disease_id: { type: 'string', required: false, pattern: /^H\d{5}$/ },
+                },
+            },
+        },
+    },
+
     // ─── FDA Regulatory Signals (V0.3.4 openFDA) ───
     // FDA-curated drug regulatory data — black box warnings + recall history.
     // Direct input for V0.4 Negative Evidence DB categories D (drug
