@@ -18,8 +18,66 @@ import fs from 'fs/promises';
 import path from 'path';
 import { search, normalize as normalizePaper } from '../ingestion/adapters/openalex-adapter.js';
 import { loadIndex as loadRetractionIndex, lookup as lookupRetraction } from '../ingestion/adapters/retraction-watch-adapter.js';
+import { fetchByDoiBatch as s2FetchByDoiBatch, extractPrimary as s2ExtractPrimary, compareWithOpenAlex as s2Compare } from '../ingestion/adapters/semanticscholar-adapter.js';
+import { scoreEntity } from './lib/confidence-scorer.js';
 import { PAPER_SCHEMA } from '../../src/lib/schemas/paper.js';
 import { gate } from './lib/validation-gate.js';
+
+/**
+ * Cross-validate one OpenAlex-normalized paper against S2.
+ * Mutates the paper in place:
+ *   - Adds s2_paper_id / arxiv_id / venue (S2-supplied primary fields)
+ *   - Backfills pmid if missing
+ *   - Appends 's2' to provenance.sources
+ *   - Records conflicts (if any) in cross_source_agreement (Paper does not
+ *     carry that field; we log only). Future schema may add per-paper agreement.
+ *   - Recomputes confidence via scoreEntity (single → multi-source bump)
+ * Returns true if S2 enriched the paper.
+ */
+function enrichWithS2(paper, s2Map) {
+    if (!paper.doi) return false;
+    const raw = s2Map.get(paper.doi.toLowerCase());
+    if (!raw) return false;
+    const s2Primary = s2ExtractPrimary(raw);
+    if (!s2Primary) return false;
+
+    const cmp = s2Compare(paper, s2Primary);
+
+    // Merge S2 primary fields (only fill gaps, don't overwrite OpenAlex truth)
+    if (!paper.s2_paper_id) paper.s2_paper_id = s2Primary.s2_paper_id;
+    if (!paper.arxiv_id && s2Primary.arxiv_id) paper.arxiv_id = s2Primary.arxiv_id;
+    if (!paper.pmid && s2Primary.pmid) paper.pmid = s2Primary.pmid;
+    if (!paper.venue && s2Primary.venue) paper.venue = s2Primary.venue;
+    if (paper.is_open_access == null && s2Primary.is_open_access != null) {
+        paper.is_open_access = s2Primary.is_open_access;
+    }
+
+    // Append S2 to provenance.sources
+    const timestamp = new Date().toISOString();
+    paper.provenance.sources.push({
+        source: 's2',
+        source_id: s2Primary.s2_paper_id,
+        timestamp,
+        extraction_method: 's2_graph_v1_batch_doi',
+    });
+    paper.provenance.last_updated = timestamp;
+
+    // Recompute confidence to reflect 2 sources. Paper schema does not yet
+    // carry per-entity confidence; the function will return a score we can
+    // optionally store on paper.confidence (V0.3 contract addition).
+    const scored = scoreEntity({
+        provenance: paper.provenance,
+        confidence: { cross_source_agreement: { structural_match: cmp.conflicts.length === 0, conflicts: cmp.conflicts } },
+        stats: {},
+    });
+    paper.confidence = {
+        overall: scored.overall,
+        method: scored.method,
+        cross_source_agreement: { structural_match: cmp.conflicts.length === 0, conflicts: cmp.conflicts },
+    };
+
+    return true;
+}
 
 /**
  * Apply Retraction Watch PRIMARY FACTS to a normalized paper.
@@ -85,18 +143,33 @@ async function main() {
     const retractedPapers = [];
     let processed = 0;
     let totalTrialMentions = 0;
+    let s2Enriched = 0;
+    let s2Conflicts = 0;
 
     for (const compound of compounds) {
         const searchName = getSearchName(compound);
         const rawPapers = await search(searchName, PAPERS_PER_COMPOUND);
 
+        // First pass: normalize OpenAlex papers + apply Retraction Watch
+        const normalized = [];
         for (const raw of rawPapers) {
             const paper = normalizePaper(raw, compound.id, 'concept_match');
             if (!paper) continue;
-
-            // Cross-validate retraction status against Retraction Watch (canonical)
             applyRetraction(paper, rwIndex);
+            normalized.push(paper);
+        }
 
+        // Second pass: cross-source S2 batch lookup by DOI (max 500 per call)
+        const dois = normalized.map(p => p.doi).filter(Boolean);
+        const s2Map = dois.length > 0 ? await s2FetchByDoiBatch(dois) : new Map();
+        for (const paper of normalized) {
+            if (enrichWithS2(paper, s2Map)) {
+                s2Enriched++;
+                if (paper.confidence?.cross_source_agreement?.conflicts?.length) s2Conflicts++;
+            }
+        }
+
+        for (const paper of normalized) {
             const result = gate(paper, PAPER_SCHEMA, `paper:${paper.id}`);
             if (!result.passed) continue;
 
@@ -145,12 +218,13 @@ async function main() {
 
     const retractRate = allPapers.size > 0 ? (100 * retractedPapers.length / allPapers.size).toFixed(2) : 0;
 
-    console.log(`\n[PAPER-LINKER] ✅ Complete`);
+    console.log(`\n[PAPER-LINKER] Complete`);
     console.log(`  Compounds processed:    ${processed}`);
     console.log(`  Unique papers:          ${allPapers.size}`);
     console.log(`  Compound-paper links:   ${paperLinks.length}`);
-    console.log(`  Retracted papers:       ${retractedPapers.length} (${retractRate}%) ⭐ V0.4 Negative Evidence`);
-    console.log(`  NCT IDs in abstracts:   ${totalTrialMentions} (paper↔trial cross-link signals)`);
+    console.log(`  Retracted papers:       ${retractedPapers.length} (${retractRate}%) - V0.4 Negative Evidence`);
+    console.log(`  NCT IDs in abstracts:   ${totalTrialMentions} (paper-trial cross-link signals)`);
+    console.log(`  S2 cross-source enriched: ${s2Enriched}/${paperLinks.length} (conflicts: ${s2Conflicts})`);
     console.log(`\n  Outputs:`);
     console.log(`    ${papersFile}`);
     console.log(`    ${linksFile}`);

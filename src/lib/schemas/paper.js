@@ -17,8 +17,10 @@ export const PAPER_SCHEMA = {
     id: { type: 'string', required: true, pattern: /^sciweon::paper::/ },
     doi: { type: 'string', required: false, pattern: /^10\.\d{4,}\/\S+$/ },
     openalex_id: { type: 'string', required: false, pattern: /^W\d+$/ },
-    s2_paper_id: { type: 'string', required: false },
+    s2_paper_id: { type: 'string', required: false, maxLength: 100 },
     pmid: { type: 'string', required: false, pattern: /^\d+$/ },
+    // ArXiv ID format: NNNN.NNNNN (new) or category/NNNNNNN (legacy).
+    arxiv_id: { type: 'string', required: false, maxLength: 30 },
 
     // ─── Content ───
     title: { type: 'string', required: true, maxLength: 2000 },
@@ -44,9 +46,11 @@ export const PAPER_SCHEMA = {
         },
     },
 
-    // ─── Impact ───
+    // ─── Impact (objective metrics, primary) ───
     citation_count: { type: 'integer', required: false, min: 0 },
     is_open_access: { type: 'boolean', required: false },
+    // Publisher-supplied venue (journal / conference name). Primary metadata.
+    venue: { type: 'string', required: false, maxLength: 500 },
 
     // ─── Quality Flags (CRITICAL for Negative Evidence) ───
     // V0.1 contract: PRIMARY FACTS ONLY from Retraction Watch (publisher-sourced).
@@ -90,7 +94,7 @@ export const PAPER_SCHEMA = {
             sources: {
                 type: 'array', required: true, minItems: 1,
                 itemShape: {
-                    source: { type: 'string', enum: ['openalex', 's2'] },
+                    source: { type: 'string', enum: ['openalex', 's2', 'semantic_scholar'] },
                     source_id: { type: 'string', required: true },
                     timestamp: { type: 'string', format: 'iso8601' },
                     extraction_method: { type: 'string', required: true },

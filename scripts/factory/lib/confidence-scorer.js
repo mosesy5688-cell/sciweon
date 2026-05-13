@@ -18,7 +18,8 @@ const SOURCE_WEIGHTS = {
     chembl: 10,
     clinicaltrials: 5,
     openalex: 5,
-    s2: 3,
+    s2: 5,
+    semantic_scholar: 5, // alias for s2 — both names accepted in provenance.sources
 };
 
 export function scoreDataPoint(sources, options = {}) {
