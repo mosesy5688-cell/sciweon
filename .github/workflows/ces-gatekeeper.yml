@@ -1,0 +1,33 @@
+name: CES Gatekeeper
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ces-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  enforce-compliance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Run CES Check
+        run: python3 scripts/check_compliance.py
+        env:
+          # V0.1a phase: keep English mandate as warn-only. Flip to '1' before
+          # V0.5 sciweon.com Day-1 landing.
+          CES_ENGLISH_STRICT: '0'

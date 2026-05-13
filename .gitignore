@@ -12,3 +12,45 @@ tmp/
 playwright-report/
 test-results/
 .wrangler/
+
+# ============================================================
+# CONFIDENTIAL PROJECT DOCUMENTS (NEVER COMMIT)
+# Synced from Free2AITools CES (Art 9.1 IP Protection)
+# ============================================================
+
+# Agent / brain artifacts
+.gemini/
+brain/
+
+# Constitution and strategy documents (filename pattern enforcement)
+*CONSTITUTION*.md
+*STRATEGY*.md
+*PLAN*.md
+*AUDIT*.md
+*PROMPT*.md
+*HANDOVER*.md
+*EXECUTION_DETAILS*.md
+*NEGATIVE_EVIDENCE*.md
+*DATA_ARCHITECTURE*.md
+*IDEA_LAB*.md
+*POSITIONING*.md
+*LABNEXUS*.md
+*SCIWEON_*.md
+*IMMIGRATION*.md
+
+# Secret files
+*.secret.*
+*.secrets.*
+*.key
+*.pem
+
+# Backup files
+*.backup
+*.bak
+
+# Claude Code local settings
+.claude/settings.local.json
+.claude/
+
+# Internal runbooks
+docs/runbooks/
