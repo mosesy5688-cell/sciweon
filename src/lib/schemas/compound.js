@@ -180,6 +180,19 @@ export const COMPOUND_SCHEMA = {
                 type: 'string', required: false,
                 enum: ['Class I', 'Class II', 'Class III', null],
             },
+            // V0.4.1 FAERS signal-level aggregation
+            // Agent demand: quantified safety signals ("compound X has N
+            // hepatotoxicity reports"), not 24M individual records.
+            // MedDRA PT (Preferred Terms) — ICH international medical
+            // vocabulary, primary authoritative-source exempt.
+            faers_top_adr_terms: {
+                type: 'array', required: false, maxItems: 30,
+                itemShape: {
+                    term: { type: 'string', required: true, maxLength: 200 },
+                    count: { type: 'integer', required: true, min: 0 },
+                },
+            },
+            faers_total_top_count: { type: 'integer', required: false, min: 0 },
             sources: { type: 'array', required: false, itemType: 'string', maxItems: 5 },
         },
     },

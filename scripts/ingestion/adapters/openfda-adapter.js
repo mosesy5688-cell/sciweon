@@ -74,6 +74,32 @@ export async function fetchLabelsByUnii(unii, limit = 5) {
 }
 
 /**
+ * Fetch FAERS adverse-event signal aggregation by UNII.
+ *
+ * V0.4.1: Agent needs quantified safety signals ("compound X has 1000
+ * hepatotoxicity reports"), not 24M individual records. openFDA count
+ * aggregation returns top ADR terms with FAERS report counts in a single
+ * API call — Sciweon stores signal-level signal, not raw reports.
+ *
+ * Returns array of { term, count } sorted desc by count.
+ * MedDRA Preferred Terms (PT) are ICH international standard medical
+ * vocabulary — primary, authoritative-source exempt (like MeSH).
+ */
+export async function fetchFaersSignalsByUnii(unii, limit = 20) {
+    if (!unii) return [];
+    const url = `${OPENFDA_BASE}/drug/event.json?search=patient.drug.openfda.unii:${encodeURIComponent(unii)}&count=patient.reaction.reactionmeddrapt.exact&limit=${limit}`;
+    try {
+        const data = await fetchJson(url);
+        const results = data?.results ?? [];
+        return results.map(r => ({ term: r.term, count: r.count ?? 0 }));
+    } catch (e) {
+        if (e.message.includes('404')) return [];
+        console.warn(`[OPENFDA] FAERS ${unii}: ${e.message}`);
+        return [];
+    }
+}
+
+/**
  * Fetch recall events by UNII.
  */
 export async function fetchRecallsByUnii(unii, limit = 10) {
