@@ -26,7 +26,8 @@ export const BIOACTIVITY_SCHEMA = {
 
     // ─── Quality Flags (Negative Evidence enabler) ───
     is_active: { type: 'boolean', required: false },
-    activity_comment: { type: 'string', required: false, maxLength: 200 },
+    // Real ChEMBL comments contain detailed methodology — widened from 200 to 4000
+    activity_comment: { type: 'string', required: false, maxLength: 4000 },
     confidence_score: { type: 'integer', required: false, min: 0, max: 9 }, // ChEMBL native 0-9
 
     // ─── Assay Context ───
