@@ -82,6 +82,22 @@ export const BIOACTIVITY_SCHEMA = {
     // (0-9) is a curator secondary assessment of target-assay reliability and
     // is intentionally NOT consumed.
     sciweon_confidence: { type: 'integer', required: false, min: 0, max: 100 },
+    // ─── Cross-source measurement validation (V0.3.1) ───
+    // Independent verification against PubChem BioAssay (different deposit
+    // pool than ChEMBL). Same compound + target + activity_type measured by
+    // independent assay groups -> genuine consensus or conflict signal.
+    cross_source_consensus: {
+        type: 'object', required: false,
+        shape: {
+            has_pubchem_match: { type: 'boolean', required: false },
+            pubchem_aid_count: { type: 'integer', required: false, min: 0 },
+            value_agreement: {
+                type: 'string', required: false,
+                enum: ['agree', 'soft_agree', 'conflict', null],
+            },
+            n_sources: { type: 'integer', required: false, min: 1, max: 10 },
+        },
+    },
     // Raw ChEMBL curator commentary preserved as TEXT only for V0.4 NLP entry.
     // No decision logic reads this field.
     activity_comment: { type: 'string', required: false, maxLength: 4000 },
