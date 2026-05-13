@@ -77,6 +77,7 @@ export function normalize(raw, compoundIdHint = null) {
     const conditionsMod = protocol.conditionsModule ?? {};
     const armsMod = protocol.armsInterventionsModule ?? {};
     const sponsorMod = protocol.sponsorCollaboratorsModule ?? {};
+    const referencesMod = protocol.referencesModule ?? {};
 
     const nctId = idMod.nctId;
     if (!nctId || !/^NCT\d{8}$/.test(nctId)) return null;
@@ -114,6 +115,14 @@ export function normalize(raw, compoundIdHint = null) {
             primary_completion: statusMod.primaryCompletionDateStruct?.date ?? null,
         },
         sponsor: sponsorMod.leadSponsor?.name ?? null,
+        references: (referencesMod.references ?? [])
+            .filter(r => r.pmid && /^\d+$/.test(String(r.pmid)))
+            .slice(0, 200)
+            .map(r => ({
+                pmid: String(r.pmid),
+                type: r.type ?? null,
+                citation: r.citation ? String(r.citation).slice(0, 2000) : null,
+            })),
         provenance: {
             sources: [{
                 source: 'clinicaltrials',

@@ -17,8 +17,25 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { search, normalize as normalizePaper } from '../ingestion/adapters/openalex-adapter.js';
+import { loadIndex as loadRetractionIndex, lookup as lookupRetraction } from '../ingestion/adapters/retraction-watch-adapter.js';
 import { PAPER_SCHEMA } from '../../src/lib/schemas/paper.js';
 import { gate } from './lib/validation-gate.js';
+
+/**
+ * Apply Retraction Watch PRIMARY FACTS to a normalized paper.
+ * Reason categorization is V0.4 — not consumed here.
+ * Mutates paper in place. Returns true if a retraction was applied.
+ */
+function applyRetraction(paper, rwIndex) {
+    const info = lookupRetraction(paper, rwIndex);
+    if (!info) return false;
+    paper.is_retracted = true;
+    paper.retraction_doi = info.retraction_doi || null;
+    paper.retraction_date = info.retraction_date || null;
+    paper.retraction_nature = info.nature || null;
+    paper.retraction_source = 'crossref_retraction_watch';
+    return true;
+}
 
 const LIMIT = parseInt(process.argv.find(a => a.startsWith('--limit='))?.split('=')[1] || '50');
 const PAPERS_PER_COMPOUND = parseInt(process.argv.find(a => a.startsWith('--per-compound='))?.split('=')[1] || '25');
@@ -52,6 +69,10 @@ async function main() {
 
     await fs.mkdir(OUTPUT_DIR, { recursive: true });
 
+    // Load Retraction Watch canonical index (auto-syncs if stale)
+    const rwIndex = await loadRetractionIndex();
+    console.log(`[PAPER-LINKER] Retraction Watch: ${rwIndex.record_count} records loaded (DOI:${rwIndex.with_doi}, PMID:${rwIndex.with_pmid})`);
+
     let compounds = await loadCompounds(INPUT);
     if (CLINICAL_ONLY) {
         compounds = compounds.filter(c => c.drug_status?.max_phase != null && c.drug_status.max_phase >= 1);
@@ -72,6 +93,9 @@ async function main() {
         for (const raw of rawPapers) {
             const paper = normalizePaper(raw, compound.id, 'concept_match');
             if (!paper) continue;
+
+            // Cross-validate retraction status against Retraction Watch (canonical)
+            applyRetraction(paper, rwIndex);
 
             const result = gate(paper, PAPER_SCHEMA, `paper:${paper.id}`);
             if (!result.passed) continue;

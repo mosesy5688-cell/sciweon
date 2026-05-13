@@ -23,6 +23,7 @@ import path from 'path';
 import { searchByIntervention, normalize as normalizeTrial } from '../ingestion/adapters/clinicaltrials-adapter.js';
 import { TRIAL_SCHEMA } from '../../src/lib/schemas/trial.js';
 import { gate } from './lib/validation-gate.js';
+import { classifyBatch } from './lib/failure-classifier.js';
 
 const LIMIT = parseInt(process.argv.find(a => a.startsWith('--limit='))?.split('=')[1] || '50');
 const INPUT = process.argv.find(a => a.startsWith('--input='))?.split('=')[1]
@@ -106,6 +107,13 @@ async function main() {
             console.log(`[TRIAL-LINKER] Progress: ${processedCompounds}/${compounds.length} compounds | ${totalTrialsFound} unique trials | ${totalNegative} negative outcomes`);
         }
         await sleep(REQUEST_DELAY_MS);
+    }
+
+    // Classify failures (V0.1 baseline keyword classifier)
+    const classificationStats = classifyBatch(negativeEvidenceRaw);
+    console.log(`\n[TRIAL-LINKER] Failure classification (V0.1 keyword baseline):`);
+    for (const [cat, count] of Object.entries(classificationStats).sort((a, b) => b[1] - a[1])) {
+        console.log(`  ${cat.padEnd(12)} ${count}`);
     }
 
     // Write outputs

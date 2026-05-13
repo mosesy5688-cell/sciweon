@@ -9,7 +9,7 @@
  *
  * Strategy:
  *   - Search by compound name → matched papers
- *   - Extract DOI, citations, MeSH concepts, retraction flag
+ *   - Extract DOI, citations, MeSH (NIH primary), retraction flag (cross-validated against Retraction Watch)
  *
  * CRITICAL: is_retracted=true is the Negative Evidence signal.
  */
@@ -73,6 +73,29 @@ export async function fetchByDoi(doi) {
     }
 }
 
+/**
+ * Batch fetch papers by PMID list (max 50 per call, OR-filter).
+ * Returns array of raw OpenAlex work records.
+ */
+export async function fetchByPmidBatch(pmids) {
+    if (!pmids?.length) return [];
+    const BATCH = 50;
+    const all = [];
+    for (let i = 0; i < pmids.length; i += BATCH) {
+        const chunk = pmids.slice(i, i + BATCH);
+        const filter = `pmid:${chunk.join('|')}`;
+        const url = `${OPENALEX_BASE}?filter=${encodeURIComponent(filter)}&per-page=${BATCH}`;
+        try {
+            const data = await fetchJson(url);
+            for (const w of (data?.results ?? [])) all.push(w);
+        } catch (e) {
+            console.warn(`[OPENALEX] pmid batch ${i}: ${e.message}`);
+        }
+        await new Promise(r => setTimeout(r, 100));
+    }
+    return all;
+}
+
 function extractAuthors(raw) {
     const authorships = raw.authorships ?? [];
     return authorships.slice(0, 1000).map(a => ({
@@ -82,12 +105,11 @@ function extractAuthors(raw) {
 }
 
 function extractMesh(raw) {
+    // NIH MEDLINE MeSH terms — primary human-curated. Accept.
     return (raw.mesh ?? []).slice(0, 100).map(m => m.descriptor_name).filter(Boolean);
 }
-
-function extractConcepts(raw) {
-    return (raw.concepts ?? []).slice(0, 100).map(c => c.display_name).filter(Boolean);
-}
+// OpenAlex `concepts` and `fields_of_study` intentionally NOT extracted —
+// secondary ML output, ~50-70% accuracy. V0.4: Sciweon's own classifier.
 
 /**
  * OpenAlex `id` format: "https://openalex.org/W{number}"
@@ -97,6 +119,14 @@ function normalizeOpenAlexId(idUrl) {
     if (!idUrl) return null;
     const match = idUrl.match(/W\d+/);
     return match ? match[0] : null;
+}
+
+function extractPmid(raw) {
+    const ids = raw.ids ?? {};
+    const pmidUrl = ids.pmid ?? null;
+    if (!pmidUrl) return null;
+    const m = String(pmidUrl).match(/(\d+)$/);
+    return m ? m[1] : null;
 }
 
 /**
@@ -132,6 +162,7 @@ export function normalize(raw, compoundIdHint = null, extractionMethod = 'concep
         doi,
         openalex_id: openalexId,
         s2_paper_id: null,
+        pmid: extractPmid(raw),
         title: title.substring(0, 2000),
         abstract: abstract ? abstract.substring(0, 20000) : null,
         publication_date: raw.publication_date ?? null,
@@ -140,11 +171,11 @@ export function normalize(raw, compoundIdHint = null, extractionMethod = 'concep
         citation_count: raw.cited_by_count ?? 0,
         is_open_access: raw.open_access?.is_oa ?? null,
         is_retracted: raw.is_retracted === true,
-        retraction_reason: null,  // OpenAlex doesn't directly expose reason; Retraction Watch is better source (V0.4)
+        retraction_doi: null,
         retraction_date: null,
+        retraction_nature: null,
+        retraction_source: raw.is_retracted === true ? 'openalex' : null, // overridden by Retraction Watch when matched (canonical)
         mesh_terms: extractMesh(raw),
-        concepts: extractConcepts(raw),
-        fields_of_study: [],
         mentioned_compounds: mentionedCompounds,
         mentioned_trial_ids: extractNctIds(abstract),
         provenance: {

@@ -66,6 +66,18 @@ export const TRIAL_SCHEMA = {
     // ─── Sponsor ───
     sponsor: { type: 'string', required: false, maxLength: 500 },
 
+    // ─── Paper Cross-Link (CT.gov referencesModule) ───
+    // Bidirectional link: trial → papers it cites; combined with paper.mentioned_trial_ids
+    // for full provenance chain. Type per CT.gov: BACKGROUND / RESULT / DERIVED.
+    references: {
+        type: 'array', required: false, maxItems: 200,
+        itemShape: {
+            pmid: { type: 'string', required: true, pattern: /^\d+$/ },
+            type: { type: 'string', required: false, enum: ['BACKGROUND', 'RESULT', 'DERIVED'] },
+            citation: { type: 'string', required: false, maxLength: 2000 },
+        },
+    },
+
     // ─── PROVENANCE (V8 mandatory) ───
     provenance: {
         type: 'object', required: true,

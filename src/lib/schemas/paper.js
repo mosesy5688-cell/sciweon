@@ -5,7 +5,9 @@
  * Linked to Compounds via MeSH terms, abstract NLP, and DOI cross-references.
  *
  * CRITICAL for Negative Evidence DB (V0.4):
- *   is_retracted=true + retraction_reason → Failure DB raw material
+ *   is_retracted=true + retraction_doi → V0.4 fetches original retraction notice
+ *   full text and classifies reason with Sciweon's own 6-category NLP (not RW's
+ *   predefined categories — those are secondary processed data, see [[feedback_no_secondary_processed_data]]).
  *
  * See: brain/SCIWEON_DATA_ARCHITECTURE.md §3.4
  */
@@ -16,6 +18,7 @@ export const PAPER_SCHEMA = {
     doi: { type: 'string', required: false, pattern: /^10\.\d{4,}\/\S+$/ },
     openalex_id: { type: 'string', required: false, pattern: /^W\d+$/ },
     s2_paper_id: { type: 'string', required: false },
+    pmid: { type: 'string', required: false, pattern: /^\d+$/ },
 
     // ─── Content ───
     title: { type: 'string', required: true, maxLength: 2000 },
@@ -37,14 +40,23 @@ export const PAPER_SCHEMA = {
     is_open_access: { type: 'boolean', required: false },
 
     // ─── Quality Flags (CRITICAL for Negative Evidence) ───
+    // V0.1 contract: PRIMARY FACTS ONLY from Retraction Watch (publisher-sourced).
+    // Reason categorization is V0.4 work: use retraction_doi to fetch original
+    // retraction notice full text and classify with Sciweon's own 6-category NLP.
     is_retracted: { type: 'boolean', required: true },
-    retraction_reason: { type: 'string', required: false, maxLength: 4000 },
+    retraction_doi: { type: 'string', required: false, pattern: /^10\.\d{4,}\/\S+$/ },
     retraction_date: { type: 'string', required: false, format: 'iso8601_date' },
+    retraction_nature: {
+        type: 'string', required: false,
+        enum: ['Retraction', 'Correction', 'Expression of concern', 'Reinstatement', 'Withdrawal', null],
+    },
+    retraction_source: { type: 'string', required: false, enum: ['crossref_retraction_watch', 'openalex', null] },
 
     // ─── Topical Classification ───
+    // V0.1 contract: only NIH MEDLINE MeSH terms (primary, human-curated).
+    // OpenAlex concepts / fields_of_study removed — secondary ML output, ~50-70% accuracy.
+    // V0.4: Sciweon's own topic classifier over abstract + MeSH primary signal.
     mesh_terms: { type: 'array', required: false, itemType: 'string', maxItems: 100 },
-    concepts: { type: 'array', required: false, itemType: 'string', maxItems: 100 },
-    fields_of_study: { type: 'array', required: false, itemType: 'string', maxItems: 20 },
 
     // ─── Linkage to Compounds (V0.1: hint via mentions; V0.2+: NLP-based) ───
     mentioned_compounds: {
@@ -54,7 +66,7 @@ export const PAPER_SCHEMA = {
             mention_confidence: { type: 'number', required: false, min: 0, max: 100 },
             extraction_method: {
                 type: 'string', required: false,
-                enum: ['mesh', 'concept_match', 'abstract_nlp', 'title_match', 'manual'],
+                enum: ['mesh', 'concept_match', 'abstract_nlp', 'title_match', 'manual', 'trial_reference'],
             },
         },
     },
