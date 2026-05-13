@@ -32,16 +32,32 @@ async function fetchJson(url) {
 
 /**
  * Search papers by query term (e.g. compound name).
+ *
+ * V0.1 fix: mix old (high-citation) + recent (≥2020) papers.
+ * OpenAlex default sort is by citation count, which gives stale evidence.
+ * Agent needs recent research, not just historical highlights.
  */
 export async function search(query, perPage = 25) {
-    try {
-        const url = `${OPENALEX_BASE}?search=${encodeURIComponent(query)}&per-page=${perPage}`;
-        const data = await fetchJson(url);
-        return data?.results ?? [];
-    } catch (e) {
-        console.warn(`[OPENALEX] search "${query}": ${e.message}`);
-        return [];
+    const split = Math.ceil(perPage / 2);
+    const queries = [
+        // Top-cited (any year) — historical authoritative papers
+        `${OPENALEX_BASE}?search=${encodeURIComponent(query)}&per-page=${split}`,
+        // Recent (publication_year >= 2020) sorted by citation among recent
+        `${OPENALEX_BASE}?search=${encodeURIComponent(query)}&filter=publication_year%3A%3E2019&per-page=${perPage - split}&sort=cited_by_count%3Adesc`,
+    ];
+    const all = [];
+    const seen = new Set();
+    for (const url of queries) {
+        try {
+            const data = await fetchJson(url);
+            for (const w of (data?.results ?? [])) {
+                if (!seen.has(w.id)) { seen.add(w.id); all.push(w); }
+            }
+        } catch (e) {
+            console.warn(`[OPENALEX] search "${query}": ${e.message}`);
+        }
     }
+    return all;
 }
 
 /**

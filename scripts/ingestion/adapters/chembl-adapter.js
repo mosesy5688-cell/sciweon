@@ -84,14 +84,32 @@ function deriveIsActive(activity) {
 }
 
 const UNIT_MAP = {
+    // Molar concentration
     'nM': 'nM', 'uM': 'uM', 'μM': 'uM', 'mM': 'mM', 'M': 'M',
-    '%': 'percent', 'percent': 'percent', '': 'unitless',
+    // Percent
+    '%': 'percent', 'percent': 'percent',
+    // Mass concentration → 'other' (real but non-standard for our enum)
+    'mg/kg': 'other', 'g/kg': 'other', 'ug/kg': 'other',
+    'mg/mL': 'other', 'ug/mL': 'other', 'ng/mL': 'other',
+    'mol/L': 'other', 'mmol/L': 'other', 'umol/L': 'other',
+    'mg.kg-1': 'other', 'mg/L': 'other',
+    // Time
+    'min': 'other', 'hr': 'other', 'hour': 'other', 'sec': 'other', 'd': 'other',
+    // Inverse
+    '/L': 'other', '/mL': 'other',
+    // Ratios / dimensionless
+    'ratio': 'unitless', 'pKa': 'unitless', 'pKi': 'unitless', 'pIC50': 'unitless',
+    // Empty / null
+    '': 'unitless', 'unitless': 'unitless',
 };
 
 function normalizeUnit(raw) {
-    if (!raw) return 'unitless';
+    if (!raw) return { unit: 'unitless', unit_raw: null };
     const trimmed = raw.trim();
-    return UNIT_MAP[trimmed] ?? 'unitless';
+    const mapped = UNIT_MAP[trimmed];
+    if (mapped) return { unit: mapped, unit_raw: trimmed };
+    // Unknown unit string — preserve raw, classify as 'other'
+    return { unit: 'other', unit_raw: trimmed };
 }
 
 const ACTIVITY_TYPE_MAP = {
@@ -119,13 +137,15 @@ export function normalizeActivity(raw, compoundId) {
     if (value == null || !Number.isFinite(value) || value < 0) return null;
 
     const timestamp = new Date().toISOString();
+    const unitInfo = normalizeUnit(raw.standard_units);
     return {
         id: `sciweon::bioactivity::CHEMBL_ACT_${raw.activity_id}`,
         compound_id: compoundId,
         target_id: raw.target_chembl_id ?? 'unknown',
         activity_type: normalizeActivityType(raw.standard_type),
         value,
-        unit: normalizeUnit(raw.standard_units),
+        unit: unitInfo.unit,
+        unit_raw: unitInfo.unit_raw,
         is_active: deriveIsActive(raw),
         activity_comment: raw.activity_comment ?? null,
         confidence_score: raw.confidence_score ?? null,

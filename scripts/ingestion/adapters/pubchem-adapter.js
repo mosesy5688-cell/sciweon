@@ -16,9 +16,10 @@ import { scoreEntity } from '../../factory/lib/confidence-scorer.js';
 
 const PUBCHEM_BASE = 'https://pubchem.ncbi.nlm.nih.gov/rest/pug';
 const REQUEST_TIMEOUT_MS = 15000;
+// PubChem deprecated CanonicalSMILES → SMILES (2025+). Request both for compatibility.
 const PROPERTIES = [
     'MolecularFormula', 'MolecularWeight', 'IUPACName', 'InChI', 'InChIKey',
-    'CanonicalSMILES', 'IsomericSMILES', 'XLogP', 'ExactMass', 'TPSA',
+    'SMILES', 'CanonicalSMILES', 'IsomericSMILES', 'XLogP', 'ExactMass', 'TPSA',
     'Complexity', 'HBondDonorCount', 'HBondAcceptorCount', 'RotatableBondCount',
 ].join(',');
 
@@ -71,7 +72,7 @@ export function normalize(raw, synonyms = []) {
         pubchem_cid: raw.CID,
         chembl_id: null,
         inchi_key: raw.InChIKey,
-        smiles_canonical: raw.CanonicalSMILES ?? raw.IsomericSMILES ?? '',
+        smiles_canonical: raw.SMILES ?? raw.CanonicalSMILES ?? raw.IsomericSMILES ?? '',
         inchi: raw.InChI ?? '',
         molecular_formula: raw.MolecularFormula ?? '',
         molecular_weight: {

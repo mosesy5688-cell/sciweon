@@ -22,7 +22,10 @@ export const BIOACTIVITY_SCHEMA = {
         enum: ['IC50', 'Ki', 'EC50', 'AC50', 'Kd', 'IC90', 'GI50', 'inhibition', 'other'],
     },
     value: { type: 'number', required: true, min: 0 },
-    unit: { type: 'string', required: true, enum: ['nM', 'uM', 'mM', 'M', 'percent', 'unitless'] },
+    unit: { type: 'string', required: true, enum: ['nM', 'uM', 'mM', 'M', 'percent', 'unitless', 'other'] },
+    // Preserve original ChEMBL unit string (e.g. 'mg/kg', 'mol/L') when our enum doesn't cover it.
+    // Agent can fall back to unit_raw for non-standard units.
+    unit_raw: { type: 'string', required: false, maxLength: 100 },
 
     // ─── Quality Flags (Negative Evidence enabler) ───
     is_active: { type: 'boolean', required: false },
