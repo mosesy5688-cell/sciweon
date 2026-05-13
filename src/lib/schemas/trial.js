@@ -13,7 +13,11 @@
 export const TRIAL_SCHEMA = {
     // ─── Identity ───
     id: { type: 'string', required: true, pattern: /^sciweon::trial::/ },
-    nct_id: { type: 'string', required: true, pattern: /^NCT\d{8}$/ },
+    // nct_id slot accepts CT.gov NCT IDs OR EU CTIS ctNumber (different ID
+    // namespaces, both authoritative). V0.4 may split into separate fields.
+    nct_id: { type: 'string', required: true, pattern: /^(NCT\d{8}|\d{4}-\d{6}-\d{2}-\d{2})$/ },
+    // EU CTIS canonical trial number (when sourced from CTIS).
+    ct_number: { type: 'string', required: false, pattern: /^\d{4}-\d{6}-\d{2}-\d{2}$/ },
 
     // ─── Status (CRITICAL for Negative Evidence) ───
     // Full CT.gov v2 API overallStatus value set (per official spec):
@@ -25,6 +29,9 @@ export const TRIAL_SCHEMA = {
             'COMPLETED', 'TERMINATED', 'WITHDRAWN', 'SUSPENDED', 'UNKNOWN',
             'APPROVED_FOR_MARKETING', 'AVAILABLE', 'NO_LONGER_AVAILABLE',
             'TEMPORARILY_NOT_AVAILABLE', 'WITHHELD', 'OTHER',
+            // EU CTIS overallStatus values (independent vocabulary from CT.gov)
+            'AUTHORISED', 'ONGOING', 'ENDED', 'ENDED_PREMATURELY', 'HALTED',
+            'CANCELLED', 'UNDER_EVALUATION', 'NOT_YET_AUTHORISED',
         ],
     },
     status_reason: { type: 'string', required: false, maxLength: 4000 },
@@ -89,7 +96,7 @@ export const TRIAL_SCHEMA = {
             sources: {
                 type: 'array', required: true, minItems: 1,
                 itemShape: {
-                    source: { type: 'string', enum: ['clinicaltrials'] },
+                    source: { type: 'string', enum: ['clinicaltrials', 'ctis'] },
                     source_id: { type: 'string', required: true },
                     timestamp: { type: 'string', format: 'iso8601' },
                     extraction_method: { type: 'string', required: true },

@@ -100,6 +100,35 @@ export const COMPOUND_SCHEMA = {
         },
     },
 
+    // ─── FDA Regulatory Signals (V0.3.4 openFDA) ───
+    // FDA-curated drug regulatory data — black box warnings + recall history.
+    // Direct input for V0.4 Negative Evidence DB categories D (drug
+    // withdrawal + black box) and pharmacological context.
+    fda_signals: {
+        type: 'object', required: false,
+        shape: {
+            has_drug_label: { type: 'boolean', required: false },
+            label_count: { type: 'integer', required: false, min: 0 },
+            has_boxed_warning: { type: 'boolean', required: false },
+            // FDA-mandated boxed warning text (primary fact, sponsor-supplied
+            // via FDA-required label sections). NOT a derived classification.
+            boxed_warning_text: { type: 'string', required: false, maxLength: 4000 },
+            has_indications: { type: 'boolean', required: false },
+            has_contraindications: { type: 'boolean', required: false },
+            application_numbers: { type: 'array', required: false, itemType: 'string', maxItems: 20 },
+            // FDA Established Pharmacologic Class — FDA authoritative international
+            // standard, parallel to WHO ATC codes (authoritative-source exempt).
+            pharm_class_epc: { type: 'array', required: false, itemType: 'string', maxItems: 20 },
+            pharm_class_moa: { type: 'array', required: false, itemType: 'string', maxItems: 20 },
+            recall_count: { type: 'integer', required: false, min: 0 },
+            most_severe_recall_class: {
+                type: 'string', required: false,
+                enum: ['Class I', 'Class II', 'Class III', null],
+            },
+            sources: { type: 'array', required: false, itemType: 'string', maxItems: 5 },
+        },
+    },
+
     // ─── PROVENANCE (V8 mandatory) ───
     provenance: {
         type: 'object', required: true,
