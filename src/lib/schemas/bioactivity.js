@@ -14,7 +14,42 @@ export const BIOACTIVITY_SCHEMA = {
     // ─── Identity ───
     id: { type: 'string', required: true, pattern: /^sciweon::bioactivity::/ },
     compound_id: { type: 'string', required: true, pattern: /^sciweon::compound::/ },
-    target_id: { type: 'string', required: true },
+    target_id: { type: 'string', required: true }, // ChEMBL target_chembl_id; backward compat
+    // ─── Target metadata (cross-source ChEMBL + UniProt, V0.2.2) ───
+    // UniProt is the international protein authority (EMBL-EBI), independent
+    // curation from ChEMBL. Together they provide multi-source target consensus.
+    // Per feedback_no_secondary_processed_data: keywords / subcellularLocation /
+    // features / dbReferences from UniProt are NOT consumed (curator-derived).
+    target: {
+        type: 'object', required: false,
+        shape: {
+            chembl_id: { type: 'string', required: false, pattern: /^CHEMBL\d+$/ },
+            chembl_pref_name: { type: 'string', required: false, maxLength: 500 },
+            target_type: { type: 'string', required: false, maxLength: 100 },
+            // UniProt accession formats:
+            //   6-char: [OPQ][0-9][A-Z0-9]{3}[0-9]   e.g. P00533
+            //   10-char: [A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){2}  e.g. A0A0K6JZF8
+            uniprot_accession: {
+                type: 'string', required: false,
+                pattern: /^([OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9](?:[A-Z][A-Z0-9]{2}[0-9]){1,2})$/,
+            },
+            uniprot_id: { type: 'string', required: false, maxLength: 100 },
+            protein_name: { type: 'string', required: false, maxLength: 500 },
+            organism: {
+                type: 'object', required: false,
+                shape: {
+                    taxon_id: { type: 'integer', required: false, min: 1 },
+                    scientific_name: { type: 'string', required: false, maxLength: 200 },
+                },
+            },
+            gene_symbol: { type: 'string', required: false, maxLength: 100 },
+            sequence_length: { type: 'integer', required: false, min: 1, max: 100000 },
+            sequence_mol_weight: { type: 'number', required: false, min: 0 },
+            // List of sources that contributed to this target object.
+            // 2 sources (chembl + uniprot) means cross-source verified.
+            sources: { type: 'array', required: false, itemType: 'string', maxItems: 5 },
+        },
+    },
 
     // ─── Activity Measurement ───
     activity_type: {

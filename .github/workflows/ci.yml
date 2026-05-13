@@ -119,7 +119,7 @@ jobs:
         # retraction_doi, etc.), but the upstream secondary names stay out.
         run: |
           set -e
-          deny="concepts|fields_of_study|retraction_reason|retraction_reason_categories|confidence_score|institutions|s2FieldsOfStudy|influentialCitationCount|tldr"
+          deny="concepts|fields_of_study|retraction_reason|retraction_reason_categories|confidence_score|institutions|s2FieldsOfStudy|influentialCitationCount|tldr|keywords|subcellularLocation|dbReferences"
           if grep -nE "(${deny})\\s*:" src/lib/schemas/*.js; then
             echo "::error::Secondary-data field reintroduced in schema. See feedback_no_secondary_processed_data."
             exit 1
@@ -148,6 +148,16 @@ jobs:
           fi
           if grep -nE "\\.institutions[^\\w].*\\.display_name" scripts/ingestion/adapters/openalex-adapter.js; then
             echo "::error::OpenAlex institution.display_name (entity-resolved) must not be consumed. Use raw_affiliation_strings."
+            exit 1
+          fi
+          # UniProt secondary curator classifications must not be consumed as
+          # code. Filter out comment-line matches (line content starts with
+          # whitespace then `*` or `//`).
+          uniprot_matches=$(grep -nE "\\b(keywords|subcellularLocation|dbReferences|features)[:.\\[(]" scripts/ingestion/adapters/uniprot-adapter.js || true)
+          uniprot_code_matches=$(echo "$uniprot_matches" | grep -vE ":\\s*\\*|:\\s*//" || true)
+          if [ -n "$uniprot_code_matches" ]; then
+            echo "::error::UniProt curator secondary field consumed in adapter. Restrict to PRIMARY_FIELDS allowlist."
+            echo "$uniprot_code_matches"
             exit 1
           fi
           echo "Primary-data invariant holds."

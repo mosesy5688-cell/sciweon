@@ -42,6 +42,41 @@ export async function findByInchiKey(inchiKey) {
 }
 
 /**
+ * Fetch a ChEMBL target record by target_chembl_id.
+ * Returns the raw target object including target_components[].accession
+ * (UniProt cross-reference). Returns null on 404 / error.
+ */
+export async function fetchTargetByChemblId(chemblTargetId) {
+    try {
+        const url = `${CHEMBL_BASE}/target/${chemblTargetId}.json`;
+        const data = await fetchJson(url);
+        return data ?? null;
+    } catch (e) {
+        console.warn(`[CHEMBL] target ${chemblTargetId}: ${e.message}`);
+        return null;
+    }
+}
+
+/**
+ * Extract PRIMARY-ONLY target metadata from a raw ChEMBL target record.
+ * Provides the ChEMBL-side view; UniProt provides the second source.
+ */
+export function extractTargetPrimary(raw) {
+    if (!raw || !raw.target_chembl_id) return null;
+    const accessions = (raw.target_components ?? [])
+        .map(c => c.accession)
+        .filter(Boolean);
+    return {
+        chembl_id: raw.target_chembl_id,
+        chembl_pref_name: raw.pref_name ?? null,
+        target_type: raw.target_type ?? null,
+        chembl_organism: raw.organism ?? null,
+        chembl_tax_id: typeof raw.tax_id === 'number' ? raw.tax_id : null,
+        uniprot_accessions: accessions,
+    };
+}
+
+/**
  * Fetch all activities for a molecule (paginated).
  * Returns array of raw activity records.
  */
