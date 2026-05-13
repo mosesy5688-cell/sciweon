@@ -100,6 +100,27 @@ export const COMPOUND_SCHEMA = {
         },
     },
 
+    // ─── Structural Fingerprint (V0.3.5 — Agent need #2) ───
+    // PubChem CACTVS 881-bit substructure keys, base64-encoded.
+    // NIH-computed primary fingerprint (parallel to XLogP/TPSA computed
+    // properties). Enables Tanimoto similarity search without RDKit dep.
+    //
+    // For V0.3.5 5K compound scale, brute-force Tanimoto pairwise is fine.
+    // V0.1b 111M scale will require ANN index (HNSW); fingerprint format
+    // stays the same, index added as separate R2 artifact.
+    fingerprint: {
+        type: 'object', required: false,
+        shape: {
+            // PubChem CACTVS Substructure Keys — base64 encoded.
+            // Decode: 4-byte big-endian bit count header + 110 bytes (881 bits).
+            cactvs_881: { type: 'string', required: false, maxLength: 200 },
+            source: {
+                type: 'string', required: false,
+                enum: ['pubchem_cactvs_v2', 'rdkit_morgan_2048'],
+            },
+        },
+    },
+
     // ─── FDA Regulatory Signals (V0.3.4 openFDA) ───
     // FDA-curated drug regulatory data — black box warnings + recall history.
     // Direct input for V0.4 Negative Evidence DB categories D (drug

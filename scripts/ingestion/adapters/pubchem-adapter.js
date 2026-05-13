@@ -107,6 +107,40 @@ export function normalize(raw, synonyms = []) {
 }
 
 /**
+ * Batch fetch PubChem CACTVS 881-bit substructure fingerprints by CID list.
+ * Returns Map<cid_string, base64_fingerprint>.
+ *
+ * V0.3.5: CACTVS Substructure Keys are NIH PubChem's primary-computed
+ * binary fingerprint — same authority class as XLogP/TPSA (deterministic
+ * substructure detection from canonical structure). Enables structural
+ * similarity search via Tanimoto coefficient without RDKit dependency.
+ *
+ * Format: base64-encoded ~156 chars per compound (881-bit fingerprint +
+ * 4-byte header). Decode to bit array at query time for similarity ops.
+ */
+export async function fetchFingerprint2DBatch(cids, batchSize = 100) {
+    if (!cids?.length) return new Map();
+    const result = new Map();
+    for (let i = 0; i < cids.length; i += batchSize) {
+        const chunk = cids.slice(i, i + batchSize);
+        const url = `${PUBCHEM_BASE}/compound/cid/${chunk.join(',')}/property/Fingerprint2D/JSON`;
+        try {
+            const data = await fetchJson(url);
+            const props = data?.PropertyTable?.Properties ?? [];
+            for (const p of props) {
+                if (p.CID != null && p.Fingerprint2D) {
+                    result.set(String(p.CID), p.Fingerprint2D);
+                }
+            }
+        } catch (e) {
+            console.warn(`[PUBCHEM] fingerprint batch ${i}-${i + chunk.length}: ${e.message}`);
+        }
+        await new Promise(r => setTimeout(r, 250));
+    }
+    return result;
+}
+
+/**
  * Fetch + normalize a compound by CID. Returns null if invalid.
  */
 export async function getCompound(cid) {
