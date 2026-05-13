@@ -12,6 +12,8 @@
  * Rate limit: ~5 req/sec, public free.
  */
 
+import { deriveIsActive, scoreBioactivityConfidence } from '../../factory/lib/bioactivity-scorer.js';
+
 const CHEMBL_BASE = 'https://www.ebi.ac.uk/chembl/api/data';
 const REQUEST_TIMEOUT_MS = 20000;
 
@@ -72,16 +74,11 @@ export function normalizeDrugStatus(molecule) {
     };
 }
 
-/**
- * Map ChEMBL activity_comment / standard_value to is_active boolean.
- * "Active" / "active" / "Not Active" / "inactive" / "Inconclusive"
- */
-function deriveIsActive(activity) {
-    const comment = (activity.activity_comment ?? '').toLowerCase();
-    if (comment.includes('not active') || comment.includes('inactive') || comment.includes('no effect')) return false;
-    if (comment.includes('active')) return true;
-    return null;
-}
+// is_active and Sciweon confidence are computed by ./bioactivity-scorer.js
+// from PRIMARY measurement data (value + unit + activity_type), NOT from
+// ChEMBL's `activity_comment` text or `confidence_score`. Both ChEMBL fields
+// are curator secondary annotations and are excluded per the primary-data
+// principle (feedback_no_secondary_processed_data).
 
 const UNIT_MAP = {
     // Molar concentration
@@ -130,6 +127,17 @@ const ASSAY_TYPE_MAP = {
 
 /**
  * Normalize raw ChEMBL activity → Sciweon Bioactivity schema.
+ *
+ * Primary fields (transparently passed through): activity_id, target,
+ * activity_type, value, unit, assay_description, organism.
+ *
+ * Derived by Sciweon (NOT consumed from ChEMBL secondary fields):
+ *   is_active           — bioactivity-scorer.deriveIsActive()
+ *   is_active_method    — provenance for the derivation
+ *   sciweon_confidence  — bioactivity-scorer.scoreBioactivityConfidence()
+ *
+ * Raw text preserved for V0.4 NLP (not consumed for decisions):
+ *   activity_comment    — ChEMBL curator's textual annotation (reference only)
  */
 export function normalizeActivity(raw, compoundId) {
     if (!raw || !raw.activity_id) return null;
@@ -138,19 +146,29 @@ export function normalizeActivity(raw, compoundId) {
 
     const timestamp = new Date().toISOString();
     const unitInfo = normalizeUnit(raw.standard_units);
+    const activityType = normalizeActivityType(raw.standard_type);
+    const assayType = ASSAY_TYPE_MAP[raw.assay_type] ?? null;
+
+    const measurement = { value, unit: unitInfo.unit, activity_type: activityType };
+    const isActiveResult = deriveIsActive(measurement);
+    const sciweonConfidence = scoreBioactivityConfidence({ ...measurement, assay_type: assayType });
+
     return {
         id: `sciweon::bioactivity::CHEMBL_ACT_${raw.activity_id}`,
         compound_id: compoundId,
         target_id: raw.target_chembl_id ?? 'unknown',
-        activity_type: normalizeActivityType(raw.standard_type),
+        activity_type: activityType,
         value,
         unit: unitInfo.unit,
         unit_raw: unitInfo.unit_raw,
-        is_active: deriveIsActive(raw),
+        is_active: isActiveResult.is_active,
+        is_active_method: isActiveResult.method,
+        sciweon_confidence: sciweonConfidence,
+        // Raw ChEMBL curator commentary preserved as text for V0.4 NLP
+        // (not consumed for any decision logic here).
         activity_comment: raw.activity_comment ?? null,
-        confidence_score: raw.confidence_score ?? null,
         assay_description: raw.assay_description ?? null,
-        assay_type: ASSAY_TYPE_MAP[raw.assay_type] ?? null,
+        assay_type: assayType,
         organism: raw.target_organism ?? null,
         provenance: {
             sources: [{

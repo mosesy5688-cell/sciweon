@@ -27,11 +27,29 @@ export const BIOACTIVITY_SCHEMA = {
     // Agent can fall back to unit_raw for non-standard units.
     unit_raw: { type: 'string', required: false, maxLength: 100 },
 
-    // ─── Quality Flags (Negative Evidence enabler) ───
+    // ─── Quality Flags (Sciweon-computed, NOT consumed from ChEMBL secondary fields) ───
+    // is_active is derived from value + unit + activity_type thresholds, not
+    // from ChEMBL's `activity_comment` text (curator annotation). See
+    // bioactivity-scorer.js and feedback_no_secondary_processed_data.
     is_active: { type: 'boolean', required: false },
-    // Real ChEMBL comments contain detailed methodology — widened from 200 to 4000
+    is_active_method: {
+        type: 'string', required: false,
+        enum: [
+            'concentration_threshold_v1',     // IC50/Ki/EC50/Kd/AC50/IC90/GI50 in nM/uM/mM/M
+            'concentration_inconclusive_v1',  // value in 1-10 uM gray zone
+            'inhibition_threshold_v1',        // inhibition % > 50 or < 20
+            'inhibition_inconclusive_v1',     // inhibition 20-50% gray zone
+            'no_numeric_value',
+            'non_standard_metric',
+        ],
+    },
+    // Sciweon-computed confidence (0-100). ChEMBL's native confidence_score
+    // (0-9) is a curator secondary assessment of target-assay reliability and
+    // is intentionally NOT consumed.
+    sciweon_confidence: { type: 'integer', required: false, min: 0, max: 100 },
+    // Raw ChEMBL curator commentary preserved as TEXT only for V0.4 NLP entry.
+    // No decision logic reads this field.
     activity_comment: { type: 'string', required: false, maxLength: 4000 },
-    confidence_score: { type: 'integer', required: false, min: 0, max: 9 }, // ChEMBL native 0-9
 
     // ─── Assay Context ───
     assay_description: { type: 'string', required: false, maxLength: 4000 },
