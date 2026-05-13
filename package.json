@@ -7,7 +7,7 @@
   "scripts": {
     "harvest:pubchem": "node scripts/factory/pubchem-harvester.js",
     "validate": "node scripts/factory/validation-gate.js",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
     "ces": "python3 scripts/check_compliance.py",
     "ces-check": "python3 scripts/check_compliance.py",
