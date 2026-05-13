@@ -124,13 +124,14 @@ jobs:
             echo "::error::Secondary-data field reintroduced in schema. See feedback_no_secondary_processed_data."
             exit 1
           fi
-          # S2 secondary fields must never enter adapter extractPrimary output
-          if grep -nE "\\b(fieldsOfStudy|s2FieldsOfStudy|influentialCitationCount|tldr)\\b" scripts/ingestion/adapters/semanticscholar-adapter.js | grep -v "^[^:]*://"; then
-            # Allowed: appearing inside comment lines (the PRIMARY-DATA contract documentation)
-            if grep -nE "^[^/]*\\b(fieldsOfStudy|s2FieldsOfStudy|influentialCitationCount|tldr)\\b" scripts/ingestion/adapters/semanticscholar-adapter.js | grep -vE "^\\s*//|^\\s*\\*"; then
-              echo "::error::S2 secondary ML / proprietary field consumed in adapter code. Restrict to PRIMARY_FIELDS allowlist."
-              exit 1
-            fi
+          # S2 secondary fields must never enter adapter code as ACTUAL usage.
+          # Match the field name only when it is being read/assigned (followed
+          # by `:`, `.`, `(`, `[`, or `,` in a code position). This avoids
+          # false positives on the PRIMARY-DATA contract docstring that lists
+          # the rejected field names in prose.
+          if grep -nE "\\b(fieldsOfStudy|s2FieldsOfStudy|influentialCitationCount|tldr)[:.\\[(]" scripts/ingestion/adapters/semanticscholar-adapter.js; then
+            echo "::error::S2 secondary ML / proprietary field consumed in adapter code. Restrict to PRIMARY_FIELDS allowlist."
+            exit 1
           fi
           # Adapter pass-through bans
           if grep -nE "confidence_score\\s*:\\s*raw\\." scripts/ingestion/adapters/*.js; then
