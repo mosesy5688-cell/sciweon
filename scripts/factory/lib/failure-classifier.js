@@ -20,56 +20,106 @@
  */
 
 const RULES = [
-    // SAFETY — adverse events, toxicity
+    // SAFETY — adverse events, toxicity, DSMB safety stop
     { category: 'SAFETY', confidence: 80, patterns: [
         /adverse event/i, /\bSAE\b/, /toxicit/i, /side effect/i,
         /safety concern/i, /safety signal/i, /safety reason/i,
+        /safety issue/i, /\bDSMB\b.*safet/i, /data monitoring.*safet/i,
         /serious.*adverse/i, /unacceptable.*toxicit/i,
         /drug.related.*death/i, /unexpected.*safety/i,
+        /histological findings/i, /precautionary measure/i,
     ]},
 
-    // EFFICACY — futility, lack of efficacy
+    // EFFICACY — futility, lack of efficacy, interim no-difference
     { category: 'EFFICACY', confidence: 80, patterns: [
-        /lack of efficacy/i, /no efficacy/i, /futility/i,
-        /futile/i, /did not (meet|show|demonstrate).*efficacy/i,
+        /lack of efficacy/i, /no efficacy/i, /futility/i, /futile/i,
+        /not effective/i, /did not (meet|show|demonstrate).*efficacy/i,
         /failed to (show|demonstrate)/i, /interim analysis.*futility/i,
         /primary endpoint.*not met/i, /insufficient.*response/i,
+        /interim analysis.*(no difference|no efficacy|study closure)/i,
+        /(treatment|drug|intervention).*not effective/i,
+        /no significant.*(difference|advantage|benefit)/i,
+        /no.*clinical advantage/i, /efficacy of.*rendered.*less relevant/i,
     ]},
 
-    // ENROLLMENT — recruitment failure (not a drug failure)
+    // ENROLLMENT — recruitment / accrual / inclusion failure (not a drug failure)
     { category: 'ENROLLMENT', confidence: 75, patterns: [
         /slow accrual/i, /slow recruit/i, /slow enroll/i,
         /unable to (recruit|enroll)/i, /could not.*recruit/i,
         /poor (accrual|enrollment|recruitment)/i,
         /insufficient.*(enrollment|subjects|patients)/i,
         /no longer.*recruit/i, /accrual.*goal/i,
-        /enrollment.*(stop|halt|slow)/i, /no.*subjects/i,
+        /enrollment.*(stop|halt|slow|low|lagging|delayed|not met)/i,
+        /low (enrollment|recruitment|accrual|inclusion)/i,
+        /lagging enroll/i, /inadequate accrual/i, /no accrual/i,
+        /lack of (accrual|enrol|recruit|inclusion|enroll)/i,
+        /not finding patients/i, /not reaching recruitment/i,
+        /recruitment (difficult|failure|too slow|not.*met|not.*feasible|not.*goal|did not.*meet)/i,
+        /inclusion (rate|difficult)/i, /subjects? did not meet/i,
+        /no enrollment/i, /no participants.*enroll/i, /administratively closed/i,
+        /target enrollment/i, /enroll(ment)? was not met/i,
+        /delayed patient enrollment/i, /abandoned.*accrual/i,
+        /stopped enroll/i, /never (initiated|enrolled)/i,
     ]},
 
     // FUNDING
     { category: 'FUNDING', confidence: 85, patterns: [
-        /no funding/i, /lack of fund/i, /loss of fund/i,
+        /no funding/i, /lack of fund/i, /loss of fund/i, /no.*fund/i,
         /financial reason/i, /financial constraint/i,
         /budget/i, /grant.*(end|expired|denied)/i,
-        /sponsor.*(withdrew|withdrawn).*support/i,
+        /sponsor.*(withdrew|withdrawn).*(support|funding|fund)/i,
+        /(receive|received) (no )?funding/i, /did not receive funding/i,
     ]},
 
-    // LOGISTICS — supply, manufacturing, site
+    // LOGISTICS — supply, manufacturing, site, equipment, personnel
     { category: 'LOGISTICS', confidence: 75, patterns: [
         /shortage.*suppl/i, /supply.*(shortage|issue|problem)/i,
-        /manufactur/i, /drug.*(unavailable|shortage)/i,
-        /site.*(closed|unavailable)/i, /investigator.*(unavailable|left)/i,
+        /manufactur/i, /drug.*(unavailable|shortage|discontinued|expired)/i,
+        /\bIMP expired/i, /(drug|device).*(no longer available|discontinued)/i,
+        /site.*(closed|unavailable)/i, /investigator.*(unavailable|left|moved|leaving|abroad)/i,
         /surgery.*stopped/i, /unable to (obtain|source|produce)/i,
-        /equipment.*(failure|issue)/i, /staff.*(shortage|left|unavailable)/i,
+        /equipment.*(failure|issue|technical|problem)/i,
+        /technical (problem|limit|failure)/i,
+        /staff.*(shortage|left|unavailable|turnover)/i,
+        /personnel.*(lack|left|unavailable)/i,
+        /lack of.*personnel/i, /no clinical investigator/i,
+        /loss of.*team/i, /pharmaceutical company discontinued/i,
+        /infusion set/i,
     ]},
 
-    // BUSINESS — sponsor decision, protocol changes
+    // BUSINESS — sponsor decision, PI change, protocol/strategy change,
+    // administrative withdrawal (non-funding, non-recruitment)
     { category: 'BUSINESS', confidence: 70, patterns: [
-        /sponsor (decision|decided)/i, /business (decision|reason)/i,
-        /strategic (decision|reason)/i, /protocol.*(amendment|modify|modified|change)/i,
+        /sponsor (decision|decided|suspended|withdrew|terminat)/i,
+        /business (decision|reason)/i, /strategic (decision|reason|change)/i,
+        /protocol.*(amendment|modify|modified|change|deviation)/i,
         /several studies.*(at the same time|going on)/i,
-        /administrative (reason|decision)/i, /company.*(decision|decided)/i,
-        /redundant.*stud/i, /superseded/i, /structural change/i,
+        /competing stud/i, /redundant.*stud/i, /superseded/i,
+        /administrative (reason|decision|withdrawal|closed)/i,
+        /\bIRB\b.*(withdrew|reviewing|hold|on hold)/i,
+        /company.*(decision|decided|discontinued)/i,
+        /structural change/i, /change in clinical strategy/i,
+        /\bPI\b.*(left|leaving|change|moved|withdrew|no longer|not at|abroad|graduation|medical leave)/i,
+        /principal investigator.*(left|leaving|change|move|withdrew|disagree)/i,
+        /investigator (moved|left|leaving|changed)/i,
+        /sponsor.*did not reach.*agreement/i,
+        /(study|research) (cancelled|cancelled|abandoned|never initiated)/i,
+        /study plan was changed/i, /not feasible/i,
+        /study determined.*not.*feasible/i, /no progress/i,
+        /agreed with the sponsor/i, /BARDA decision/i,
+        /(terminate|terminated) contract/i, /development terminated/i,
+        /research(ers)?.*(finished|unable to continue|left)/i,
+        /staff turnover/i, /prohibitively expensive/i,
+    ]},
+
+    // REGULATORY — ethics / IRB / EC approval issues
+    { category: 'REGULATORY', confidence: 80, patterns: [
+        /(IRB|EC|ethics|ethical).*(reject|denied|approval|approve|issue|review|hold|committee)/i,
+        /not approved by (IRB|EC|ethics)/i,
+        /(rejected|denied|withdrew|withdrawn).*(IRB|ethics|ethical|EC)/i,
+        /no (IRB|EC|ethics|ethical) approval/i,
+        /(IRB|ethics committee|ethics).*decision/i,
+        /ethical (issue|concern|reason)/i,
     ]},
 
     // COVID

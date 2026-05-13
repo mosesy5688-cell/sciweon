@@ -198,8 +198,10 @@ function runScenario(scenario, indices, data) {
                     findings.evidence.max_phase = compound.drug_status.max_phase;
                 break;
             case 'first_approval_year':
-                if (compound.drug_status?.first_approval_year == null && compound.drug_status?.max_phase >= 3)
-                    findings.gaps.push('Drug is Phase 3+ but missing first_approval_year');
+                // first_approval_year is a primary fact only for APPROVED drugs (max_phase = 4).
+                // Phase 1-3 drugs are still in trials and legitimately have no approval year.
+                if (compound.drug_status?.first_approval_year == null && compound.drug_status?.max_phase === 4)
+                    findings.gaps.push('Approved drug (max_phase=4) but missing first_approval_year');
                 break;
             case 'withdrawn_status':
                 if (compound.drug_status?.withdrawn == null)
@@ -254,9 +256,15 @@ function runScenario(scenario, indices, data) {
                 const ts = (indices.trialsByCompound.get(compound.id) || []).map(id => indices.trialById.get(id)).filter(Boolean);
                 if (ts.length === 0) break;
                 if (expect === 'phase_distribution') {
-                    const phases = ts.filter(t => t.phase != null).length;
-                    if (phases / ts.length < 0.5)
-                        findings.gaps.push(`Only ${phases}/${ts.length} trials have phase info`);
+                    // Phase only applies to drug-type trials (CT.gov data model).
+                    // PROCEDURE/DEVICE/DIAGNOSTIC/OTHER trials legitimately have no phase.
+                    const drugTypes = new Set(['DRUG', 'BIOLOGICAL', 'COMBINATION_PRODUCT']);
+                    const drugTrials = ts.filter(t => (t.interventions || []).some(i => drugTypes.has(i.type)));
+                    if (drugTrials.length === 0) break;
+                    const phases = drugTrials.filter(t => t.phase != null).length;
+                    findings.evidence.phase_distribution = { drug_trials: drugTrials.length, with_phase: phases };
+                    if (phases / drugTrials.length < 0.5)
+                        findings.gaps.push(`Only ${phases}/${drugTrials.length} drug trials have phase info`);
                 }
                 if (expect === 'completed_vs_terminated') {
                     const terminated = ts.filter(t => t.is_negative_outcome).length;
