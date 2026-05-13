@@ -97,10 +97,16 @@ export async function fetchByPmidBatch(pmids) {
 }
 
 function extractAuthors(raw) {
+    // PRIMARY-DATA contract: keep the paper's own byline + affiliation text.
+    // OpenAlex's normalized author.display_name and institution.display_name
+    // are secondary entity-resolution outputs — NOT consumed here.
+    // See feedback_no_secondary_processed_data.
     const authorships = raw.authorships ?? [];
     return authorships.slice(0, 1000).map(a => ({
-        name: a.author?.display_name ?? a.raw_author_name ?? '',
-        institutions: (a.institutions ?? []).slice(0, 20).map(i => i.display_name).filter(Boolean),
+        // raw_author_name = paper byline string; display_name only as fallback
+        // when raw is absent (rare; ensures the entity is still listable).
+        name: a.raw_author_name ?? a.author?.display_name ?? '',
+        raw_affiliations: (a.raw_affiliation_strings ?? []).slice(0, 20).filter(Boolean),
     })).filter(a => a.name);
 }
 

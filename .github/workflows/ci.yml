@@ -119,14 +119,26 @@ jobs:
         # retraction_doi, etc.), but the upstream secondary names stay out.
         run: |
           set -e
-          deny="concepts|fields_of_study|retraction_reason|retraction_reason_categories|confidence_score"
+          deny="concepts|fields_of_study|retraction_reason|retraction_reason_categories|confidence_score|institutions"
           if grep -nE "(${deny})\\s*:" src/lib/schemas/*.js; then
             echo "::error::Secondary-data field reintroduced in schema. See feedback_no_secondary_processed_data."
             exit 1
           fi
-          # Also forbid consuming ChEMBL native confidence_score in adapters
+          # Adapter pass-through bans
           if grep -nE "confidence_score\\s*:\\s*raw\\." scripts/ingestion/adapters/*.js; then
             echo "::error::ChEMBL native confidence_score must not be passed through. Use bioactivity-scorer.js."
+            exit 1
+          fi
+          if grep -nE "\\.author\\?\\.display_name" scripts/ingestion/adapters/openalex-adapter.js; then
+            # Allowed only as the SECOND operand of a nullish coalescing fallback
+            # for raw_author_name. Forbid using it as primary (first operand).
+            if grep -nE "^[^/]*name:\\s*[a-zA-Z]+\\.author\\?\\.display_name" scripts/ingestion/adapters/openalex-adapter.js; then
+              echo "::error::OpenAlex display_name must not be the primary author name. Use raw_author_name."
+              exit 1
+            fi
+          fi
+          if grep -nE "\\.institutions[^\\w].*\\.display_name" scripts/ingestion/adapters/openalex-adapter.js; then
+            echo "::error::OpenAlex institution.display_name (entity-resolved) must not be consumed. Use raw_affiliation_strings."
             exit 1
           fi
           echo "Primary-data invariant holds."

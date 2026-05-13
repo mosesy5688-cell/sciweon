@@ -26,12 +26,21 @@ export const PAPER_SCHEMA = {
     publication_date: { type: 'string', required: false, format: 'iso8601_date' },
     publication_year: { type: 'integer', required: false, min: 1800, max: 2100 },
 
-    // ─── Authors ───
+    // ─── Authors (PRIMARY ONLY — V0.1 contract) ───
+    // name: raw_author_name from OpenAlex (paper's original byline string).
+    //   OpenAlex's canonicalized `author.display_name` (Author-entity dedup
+    //   product, secondary) is intentionally NOT consumed. Fallback only
+    //   when raw is missing.
+    // raw_affiliations: raw_affiliation_strings array (the paper's original
+    //   affiliation block text per author). OpenAlex's institution.display_name
+    //   (ROR-mapped, entity-resolved, secondary) is intentionally NOT consumed.
+    //   V0.4 may add `resolved_institutions` as a separate Sciweon-computed
+    //   field with explicit provenance.
     authors: {
         type: 'array', required: false, maxItems: 1000,
         itemShape: {
             name: { type: 'string', required: true, maxLength: 500 },
-            institutions: { type: 'array', required: false, itemType: 'string', maxItems: 20 },
+            raw_affiliations: { type: 'array', required: false, itemType: 'string', maxItems: 20 },
         },
     },
 
