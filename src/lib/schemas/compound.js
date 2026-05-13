@@ -11,6 +11,24 @@ export const COMPOUND_SCHEMA = {
     pubchem_cid: { type: 'number', required: false, min: 1 },
     chembl_id: { type: 'string', required: false, pattern: /^CHEMBL\d+$/ },
     inchi_key: { type: 'string', required: true, pattern: /^[A-Z]{14}-[A-Z]{10}-[A-Z]$/ },
+    // ─── External canonical IDs (V0.3.2 UniChem + V0.3.3 RxNorm) ───
+    // International authority IDs sourced via UniChem (EMBL-EBI structural
+    // cross-reference) + NLM RxNav. UniChem maps InChIKey -> canonical IDs
+    // across major chemical DBs in one call; RxNorm maps UNII -> RXCUI.
+    external_ids: {
+        type: 'object', required: false,
+        shape: {
+            unii: { type: 'string', required: false, pattern: /^[A-Z0-9]{10}$/ },
+            drugbank_id: { type: 'string', required: false, pattern: /^DB\d{5}$/ },
+            chebi_id: { type: 'string', required: false, pattern: /^CHEBI:\d+$/ },
+            kegg_drug_id: { type: 'string', required: false },
+            hmdb_id: { type: 'string', required: false, pattern: /^HMDB\d+$/ },
+            rxcui: { type: 'string', required: false, pattern: /^\d+$/ },
+            rxnorm_name: { type: 'string', required: false, maxLength: 500 },
+            rxnorm_tty: { type: 'string', required: false, maxLength: 20 },
+            sources: { type: 'array', required: false, itemType: 'string', maxItems: 5 },
+        },
+    },
 
     // ─── Structure ───
     smiles_canonical: { type: 'string', required: true, maxLength: 4000 },
