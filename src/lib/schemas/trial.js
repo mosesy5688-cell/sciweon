@@ -77,6 +77,36 @@ export const TRIAL_SCHEMA = {
     // ─── Sponsor ───
     sponsor: { type: 'string', required: false, maxLength: 500 },
 
+    // ─── Trial Results Section (V0.3.5 — Agent need #1) ───
+    // Signal-level summary of ResultsSection; not raw measurement data.
+    // Agent uses has_results + primary_outcomes + enrollment to decide:
+    //   "did this drug work in trial?" / "was it adequately powered?"
+    // Raw outcome_measures.classes.measurements stay in CT.gov — Sciweon does
+    // not duplicate; Agent can fetch CT.gov directly when full detail needed.
+    results: {
+        type: 'object', required: false,
+        shape: {
+            has_results: { type: 'boolean', required: false },
+            primary_outcomes: {
+                type: 'array', required: false, maxItems: 20,
+                itemShape: {
+                    title: { type: 'string', required: false, maxLength: 500 },
+                    type: { type: 'string', required: false, maxLength: 50 },
+                    time_frame: { type: 'string', required: false, maxLength: 200 },
+                    param_type: { type: 'string', required: false, maxLength: 50 },
+                    group_count: { type: 'integer', required: false, min: 0 },
+                    has_analyses: { type: 'boolean', required: false },
+                },
+            },
+            secondary_outcomes_count: { type: 'integer', required: false, min: 0 },
+            enrollment_actual: { type: 'integer', required: false, min: 0 },
+            // Counts only; V0.4 NegEvidence Cat E will store individual AE records.
+            serious_events_count: { type: 'integer', required: false, min: 0 },
+            other_events_count: { type: 'integer', required: false, min: 0 },
+            results_extracted_at: { type: 'string', required: false, format: 'iso8601' },
+        },
+    },
+
     // ─── Paper Cross-Link (CT.gov referencesModule) ───
     // Bidirectional link: trial → papers it cites; combined with paper.mentioned_trial_ids
     // for full provenance chain. Type per CT.gov: BACKGROUND / RESULT / DERIVED.

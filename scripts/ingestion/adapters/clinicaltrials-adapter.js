@@ -28,6 +28,78 @@ async function fetchJson(url) {
 }
 
 /**
+ * Fetch a single trial's results section by NCT ID. Returns only the
+ * Sciweon-relevant subset (signal-level, not raw measurement data).
+ *
+ * V0.3.5 P0 — Agent needs to know "this trial completed AND we know
+ * the outcomes" not just "this trial exists". Without results, Agent
+ * cannot answer "did this drug work in trials?"
+ *
+ * Field strategy:
+ *   - has_results: top-level boolean (most Agent queries gate on this)
+ *   - primary_outcomes: titles + analyses-presence (decision navigation)
+ *   - secondary_outcomes_count: integer (depth indicator)
+ *   - enrollment_actual: integer (from participantFlow)
+ *   - serious_events_count + other_events_count: integers
+ *     (V0.4 NegEvidence Cat E full AE detail; here just counts)
+ *
+ * NOT consumed (Sciweon does not duplicate raw CT.gov measurement data):
+ *   - outcome_measures[].classes[].categories[].measurements[] (raw values)
+ *   - adverseEvents seriousEvents[] (individual records — V0.4 NegEvidence)
+ *   - baselineCharacteristicsModule (aggregate population stats)
+ */
+export async function fetchResultsByNctId(nctId) {
+    if (!nctId) return null;
+    try {
+        const url = `${CT_BASE}/${encodeURIComponent(nctId)}?format=json`;
+        const data = await fetchJson(url);
+        if (!data) return null;
+        return extractResultsSignals(data);
+    } catch (e) {
+        console.warn(`[CT] results ${nctId}: ${e.message}`);
+        return null;
+    }
+}
+
+function extractResultsSignals(raw) {
+    const hasResults = raw.hasResults === true;
+    const rs = raw.resultsSection ?? {};
+    const om = rs.outcomeMeasuresModule?.outcomeMeasures ?? [];
+    const primary = om.filter(o => o.type === 'PRIMARY').map(o => ({
+        title: (o.title ?? '').slice(0, 500),
+        type: o.type,
+        time_frame: (o.timeFrame ?? '').slice(0, 200),
+        param_type: o.paramType ?? null,
+        group_count: Array.isArray(o.groups) ? o.groups.length : 0,
+        has_analyses: Array.isArray(o.analyses) && o.analyses.length > 0,
+    }));
+    const secondaryCount = om.filter(o =>
+        o.type === 'SECONDARY' || o.type === 'OTHER_PRE_SPECIFIED' || o.type === 'POST_HOC').length;
+    const pf = rs.participantFlowModule;
+    let enrollmentActual = null;
+    if (pf?.periods?.[0]?.milestones) {
+        const started = pf.periods[0].milestones.find(m => m.type === 'STARTED');
+        if (started) {
+            const total = (started.achievements ?? []).reduce(
+                (s, a) => s + (typeof a.numSubjects === 'string' ? parseInt(a.numSubjects, 10) || 0 : (a.numSubjects ?? 0)),
+                0,
+            );
+            if (total > 0) enrollmentActual = total;
+        }
+    }
+    const ae = rs.adverseEventsModule;
+    return {
+        has_results: hasResults,
+        primary_outcomes: primary,
+        secondary_outcomes_count: secondaryCount,
+        enrollment_actual: enrollmentActual,
+        serious_events_count: ae?.seriousEvents?.length ?? 0,
+        other_events_count: ae?.otherEvents?.length ?? 0,
+        results_extracted_at: new Date().toISOString(),
+    };
+}
+
+/**
  * Search trials by intervention name.
  * Returns up to 100 trial records.
  */
