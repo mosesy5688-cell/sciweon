@@ -19,6 +19,8 @@ export const PAPER_SCHEMA = {
     openalex_id: { type: 'string', required: false, pattern: /^W\d+$/ },
     s2_paper_id: { type: 'string', required: false, maxLength: 100 },
     pmid: { type: 'string', required: false, pattern: /^\d+$/ },
+    // PubMed Central ID — NIH-hosted open access archive identifier.
+    pmcid: { type: 'string', required: false, pattern: /^PMC\d+$/ },
     // ArXiv ID format: NNNN.NNNNN (new) or category/NNNNNNN (legacy).
     arxiv_id: { type: 'string', required: false, maxLength: 30 },
 
@@ -63,7 +65,10 @@ export const PAPER_SCHEMA = {
         type: 'string', required: false,
         enum: ['Retraction', 'Correction', 'Expression of concern', 'Reinstatement', 'Withdrawal', null],
     },
-    retraction_source: { type: 'string', required: false, enum: ['crossref_retraction_watch', 'openalex', null] },
+    retraction_source: {
+        type: 'string', required: false,
+        enum: ['crossref_retraction_watch', 'openalex', 'pubmed', 'multi_source_consensus', null],
+    },
 
     // ─── Topical Classification ───
     // V0.1 contract: only NIH MEDLINE MeSH terms (primary, human-curated).
@@ -94,7 +99,7 @@ export const PAPER_SCHEMA = {
             sources: {
                 type: 'array', required: true, minItems: 1,
                 itemShape: {
-                    source: { type: 'string', enum: ['openalex', 's2', 'semantic_scholar'] },
+                    source: { type: 'string', enum: ['openalex', 's2', 'semantic_scholar', 'pubmed'] },
                     source_id: { type: 'string', required: true },
                     timestamp: { type: 'string', format: 'iso8601' },
                     extraction_method: { type: 'string', required: true },

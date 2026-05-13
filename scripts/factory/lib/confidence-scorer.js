@@ -20,6 +20,7 @@ const SOURCE_WEIGHTS = {
     openalex: 5,
     s2: 5,
     semantic_scholar: 5, // alias for s2 — both names accepted in provenance.sources
+    pubmed: 7,           // NIH NCBI authoritative biomedical index (highest weight after PubChem/ChEMBL gov sources)
 };
 
 export function scoreDataPoint(sources, options = {}) {
