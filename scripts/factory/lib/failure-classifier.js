@@ -135,7 +135,7 @@ const RULES = [
 export function classifyFailure(text) {
     if (!text || typeof text !== 'string' || text.trim().length === 0) {
         return {
-            category: 'UNKNOWN',
+            category: 'OTHER',
             confidence: 0,
             matched_patterns: [],
             source: 'v0.1_keyword_classifier',
@@ -155,7 +155,7 @@ export function classifyFailure(text) {
 
     if (matches.length === 0) {
         return {
-            category: 'UNKNOWN',
+            category: 'OTHER',
             confidence: 30, // low: text exists but no rule matched (V0.4 NLP will improve)
             matched_patterns: [],
             source: 'v0.1_keyword_classifier',

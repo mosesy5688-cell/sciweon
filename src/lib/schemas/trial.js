@@ -16,11 +16,15 @@ export const TRIAL_SCHEMA = {
     nct_id: { type: 'string', required: true, pattern: /^NCT\d{8}$/ },
 
     // ─── Status (CRITICAL for Negative Evidence) ───
+    // Full CT.gov v2 API overallStatus value set (per official spec):
+    // https://clinicaltrials.gov/data-api/about-api/study-data-structure#overallStatusEnum
     status: {
         type: 'string', required: true,
         enum: [
             'RECRUITING', 'ACTIVE_NOT_RECRUITING', 'NOT_YET_RECRUITING', 'ENROLLING_BY_INVITATION',
-            'COMPLETED', 'TERMINATED', 'WITHDRAWN', 'SUSPENDED', 'UNKNOWN', 'OTHER',
+            'COMPLETED', 'TERMINATED', 'WITHDRAWN', 'SUSPENDED', 'UNKNOWN',
+            'APPROVED_FOR_MARKETING', 'AVAILABLE', 'NO_LONGER_AVAILABLE',
+            'TEMPORARILY_NOT_AVAILABLE', 'WITHHELD', 'OTHER',
         ],
     },
     status_reason: { type: 'string', required: false, maxLength: 4000 },

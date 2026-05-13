@@ -299,7 +299,7 @@ function runScenario(scenario, indices, data) {
                 if (classified.length === 0) {
                     findings.gaps.push('Failure reasons are raw text only — no SAFETY/EFFICACY/ENROLLMENT classification');
                 } else {
-                    const known = classified.filter(n => n.failure_classification.category !== 'UNKNOWN' && n.failure_classification.confidence >= 50);
+                    const known = classified.filter(n => n.failure_classification.category !== 'OTHER' && n.failure_classification.confidence >= 50);
                     const knownPct = (100 * known.length / negs.length).toFixed(1);
                     findings.evidence.failure_classification = {
                         total: negs.length,
