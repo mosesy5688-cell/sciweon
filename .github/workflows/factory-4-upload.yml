@@ -1,0 +1,53 @@
+name: Factory 4/4 Upload
+
+# Stage 4 of 4: download aggregated from R2, integrity-check, build dated
+# snapshot, upload to R2 snapshots/<date>/, update latest pointer.
+
+on:
+  workflow_run:
+    workflows: ['Factory 3/4 Aggregate']
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: factory-pipeline
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  stage-4-upload:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+      - name: Run stage 4
+        run: node scripts/factory/stage-4-upload.js
+      - name: Upload stage-4 log artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage-4-upload-log
+          path: |
+            snapshots/*/manifest.json
+            output/linked/*.jsonl
+          retention-days: 30
+          if-no-files-found: warn

@@ -44,6 +44,11 @@ const SNAPSHOT_FILES = [
     'neg-evidence.jsonl',
 ];
 
+// V0.5.x: refuse to publish a snapshot without these files. Prevents the
+// empty-snapshot regression where snapshot-uploader pushed a manifest with
+// no data, overwriting the R2 latest pointer to point at nothing.
+const REQUIRED_FILES = ['compounds-enriched.jsonl'];
+
 function sha256(buf) {
     return createHash('sha256').update(buf).digest('hex');
 }
@@ -77,7 +82,11 @@ async function main() {
     for (const fname of SNAPSHOT_FILES) {
         const sourcePath = path.join(SOURCE_DIR, fname);
         const raw = await readIfExists(sourcePath);
-        if (!raw) {
+        if (!raw || raw.length === 0) {
+            if (REQUIRED_FILES.includes(fname)) {
+                console.error(`[SNAPSHOT-BUILDER] Required file ${fname} missing or empty. Refusing to publish empty snapshot.`);
+                process.exit(1);
+            }
             console.log(`  ${fname.padEnd(35)} (absent, skip)`);
             continue;
         }

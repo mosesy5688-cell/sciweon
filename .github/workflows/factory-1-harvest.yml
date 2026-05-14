@@ -1,11 +1,10 @@
-name: Factory Harvest
+name: Factory 1/4 Harvest
 
-# 8-phase pipeline: harvest new compound CID range -> enrich -> link ->
-# validate -> snapshot -> upload to R2 -> advance cursor.
+# Stage 1 of 4: incremental harvest from upstream, cross-source linking,
+# upload raw + baseline to R2. Triggers stage 2 on success.
 #
-# Cron is Mon + Thu at 02:00 UTC. With --limit=5000 per run, this adds
-# ~40K compounds/month. Cursor in R2 (state/harvest-cursor.json) ensures
-# each run picks up where the previous one stopped - no duplicate fetch.
+# Cron Mon + Thu 02:00 UTC. Cursor in R2 (state/harvest-cursor.json)
+# tracks next CID; never duplicates fetched range.
 
 on:
   schedule:
@@ -22,16 +21,16 @@ on:
         default: '5000'
 
 concurrency:
-  group: factory-harvest
+  group: factory-pipeline
   cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
-  harvest:
+  stage-1-harvest:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       HARVEST_LIMIT: ${{ github.event.inputs.limit || '5000' }}
       MANUAL_START_CID: ${{ github.event.inputs.manual_start_cid || '0' }}
@@ -39,16 +38,12 @@ jobs:
       R2_BUCKET: ${{ secrets.R2_BUCKET }}
       R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-      S2_API_KEY: ${{ secrets.S2_API_KEY }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: 'npm'
-
       - name: Install dependencies
         run: |
           if [ -f package-lock.json ]; then
@@ -56,16 +51,15 @@ jobs:
           else
             npm install
           fi
-
-      - name: Run factory pipeline
-        run: npm run harvest
-
-      - name: Upload orchestrator report as artifact
+      - name: Run stage 1
+        run: node scripts/factory/stage-1-harvest.js
+      - name: Upload stage-1 log artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: orchestrator-result
+          name: stage-1-harvest-log
           path: |
-            output/orchestrator-result.json
-            output/harvest-*.log
-          retention-days: 30
+            output/compounds/*.jsonl
+            output/linked/*.jsonl
+          retention-days: 7
+          if-no-files-found: warn
