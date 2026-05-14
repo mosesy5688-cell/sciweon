@@ -1,0 +1,79 @@
+name: Source Health
+
+# Daily health check of every data source attribution in the entity graph.
+# Pulls the most recent snapshot from R2, scans provenance.sources[] across
+# all entities, and uploads a dated report back to R2 for trend audits.
+#
+# Cron is 30 minutes after Daily Snapshot so the freshly-uploaded snapshot
+# is in R2 when this job picks it up.
+
+on:
+  schedule:
+    - cron: '30 0 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: source-health
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Download latest snapshot from R2
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: node scripts/factory/snapshot-downloader.js
+
+      - name: Run source health monitor
+        id: health
+        continue-on-error: true
+        run: npm run health
+
+      - name: Upload health report to R2
+        if: always()
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: node scripts/factory/health-report-uploader.js
+
+      - name: Upload report as workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-health-report
+          path: output/source-health.json
+          retention-days: 30
+
+      - name: Surface health status to workflow result
+        if: always()
+        run: |
+          if [ "${{ steps.health.outcome }}" = "failure" ]; then
+            echo "::error::Source health check reported STALE or CRITICAL sources. See logs for the report."
+            exit 1
+          fi
