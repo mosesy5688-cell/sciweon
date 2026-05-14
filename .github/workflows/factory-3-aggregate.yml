@@ -1,0 +1,53 @@
+name: Factory 3/4 Aggregate
+
+# Stage 3 of 4: download enriched from R2, run trial / paper / cross-link /
+# neg-evidence aggregation, upload aggregated bundle to R2. Triggers stage 4
+# only on Stage 2 success.
+
+on:
+  workflow_run:
+    workflows: ['Factory 2/4 Process']
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: factory-pipeline
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  stage-3-aggregate:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      S2_API_KEY: ${{ secrets.S2_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+      - name: Run stage 3
+        run: node scripts/factory/stage-3-aggregate.js
+      - name: Upload stage-3 log artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage-3-aggregate-log
+          path: output/linked/*.jsonl
+          retention-days: 7
+          if-no-files-found: warn
