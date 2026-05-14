@@ -1,0 +1,164 @@
+---
+const title = 'Sciweon - Data Infrastructure for AI Agents';
+const description = 'Cross-domain structured intelligence for AI agents - drug discovery and AI tooling. Built so agents get facts, not guesses.';
+const canonical = 'https://sciweon.com/';
+---
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0a0a0a" />
+  <title>{title}</title>
+  <meta name="description" content={description} />
+  <link rel="canonical" href={canonical} />
+  <meta property="og:title" content={title} />
+  <meta property="og:description" content="Structured, agent-ready data across scientific domains and AI tooling." />
+  <meta property="og:url" content={canonical} />
+  <meta property="og:type" content="website" />
+  <meta name="twitter:card" content="summary" />
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Sciweon</h1>
+      <p class="tagline">Data infrastructure for AI agents</p>
+      <p class="lede">Structured, agent-ready data across scientific domains and AI tooling. Agents get cross-source facts, provenance, and quantified confidence - not guesses.</p>
+    </header>
+    <section>
+      <h2>Domains</h2>
+      <div class="domains">
+        <article class="domain">
+          <h3>Drug Discovery <span class="badge badge-alpha">Alpha</span></h3>
+          <p>Compounds, bioactivity, clinical trials, regulatory signals, and prior-failure records. For agents doing virtual lab work before any wet experiment.</p>
+          <a class="link" href="mailto:hello@sciweon.com">Request access</a>
+        </article>
+        <article class="domain">
+          <h3>AI Tools <span class="badge badge-live">Live</span></h3>
+          <p>Cross-platform AI model and dataset selection. Agents query a single ranked API instead of crawling separate registries.</p>
+          <a class="link" href="https://free2aitools.com" target="_blank" rel="noopener">free2aitools.com -&gt;</a>
+        </article>
+      </div>
+    </section>
+    <section>
+      <h2>Design principles</h2>
+      <ul class="principles">
+        <li><strong>Agent-first</strong> Designed for machines to consume directly. No human search-UX overhead in the data layer.</li>
+        <li><strong>Cross-source</strong> Same fact verified across independent providers. Disagreement is captured, not hidden.</li>
+        <li><strong>Provenance</strong> Every value carries its source, timestamp, and extraction method. Auditable end to end.</li>
+        <li><strong>Confidence quantified</strong> Single-source values capped. Multi-source consensus boosts confidence. Agents see the score.</li>
+        <li><strong>Negative evidence</strong> Failed trials, retractions, withdrawn drugs, post-market signals - collected as first-class data.</li>
+        <li><strong>Daily-updated</strong> Continuously refreshed. Historical versions retained so agents can reason over time, not just snapshots.</li>
+      </ul>
+    </section>
+    <section>
+      <h2>For AI agents</h2>
+      <p>Sciweon is not a search engine for humans. The intended user is an AI agent doing real research work - selecting compound leads, scoring trial designs, avoiding prior-failure repeats, choosing the right model for a domain task.</p>
+      <p>API and MCP server are in private alpha. Public access targeting Q3 2026. To get on the alpha list: <a href="mailto:hello@sciweon.com">hello@sciweon.com</a></p>
+    </section>
+  </main>
+  <footer>
+    Sciweon - Data infrastructure for AI agents.<br />
+    Drug Discovery alpha live. Public API targeting Q3 2026.
+  </footer>
+</body>
+</html>
+
+<style is:global>
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: #0a0a0a;
+    color: #e0e0e0;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    line-height: 1.6;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  main {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 4rem 1.5rem 5rem;
+    flex: 1 0 auto;
+    width: 100%;
+  }
+  header { margin-bottom: 3rem; }
+  h1 { font-size: 2.5rem; margin: 0 0 0.5rem; letter-spacing: -0.02em; color: #fff; }
+  .tagline { font-size: 1.1rem; color: #8b8b8b; margin: 0 0 1.5rem; }
+  .lede { font-size: 1.15rem; color: #c8c8c8; max-width: 640px; margin: 0; }
+  section { margin-top: 3rem; }
+  h2 {
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: #6b8aff;
+    margin: 0 0 1.25rem;
+    font-weight: 600;
+  }
+  p { margin: 0 0 1rem; }
+  .domains {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 1rem;
+  }
+  .domain {
+    background: #111;
+    border: 1px solid #1f1f1f;
+    border-radius: 6px;
+    padding: 1.25rem 1.25rem 1.5rem;
+    display: flex;
+    flex-direction: column;
+  }
+  .domain h3 {
+    margin: 0 0 0.5rem;
+    font-size: 1rem;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .badge {
+    font-size: 0.7rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 3px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .badge-live { background: #0f3a1f; color: #4ade80; }
+  .badge-alpha { background: #3a2c0f; color: #fbbf24; }
+  .badge-planned { background: #2a2a2a; color: #888; }
+  .domain p { color: #a0a0a0; font-size: 0.92rem; margin: 0 0 0.75rem; flex: 1; }
+  .domain .link { color: #6b8aff; font-size: 0.88rem; text-decoration: none; }
+  .domain .link:hover { text-decoration: underline; }
+  .principles { list-style: none; padding: 0; margin: 0; }
+  .principles li {
+    padding: 0.6rem 0;
+    border-bottom: 1px solid #1f1f1f;
+    color: #c8c8c8;
+    font-size: 0.95rem;
+  }
+  .principles li:last-child { border-bottom: none; }
+  .principles strong {
+    color: #6b8aff;
+    font-weight: 600;
+    display: inline-block;
+    min-width: 9rem;
+  }
+  a { color: #6b8aff; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  footer {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+    border-top: 1px solid #1f1f1f;
+    color: #555;
+    font-size: 0.85rem;
+    text-align: center;
+  }
+  @media (max-width: 540px) {
+    h1 { font-size: 1.85rem; }
+    main { padding: 2.5rem 1.25rem 4rem; }
+  }
+</style>
