@@ -1,50 +1,35 @@
-# Sciweon — AI-Driven Scientific Discovery
+# Sciweon
 
-**"Where AI Agents Do Science"**
-**"Sci. We. On."** — Science. We. On it.
+**Data infrastructure for AI agents.**
 
-Sciweon is the data foundation for AI agents doing scientific discovery. We aggregate, validate, and serve cross-database scientific data designed for AI Agent consumption — not human browsing.
+Cross-domain structured intelligence so AI agents get cross-source facts, provenance, and quantified confidence — not guesses.
 
-## Status
+Landing: [sciweon.com](https://sciweon.com)
 
-🟢 Phase 1 — V0.1a in development (architecture + PubChem adapter + 1000 compound validation)
+## Domains
 
-## Vertical Products
+| Domain | Status | Notes |
+|--------|--------|-------|
+| Drug Discovery | Alpha | Compound / bioactivity / clinical trial / regulatory data |
+| AI Tools | Live | [free2aitools.com](https://free2aitools.com) — model and dataset selection |
 
-| Product | Status | Headline |
-|---------|--------|----------|
-| **Sciweon Drug** | V0.1 active | "AI-Driven Drug Discovery" — PubChem + ChEMBL + ClinicalTrials.gov + Papers |
-| Sciweon Material | V0.5+ planned | "AI-Driven Materials Discovery" |
-| Sciweon Bio | V0.7+ planned | "AI-Driven Biotechnology Research" |
+## For AI agents
 
-## First Principles (Constitutional)
+API and MCP server are in private alpha. Public access targeting Q3 2026.
+Request alpha access: [hello@sciweon.com](mailto:hello@sciweon.com)
 
-1. **AI Agent is the direct user, not humans.** API + MCP server are the only deliverables for V0.1-0.4. No interactive UI.
-2. **Data quality is the lifeline.** All data must be safe for AI Agent consumption. 6 quality principles enforced via Validation Gate.
+## First principles
 
-See `docs/PRINCIPLES.md` for detail.
-
-## Architecture
-
-- Pipeline (1/4 → 4/4 daily cron) for batch ingestion
-- Strict schema with type + unit + range validation
-- Provenance Graph (every datapoint traceable)
-- Confidence Scoring (cross-source consensus)
-- Negative Evidence DB (V0.4+ moat)
-- MCP + API delivery layer
+1. **Agent-first.** Designed for machines to consume directly. No human-search overhead in the data layer.
+2. **Data quality is the lifeline.** Six enforced quality rules: machine-readable types + validation + explicit gaps + provenance + quantified confidence + negative evidence.
 
 ## Development
 
 ```bash
 npm install
-npm run build
 npm test
 ```
 
 ## License
 
-MIT (data follows source licenses: CC0 / Public Domain / CC BY)
-
----
-
-Built on architecture validated by [Free2AITools](https://github.com/mosesy5688-cell/ai-nexus) (AI/ML data pipeline, 500K+ entities).
+MIT. Data follows source licenses (CC0 / Public Domain / CC BY).

@@ -1,0 +1,6 @@
+/*
+  Cache-Control: public, max-age=300, s-maxage=3600, stale-while-revalidate=604800
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: interest-cohort=()
