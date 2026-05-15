@@ -38,24 +38,6 @@ function runScript(name) {
     });
 }
 
-async function runParallel(label, tasks) {
-    console.log(`\n[STAGE-2] === ${label} (${tasks.length}-way parallel) ===`);
-    const settled = await Promise.allSettled(tasks.map(t => t.fn()));
-    const summaries = settled.map((r, i) => ({
-        task: tasks[i].name,
-        ok: r.status === 'fulfilled',
-        error: r.status === 'rejected' ? r.reason?.message : null,
-    }));
-    const failed = summaries.filter(s => !s.ok);
-    if (failed.length > 0) {
-        console.warn(`[STAGE-2] ${label}: ${failed.length}/${tasks.length} failed`);
-        for (const f of failed) console.warn(`  - ${f.task}: ${f.error}`);
-    } else {
-        console.log(`[STAGE-2] ${label}: all ${tasks.length} OK`);
-    }
-    return summaries;
-}
-
 async function runSequential(label, tasks) {
     console.log(`\n[STAGE-2] === ${label} (sequential, ${tasks.length} steps) ===`);
     const summaries = [];
