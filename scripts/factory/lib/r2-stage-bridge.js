@@ -86,6 +86,7 @@ export async function downloadStage(stage, files) {
     await fs.mkdir(LINKED_DIR, { recursive: true });
     let count = 0;
     let bytes = 0;
+    const missing = [];
     for (const fname of files) {
         const key = `processed/${stage}/${pointer.run_id}/${fname}`;
         try {
@@ -95,10 +96,20 @@ export async function downloadStage(stage, files) {
             count++;
         } catch (err) {
             if (err.name === 'NoSuchKey' || err.$metadata?.httpStatusCode === 404) {
+                // V0.5.x policy (2026-05-15): missing required file in a published
+                // stage bundle is a hard error, not a soft skip. Producers write all
+                // declared outputs unconditionally (empty array => zero-byte file).
+                // A NoSuchKey here means the previous stage either crashed silently
+                // or the latest.json pointer was advanced over an incomplete bundle.
+                // Refuse to proceed with partial data.
+                missing.push(fname);
                 continue;
             }
             throw err;
         }
+    }
+    if (missing.length > 0) {
+        throw new Error(`[BRIDGE] downloadStage(${stage}/${pointer.run_id}) aborted — ${missing.length}/${files.length} required files missing from R2: ${missing.join(', ')}. Refusing to proceed on partial input.`);
     }
     console.log(`[BRIDGE] Downloaded ${count} files (${(bytes / 1024).toFixed(1)} KB) from processed/${stage}/${pointer.run_id}/`);
     return { runId: pointer.run_id, files: count };
@@ -108,15 +119,31 @@ export async function uploadStage(stage, runId, files) {
     const client = makeClient();
     let count = 0;
     let bytes = 0;
+    // V0.5.x policy (2026-05-15): every declared output must exist locally
+    // before we publish the bundle. We pre-check rather than upload-then-fail
+    // so that R2 never sees a half-written run prefix or a latest.json pointer
+    // that references a partial bundle. Producers always write declared files
+    // (empty array yields a zero-byte file); ENOENT here means a producer
+    // crashed silently before the orchestrator caught it.
+    const missing = [];
     for (const fname of files) {
         const local = path.join(LINKED_DIR, fname);
-        let body;
         try {
-            body = await fs.readFile(local);
+            await fs.stat(local);
         } catch (err) {
-            if (err.code === 'ENOENT') continue;
+            if (err.code === 'ENOENT') {
+                missing.push(fname);
+                continue;
+            }
             throw err;
         }
+    }
+    if (missing.length > 0) {
+        throw new Error(`[BRIDGE] uploadStage(${stage}/${runId}) aborted — ${missing.length}/${files.length} required outputs missing locally: ${missing.join(', ')}. Refusing to publish partial bundle to R2.`);
+    }
+    for (const fname of files) {
+        const local = path.join(LINKED_DIR, fname);
+        const body = await fs.readFile(local);
         const key = `processed/${stage}/${runId}/${fname}`;
         await putObjectBuf(client, key, body, 'application/jsonl');
         bytes += body.length;
@@ -142,14 +169,27 @@ export async function uploadRaw(prefix, runId, localFiles) {
     const client = makeClient();
     let count = 0;
     let bytes = 0;
-    for (const [localPath, r2Name] of localFiles) {
-        let body;
+    // V0.5.x policy (2026-05-15): every declared local file must exist.
+    // Callers in stage-1-harvest already verifyNonEmpty before this point,
+    // so an ENOENT here means caller / file naming drift. Refuse instead
+    // of silently uploading nothing.
+    const missing = [];
+    for (const [localPath] of localFiles) {
         try {
-            body = await fs.readFile(localPath);
+            await fs.stat(localPath);
         } catch (err) {
-            if (err.code === 'ENOENT') continue;
+            if (err.code === 'ENOENT') {
+                missing.push(localPath);
+                continue;
+            }
             throw err;
         }
+    }
+    if (missing.length > 0) {
+        throw new Error(`[BRIDGE] uploadRaw(${prefix}/${runId}) aborted — ${missing.length}/${localFiles.length} declared files missing locally: ${missing.join(', ')}.`);
+    }
+    for (const [localPath, r2Name] of localFiles) {
+        const body = await fs.readFile(localPath);
         const key = `raw/${prefix}/${runId}/${r2Name}`;
         await putObjectBuf(client, key, body, 'application/jsonl');
         bytes += body.length;
