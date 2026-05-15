@@ -56,6 +56,21 @@ async function runParallel(label, tasks) {
     return summaries;
 }
 
+async function runSequential(label, tasks) {
+    console.log(`\n[STAGE-2] === ${label} (sequential, ${tasks.length} steps) ===`);
+    const summaries = [];
+    for (const t of tasks) {
+        try {
+            await t.fn();
+            summaries.push({ task: t.name, ok: true, error: null });
+        } catch (err) {
+            summaries.push({ task: t.name, ok: false, error: err.message });
+            console.warn(`[STAGE-2] ${label}/${t.name} failed: ${err.message}`);
+        }
+    }
+    return summaries;
+}
+
 async function main() {
     const startTime = Date.now();
     const runId = deriveRunId();
@@ -69,23 +84,25 @@ async function main() {
         process.exit(2);
     }
 
-    const compoundResults = await runParallel('Compound Enrichers', [
+    // V0.5.x: compound enrichers all run sequentially.
+    // Same-file race: every enricher loads compounds-enriched.jsonl, modifies, writes
+    // back — concurrent writers overwrite each other (last writer wins). Previously
+    // parallel block lost fingerprint/KEGG data + ran fda/faers before id-resolver
+    // populated external_ids.unii, so no fda_signals -> 0 black_box_warning and
+    // 0 faers_adr_signal NegEvidence records in cycle 1 (R2 2026-05-15 audit).
+    // Order matters: id-resolver populates UNII; fda-enricher requires UNII and
+    // sets fda_signals; compound-faers-enricher requires UNII and extends fda_signals.
+    const compoundResults = await runSequential('Compound Enrichers', [
         { name: 'fingerprint', fn: () => runScript('compound-fingerprint-enricher.js') },
         { name: 'kegg', fn: () => runScript('compound-kegg-enricher.js') },
-        { name: 'faers', fn: () => runScript('compound-faers-enricher.js') },
+        { name: 'compound-id-resolver', fn: () => runScript('compound-id-resolver.js') },
         { name: 'fda', fn: () => runScript('fda-enricher.js') },
+        { name: 'compound-faers', fn: () => runScript('compound-faers-enricher.js') },
     ]);
+    const idResolverOk = compoundResults.find(r => r.task === 'compound-id-resolver')?.ok ?? false;
 
-    console.log('\n[STAGE-2] === compound-id-resolver (sequential, depends on enriched compounds) ===');
-    let idResolverOk = false;
-    try {
-        await runScript('compound-id-resolver.js');
-        idResolverOk = true;
-    } catch (err) {
-        console.warn(`[STAGE-2] compound-id-resolver failed: ${err.message}`);
-    }
-
-    const bioactivityResults = await runParallel('Bioactivity Enrichers', [
+    // V0.5.x: bioactivity enrichers also serialised — both modify bioactivities.jsonl.
+    const bioactivityResults = await runSequential('Bioactivity Enrichers', [
         { name: 'target-resolver', fn: () => runScript('target-resolver.js') },
         { name: 'bioactivity-cross-validator', fn: () => runScript('bioactivity-cross-validator.js') },
     ]);
@@ -99,13 +116,12 @@ async function main() {
     }
 
     const failureCount = compoundResults.filter(r => !r.ok).length
-        + (idResolverOk ? 0 : 1)
         + bioactivityResults.filter(r => !r.ok).length;
 
     const elapsed = Math.round((Date.now() - startTime) / 1000);
     console.log(`\n[STAGE-2] === Summary ===`);
     console.log(`  Elapsed:        ${elapsed}s (${(elapsed / 60).toFixed(1)} min)`);
-    console.log(`  Compound enrichers OK: ${compoundResults.filter(r => r.ok).length}/4`);
+    console.log(`  Compound enrichers OK: ${compoundResults.filter(r => r.ok).length}/5`);
     console.log(`  ID resolver:    ${idResolverOk ? 'OK' : 'FAIL'}`);
     console.log(`  Bioactivity OK: ${bioactivityResults.filter(r => r.ok).length}/2`);
     console.log(`  R2 run prefix:  processed/enriched/${runId}/`);
