@@ -222,7 +222,8 @@ export const COMPOUND_SCHEMA = {
             structural: { type: 'number', min: 0, max: 100 },
             bioactivity: { type: 'number', min: 0, max: 100 },
             clinical: { type: 'number', min: 0, max: 100 },
-            method: { type: 'string', enum: ['cross_source_consensus_v1'] },
+            // V0.5.1 PR #12 introduced confidence-scorer V2; keep v1 in the enum so prior-cycle data still validates.
+            method: { type: 'string', enum: ['cross_source_consensus_v1', 'cross_source_consensus_v2'] },
             cross_source_agreement: {
                 type: 'object', required: true,
                 shape: {
