@@ -15,6 +15,8 @@
  *   TERMINATED/WITHDRAWN trials + whyStopped text = failure raw data
  */
 
+import { scoreDataPoint } from '../../factory/lib/confidence-scorer.js';
+
 const CT_BASE = 'https://clinicaltrials.gov/api/v2/studies';
 const REQUEST_TIMEOUT_MS = 20000;
 
@@ -203,6 +205,12 @@ export function normalize(raw, compoundIdHint = null) {
                 extraction_method: 'ct_gov_v2_api',
             }],
             last_updated: timestamp,
+        },
+        // V0.5.1: Sciweon Principle 5 — single-source ≤60, quantified at extraction
+        confidence: {
+            overall: scoreDataPoint(['clinicaltrials']),
+            method: 'cross_source_consensus_v2',
+            cross_source_agreement: { structural_match: false, conflicts: [] },
         },
     };
 }

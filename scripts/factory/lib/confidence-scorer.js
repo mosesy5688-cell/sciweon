@@ -1,16 +1,16 @@
 /**
- * Confidence Scorer — Sciweon V0.1
+ * Confidence Scorer V2 — Sciweon Principle 5 quantification.
  *
- * Cross-source consensus scoring per V8 §5.
+ * Per Sciweon 6 first principles #5:
+ *   - Single source: confidence ceiling = 60 (hard cap)
+ *   - Multi-source consensus: confidence floor = 80
+ *   - Conflicts reduce further
  *
- * Formula:
- *   base = 60                            # single-source ceiling
- *   + (source_count - 1) * 10            # +10 per extra source
- *   + 20 (if structural_match)           # InChIKey matches across sources
- *   - 30 (if conflicts > 0)              # conflicts subtract
- *   + 10 (if includes pubchem)           # government data weight
- *   + 10 (if includes chembl)            # curated quality
- *   clamp [0, 100]
+ * V1 lesson (cycle 1 audit): the previous formula `60 + (n-1)*10 + source_weight`
+ * gave single-source records >60 because source weight was always added on top
+ * of base 60. R2 cycle 1 had 0/39 single-source papers below 60 (rule broken).
+ * V2 separates single-source and multi-source paths so the cap is structural,
+ * not post-hoc.
  */
 
 const SOURCE_WEIGHTS = {
@@ -20,21 +20,31 @@ const SOURCE_WEIGHTS = {
     openalex: 5,
     s2: 5,
     semantic_scholar: 5, // alias for s2 — both names accepted in provenance.sources
-    pubmed: 7,           // NIH NCBI authoritative biomedical index (highest weight after PubChem/ChEMBL gov sources)
+    pubmed: 7,           // NIH NCBI authoritative biomedical index
 };
+
+const SINGLE_SOURCE_CEILING = 60;
+const MULTI_SOURCE_FLOOR = 80;
 
 export function scoreDataPoint(sources, options = {}) {
     const { structuralMatch = false, conflicts = [] } = options;
     if (!Array.isArray(sources) || sources.length === 0) return 0;
 
-    let score = 60;
-    score += (sources.length - 1) * 10;
-    if (structuralMatch) score += 20;
-    if (conflicts.length > 0) score -= 30;
-    for (const s of sources) {
-        const w = SOURCE_WEIGHTS[s];
-        if (w) score += w;
+    const sourceQualityBonus = sources.reduce((sum, s) => sum + (SOURCE_WEIGHTS[s] || 0), 0);
+
+    if (sources.length === 1) {
+        // Principle 5: single-source ceiling enforced structurally
+        let score = 40 + Math.min(20, sourceQualityBonus);
+        if (conflicts.length > 0) score -= 15;
+        return Math.max(0, Math.min(SINGLE_SOURCE_CEILING, Math.round(score)));
     }
+
+    // Multi-source consensus: floor 80, climbs with sources + structural match
+    let score = MULTI_SOURCE_FLOOR;
+    score += (sources.length - 2) * 3; // each additional source after the 2nd +3
+    if (structuralMatch) score += 5;
+    score += Math.min(15, Math.round(sourceQualityBonus / 2)); // half the per-source weight in multi-source mode
+    if (conflicts.length > 0) score -= 30; // conflicts can drop multi below 80, reflecting disagreement
     return Math.max(0, Math.min(100, Math.round(score)));
 }
 
@@ -68,16 +78,20 @@ export function scoreEntity(entity) {
     ];
     const activeDims = dimensions.filter(d => d.present);
     const totalWeight = activeDims.reduce((s, d) => s + d.weight, 0);
-    const overall = Math.round(
+    let overall = Math.round(
         activeDims.reduce((s, d) => s + d.score * d.weight, 0) / totalWeight
     );
+
+    // Re-apply principle 5 cap at the entity level: provenance_completeness=100
+    // would otherwise pull single-source entities above 60 via the weighted avg.
+    if (sources.length === 1) overall = Math.min(SINGLE_SOURCE_CEILING, overall);
 
     return {
         overall,
         structural,
         bioactivity,
         clinical,
-        method: 'cross_source_consensus_v1',
+        method: 'cross_source_consensus_v2',
         cross_source_agreement: { structural_match: structuralMatch, conflicts },
     };
 }
