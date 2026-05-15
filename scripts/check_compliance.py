@@ -12,11 +12,14 @@ Checks:
    DATA_ARCHITECTURE, IDEA_LAB, POSITIONING, LABNEXUS, SCIWEON, IMMIGRATION)
    committed to the repo.
 
-Sciweon-specific notes:
-- V0.1-0.4 internal dev phase: English mandate is RECOMMENDED but not strictly
-  enforced for inline comments. CJK in code identifiers / strings is blocked.
-  Transition to strict mode before V0.5 sciweon.com Day-1 landing.
-- Adapter line-limit exemptions kept minimal — current adapters fit < 250.
+V0.5.x policy (2026-05-15): every WARN is a FAIL.
+- Data quality is the lifeline. CI green must mean every rule passed,
+  not "some passed and some logged a warning".
+- English mandate is now STRICT by default. Override is opt-OUT only
+  via CES_ENGLISH_STRICT=0 (deliberate, audited choice).
+- Same principle drives validation-gate REJECT-by-default and the
+  defense-in-depth audit memory entries: never let any non-compliance
+  silently pass.
 """
 
 import os
@@ -68,8 +71,10 @@ SECRET_PATTERNS = [
     (r"aws_secret_access_key\s*=\s*['\"][a-zA-Z0-9/+=]{40}['\"]", "AWS Secret Key"),
 ]
 
-# V0.1a phase: English mandate is WARN-only. Set strict=True before V0.5 launch.
-ENGLISH_STRICT = os.environ.get('CES_ENGLISH_STRICT') == '1'
+# V0.5.x policy: every CES rule is a hard gate by default. English Mandate
+# now defaults to STRICT — any CJK in scanned code raises [FAIL], not [WARN].
+# Opt-out via CES_ENGLISH_STRICT=0 (audited, not the production default).
+ENGLISH_STRICT = os.environ.get('CES_ENGLISH_STRICT', '1') != '0'
 
 
 class Violations:
