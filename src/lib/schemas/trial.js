@@ -44,7 +44,14 @@ export const TRIAL_SCHEMA = {
     interventions: {
         type: 'array', required: false, maxItems: 50,
         itemShape: {
-            name: { type: 'string', required: true, maxLength: 500 },
+            // V0.5.1 widened 500 -> 2000. CTIS (EU) trials carry multilingual,
+            // multi-compound combination descriptions that routinely exceed 500
+            // characters. Run 25934066131 halted the chain on a real 635-char
+            // CTIS intervention name (trial:2024-519857-13-00). Schema, not data,
+            // was the deviation. Keeping a generous upper bound prevents truncation
+            // of legitimate primary-source content; pathological inputs are still
+            // capped to avoid runaway entity sizes.
+            name: { type: 'string', required: true, maxLength: 2000 },
             compound_id: { type: 'string', required: false }, // FK to Compound if matched
             mapping_confidence: { type: 'number', required: false, min: 0, max: 100 },
             type: {
