@@ -26,8 +26,8 @@ jobs:
           python-version: '3.10'
 
       - name: Run CES Check
+        # V0.5.x policy (2026-05-15): default STRICT applies. We do NOT pass
+        # CES_ENGLISH_STRICT here — any explicit '0' would silently re-open
+        # the WARN escape hatch that already let a CJK docstring ship past
+        # this gate once. Script default is STRICT (check_compliance.py).
         run: python3 scripts/check_compliance.py
-        env:
-          # V0.1a phase: keep English mandate as warn-only. Flip to '1' before
-          # V0.5 sciweon.com Day-1 landing.
-          CES_ENGLISH_STRICT: '0'
