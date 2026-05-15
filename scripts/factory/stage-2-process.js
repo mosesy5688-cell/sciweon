@@ -38,24 +38,6 @@ function runScript(name) {
     });
 }
 
-async function runParallel(label, tasks) {
-    console.log(`\n[STAGE-2] === ${label} (${tasks.length}-way parallel) ===`);
-    const settled = await Promise.allSettled(tasks.map(t => t.fn()));
-    const summaries = settled.map((r, i) => ({
-        task: tasks[i].name,
-        ok: r.status === 'fulfilled',
-        error: r.status === 'rejected' ? r.reason?.message : null,
-    }));
-    const failed = summaries.filter(s => !s.ok);
-    if (failed.length > 0) {
-        console.warn(`[STAGE-2] ${label}: ${failed.length}/${tasks.length} failed`);
-        for (const f of failed) console.warn(`  - ${f.task}: ${f.error}`);
-    } else {
-        console.log(`[STAGE-2] ${label}: all ${tasks.length} OK`);
-    }
-    return summaries;
-}
-
 async function runSequential(label, tasks) {
     console.log(`\n[STAGE-2] === ${label} (sequential, ${tasks.length} steps) ===`);
     const summaries = [];
@@ -64,8 +46,12 @@ async function runSequential(label, tasks) {
             await t.fn();
             summaries.push({ task: t.name, ok: true, error: null });
         } catch (err) {
+            // V0.5.x policy (2026-05-15): any sub-script failure halts the stage
+            // IMMEDIATELY. Do NOT continue and do NOT let `uploadStage` run on
+            // partial data — bad data must never pollute production R2.
+            console.error(`[STAGE-2] ${label}/${t.name} failed: ${err.message}`);
             summaries.push({ task: t.name, ok: false, error: err.message });
-            console.warn(`[STAGE-2] ${label}/${t.name} failed: ${err.message}`);
+            throw new Error(`[STAGE-2] ${label}/${t.name} failed — stage aborted before R2 upload to prevent pollution. Original error: ${err.message}`);
         }
     }
     return summaries;
