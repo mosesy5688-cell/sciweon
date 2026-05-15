@@ -169,6 +169,14 @@ async function main() {
             }
         }
 
+        // V0.5.1: ensure every paper has confidence (Principle 5). enrichWithS2 only assigns it on match.
+        for (const paper of normalized) {
+            if (paper.confidence) continue;
+            const agreement = { structural_match: false, conflicts: [] };
+            const scored = scoreEntity({ provenance: paper.provenance, confidence: { cross_source_agreement: agreement }, stats: {} });
+            paper.confidence = { overall: scored.overall, method: scored.method, cross_source_agreement: agreement };
+        }
+
         for (const paper of normalized) {
             const result = gate(paper, PAPER_SCHEMA, `paper:${paper.id}`);
             if (!result.passed) continue;
