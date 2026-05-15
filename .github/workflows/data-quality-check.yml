@@ -1,0 +1,50 @@
+name: Data Quality Check
+
+# 6-principle quantitative check against latest R2 snapshot.
+# On-demand only — user dispatches when they want a snapshot of data quality.
+# Output: report in step summary + JSON artifact for trend tracking.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  data-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+      - name: Run data quality check
+        run: |
+          mkdir -p output
+          node scripts/data-quality/data-quality-check.js --json=output/data-quality-check.json | tee output/data-quality-check.txt
+          echo '## Data Quality Check Report' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat output/data-quality-check.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+      - name: Upload check artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: data-quality-check
+          path: |
+            output/data-quality-check.json
+            output/data-quality-check.txt
+          retention-days: 90
