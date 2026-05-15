@@ -99,8 +99,18 @@ async function main() {
         process.exit(2);
     }
 
+    // V0.5.x: trial scripts must run sequentially — both trial-linker and
+    // trial-results-enricher do writeFile on trials.jsonl, so parallel runs
+    // produce last-writer-wins. trial-linker is slowest, so it overwrites
+    // trial-results-enricher's serious_events_count enrichment, leaving
+    // neg-evidence-builder with no source data for serious_adverse_event_per_trial
+    // (cycle 1 audit: 0 records of that category vs 161 in V0.4.3 local).
+    // ctis-trial-linker uses appendFile (safe) but ordering it after trial-linker
+    // keeps the appended records aligned with the freshly-written base file.
+    // Papers writes a different file so the trial-group and paper-group can still
+    // run in parallel with each other.
     const [trialResults, paperResults] = await Promise.all([
-        runParallel('Trials', [
+        runSequential('Trials', [
             { name: 'trial-linker', fn: () => runScript('trial-linker.js') },
             { name: 'ctis-trial-linker', fn: () => runScript('ctis-trial-linker.js') },
             { name: 'trial-results-enricher', fn: () => runScript('trial-results-enricher.js') },
