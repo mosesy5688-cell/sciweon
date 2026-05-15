@@ -1,7 +1,7 @@
 /**
- * Validation Gate — Sciweon V0.1
+ * Validation Gate — Sciweon V0.5.x
  *
- * Enforces V8 first principles:
+ * Enforces Sciweon 6 first principles:
  *   1. Machine-readable (type + unit + range)
  *   2. Validated (not just present)
  *   3. Explicit gaps (unknown/not_collected/excluded)
@@ -9,15 +9,24 @@
  *   5. Confidence quantified
  *   6. Negative data equal-class
  *
- * Modes:
- *   - V0.1a: WARN — log violations but accept data
- *   - V0.1b+: REJECT — refuse non-compliant data
+ * Modes (2026-05-15 policy upgrade — data quality is the lifeline):
+ *   - REJECT (default): bad data throws and halts the chain. Production
+ *     pipelines must never upload non-compliant records to R2; first
+ *     violation aborts the run with a full error message, no records
+ *     emitted, no partial pollution. User rule (verbatim): any bad data
+ *     must stop the run and report the error.
+ *   - WARN (opt-in via VALIDATION_MODE=warn): logs violations and
+ *     accepts data. Use only for local schema iteration / debugging.
+ *
+ * V0.1a started in WARN mode while the schema was iterating; V0.5.x
+ * defaults to REJECT because the schema is stable and any production
+ * violation is now a real integrity gap that must surface immediately.
  */
 
 export const MODE_WARN = 'warn';
 export const MODE_REJECT = 'reject';
 
-let CURRENT_MODE = process.env.VALIDATION_MODE || MODE_WARN;
+let CURRENT_MODE = process.env.VALIDATION_MODE || MODE_REJECT;
 
 export function setMode(mode) {
     if (![MODE_WARN, MODE_REJECT].includes(mode)) throw new Error(`Invalid mode: ${mode}`);
@@ -85,7 +94,13 @@ export function gate(entity, schema, context = 'entity') {
         return { passed: true, entity, warnings: errors };
     }
 
-    console.error(`[VALIDATION] ${context}: ${errors.length} violations (REJECT mode)`);
-    for (const e of errors.slice(0, 10)) console.error(`  - ${e.path}: ${e.error}`);
-    return { passed: false, entity: null, errors };
+    // REJECT mode: fail-fast. Bad data must NEVER pollute production R2.
+    // Throwing here halts the producer (harvester / linker / aggregator),
+    // returns a non-zero exit code, and prevents the downstream stage from
+    // triggering. Callers cannot silently `continue` past a violation.
+    const detail = errors.slice(0, 10).map(e => `  - ${e.path}: ${e.error}`).join('\n');
+    const truncated = errors.length > 10 ? `\n  ... (${errors.length - 10} more)` : '';
+    throw new Error(
+        `[VALIDATION] ${context}: ${errors.length} violations — chain halted (REJECT mode)\n${detail}${truncated}`
+    );
 }
