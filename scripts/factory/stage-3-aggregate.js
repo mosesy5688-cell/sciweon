@@ -79,8 +79,12 @@ async function runSequential(label, tasks) {
             await t.fn();
             summaries.push({ task: t.name, ok: true, error: null });
         } catch (err) {
+            // V0.5.x policy (2026-05-15): any sub-script failure halts the stage
+            // IMMEDIATELY. Do NOT continue and do NOT let `uploadStage` run on
+            // partial data — bad data must never pollute production R2.
+            console.error(`[STAGE-3] ${label}/${t.name} failed: ${err.message}`);
             summaries.push({ task: t.name, ok: false, error: err.message });
-            console.warn(`[STAGE-3] ${label}/${t.name} failed: ${err.message}`);
+            throw new Error(`[STAGE-3] ${label}/${t.name} failed — stage aborted before R2 upload to prevent pollution. Original error: ${err.message}`);
         }
     }
     return summaries;
