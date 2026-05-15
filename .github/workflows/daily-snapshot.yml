@@ -4,18 +4,20 @@ name: Daily Snapshot
 # Per 2026-05-13 strategic plan: time is the only physically non-copyable
 # resource. Every missed day widens competitor catch-up window.
 #
-# Activates when R2 secrets are configured. Until then, runs on manual
-# workflow_dispatch to build local snapshots (Layer 4 clock starts ticking
-# locally even without R2; uploads backfill once credentials are set).
+# Reuses Stage 4 logic (download aggregated from R2 → integrity check →
+# build snapshot → upload + latest pointer). Stage 4 runs as part of the
+# Mon+Thu factory chain; this workflow Daily-ticks the other 5 days so
+# every calendar day has a snapshot under the same date.
 
 on:
   schedule:
-    # 00:00 UTC daily. Adjust if pipeline runs need to complete first.
+    # 00:00 UTC daily. Factory chain (Mon+Thu 02:00 UTC) overwrites same-day
+    # snapshot with fresh enriched data when it runs.
     - cron: '0 0 * * *'
   workflow_dispatch:
 
 concurrency:
-  group: daily-snapshot
+  group: factory-pipeline
   cancel-in-progress: false
 
 permissions:
@@ -25,6 +27,11 @@ jobs:
   snapshot:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -41,16 +48,8 @@ jobs:
             npm install
           fi
 
-      - name: Build snapshot (local)
-        # Snapshot output expected under ./output/linked/ — produced by
-        # the upstream pipeline. If absent on a fresh runner, the builder
-        # logs absences and produces a minimal manifest.
-        run: node scripts/factory/snapshot-builder.js
-
-      - name: Upload to R2 (skipped if secrets unset)
-        env:
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-        run: node scripts/factory/snapshot-uploader.js
+      - name: Build & upload snapshot (Stage 4 logic)
+        # Single source of truth: stage-4-upload.js downloads aggregated
+        # from R2 processed/aggregated/<latest>/, runs integrity check,
+        # snapshot-builder, snapshot-uploader, updates snapshots/latest.json.
+        run: node scripts/factory/stage-4-upload.js
