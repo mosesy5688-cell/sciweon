@@ -30,7 +30,7 @@ permissions:
 jobs:
   stage-1-harvest:
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 350
     env:
       HARVEST_LIMIT: ${{ github.event.inputs.limit || '5000' }}
       MANUAL_START_CID: ${{ github.event.inputs.manual_start_cid || '0' }}
