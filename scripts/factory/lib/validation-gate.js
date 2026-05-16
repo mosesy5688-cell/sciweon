@@ -33,6 +33,10 @@ export function setMode(mode) {
     CURRENT_MODE = mode;
 }
 
+export function getCurrentMode() {
+    return CURRENT_MODE;
+}
+
 export function validate(entity, schema, context = '') {
     const errors = [];
     for (const [field, rule] of Object.entries(schema)) {

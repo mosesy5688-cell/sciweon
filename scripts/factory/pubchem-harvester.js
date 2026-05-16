@@ -1,68 +1,191 @@
 /**
- * PubChem Harvester V0.1a — small-scale validation run.
+ * PubChem Harvester — Sciweon V0.5.1
  *
- * Goal: prove schema + validation gate + adapter end-to-end with 1000 compounds.
+ * Two-pass run:
+ *   Pass 1 (optional) — drains transient failures from the previous cycle.
+ *     Caller passes RETRY_CIDS env (comma-separated CIDs); each is attempted
+ *     before the main range so a CID that hit a transient HTTP 5xx /
+ *     timeout last run gets re-fetched before the cursor moves past it.
+ *   Pass 2 — sweeps the main [start_cid, start_cid+limit) range.
  *
- * Usage:
- *   node scripts/factory/pubchem-harvester.js [--limit=1000] [--start-cid=1]
+ * Outputs:
+ *   compounds-cid-<start>-<end>.jsonl   — entities (one per line)
+ *   harvest-manifest-<start>-<end>.json — counts + failed_fetches + retry split
+ *   violations-cid-<start>-<end>.json   — only when warned>0 in WARN mode
  *
- * Output: output/compounds/*.jsonl (one entity per line, for inspection)
+ * Validation mode is read at runtime from validation-gate (REJECT default per
+ * PR #14). The harvester does not flip modes; in REJECT mode gate() throws on
+ * the first violation and the run halts. In WARN mode (operator override via
+ * VALIDATION_MODE=warn) the run accepts violations but emits an end-of-stage
+ * aggregate (A.1) and throws if the warn ratio exceeds 1% of fetched (A.2).
+ *
+ * A fetch error (HTTP 5xx, network, timeout) is no longer collapsed into a
+ * null entity — it is recorded in failed_fetches so the stage 1 wrapper can
+ * route the CID to the persistent retry queue.
  */
 
 import fs from 'fs/promises';
 import path from 'path';
 import { getCompound } from '../ingestion/adapters/pubchem-adapter.js';
 import { COMPOUND_SCHEMA } from '../../src/lib/schemas/compound.js';
-import { gate, MODE_WARN } from './lib/validation-gate.js';
+import { gate, getCurrentMode, MODE_WARN } from './lib/validation-gate.js';
 
 const LIMIT = parseInt(process.argv.find(a => a.startsWith('--limit='))?.split('=')[1] || '1000');
 const START_CID = parseInt(process.argv.find(a => a.startsWith('--start-cid='))?.split('=')[1] || '1');
 const OUTPUT_DIR = process.env.OUTPUT_DIR || './output/compounds';
-const BATCH_DELAY_MS = 250; // 4 req/sec safety margin (PubChem limit is 5/sec)
+const BATCH_DELAY_MS = 250; // 4 req/sec — PubChem rate limit is 5/sec
+const WARN_RATIO_THRESHOLD = 0.01; // A.2: sustained drift > 1% trips THROW in WARN mode
+
+function parseRetryList(raw) {
+    if (!raw) return [];
+    const seen = new Set();
+    const out = [];
+    for (const piece of raw.split(',')) {
+        const n = parseInt(piece.trim(), 10);
+        if (!Number.isInteger(n) || n < 1) continue;
+        if (seen.has(n)) continue;
+        seen.add(n);
+        out.push(n);
+    }
+    return out;
+}
+
+const RETRY_CIDS = parseRetryList(process.env.RETRY_CIDS || '');
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function processOneCid(cid, state) {
+    state.attempted++;
+    let entity;
+    try {
+        entity = await getCompound(cid);
+    } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        console.warn(`[PUBCHEM] CID ${cid}: ${msg}`);
+        state.failedFetches.push({ cid, error: msg });
+        return;
+    }
+    state.fetched++;
+    if (!entity) return; // CID has no property record (deprecated / superseded)
+
+    // REJECT mode: gate() throws on violation and the run halts. We only
+    // see passed=true and (optionally) warnings here.
+    const result = gate(entity, COMPOUND_SCHEMA, `CID:${cid}`);
+    if (!result.passed) return;
+    state.entities.push(entity);
+    state.valid++;
+    if (result.warnings) {
+        state.warned++;
+        state.violationsLog.push({ cid, warnings: result.warnings });
+    }
+}
+
+function buildHistogram(violationsLog) {
+    const histogram = {};
+    for (const v of violationsLog) {
+        for (const w of v.warnings) {
+            const cat = w.path.split('.').slice(-1)[0] || 'unknown';
+            histogram[cat] = (histogram[cat] || 0) + 1;
+        }
+    }
+    return Object.entries(histogram).sort((a, b) => b[1] - a[1])
+        .map(([k, v]) => `${k}=${v}`).join(', ');
+}
 
 async function main() {
-    console.log(`[HARVESTER] V0.1a small-scale run — limit=${LIMIT}, start_cid=${START_CID}`);
-    console.log(`[HARVESTER] Validation mode: WARN (log violations, accept data)`);
+    const mode = getCurrentMode();
+    const modeNote = mode === MODE_WARN
+        ? `WARN (log violations, accept data; throws if warn/fetched > ${(WARN_RATIO_THRESHOLD * 100).toFixed(1)}%)`
+        : 'REJECT (fail-fast on first violation)';
+    console.log(`[HARVESTER] V0.5.1 — limit=${LIMIT}, start_cid=${START_CID}, retry_cids=${RETRY_CIDS.length}`);
+    console.log(`[HARVESTER] Validation mode: ${modeNote}`);
 
     await fs.mkdir(OUTPUT_DIR, { recursive: true });
 
-    let fetched = 0, valid = 0, warned = 0;
-    const entities = [];
-    const violationsLog = [];
+    const state = {
+        attempted: 0,
+        fetched: 0,
+        valid: 0,
+        warned: 0,
+        entities: [],
+        violationsLog: [],
+        failedFetches: [],
+        retrySuccesses: [],
+        retryFailures: [],
+    };
 
-    for (let cid = START_CID; cid < START_CID + LIMIT; cid++) {
-        const entity = await getCompound(cid);
-        fetched++;
-        if (!entity) { await sleep(BATCH_DELAY_MS); continue; }
-
-        const result = gate(entity, COMPOUND_SCHEMA, `CID:${cid}`);
-        if (result.passed) {
-            entities.push(entity);
-            valid++;
-            if (result.warnings) {
-                warned++;
-                violationsLog.push({ cid, warnings: result.warnings });
-            }
+    if (RETRY_CIDS.length > 0) {
+        console.log(`[HARVESTER] === Pass 1: drain ${RETRY_CIDS.length} retry CIDs ===`);
+        const baselineFailures = state.failedFetches.length;
+        for (const cid of RETRY_CIDS) {
+            await processOneCid(cid, state);
+            await sleep(BATCH_DELAY_MS);
         }
+        const newFailureSet = new Set(state.failedFetches.slice(baselineFailures).map(f => f.cid));
+        for (const cid of RETRY_CIDS) {
+            if (newFailureSet.has(cid)) state.retryFailures.push(cid);
+            else state.retrySuccesses.push(cid);
+        }
+        console.log(`[HARVESTER] Retry pass: ${state.retrySuccesses.length} succeeded, ${state.retryFailures.length} failed again`);
+    }
 
-        if (fetched % 50 === 0) {
-            console.log(`[HARVESTER] Progress: ${fetched} fetched | ${valid} valid | ${warned} warned`);
+    console.log(`[HARVESTER] === Pass 2: range CID ${START_CID} to ${START_CID + LIMIT - 1} ===`);
+    for (let cid = START_CID; cid < START_CID + LIMIT; cid++) {
+        await processOneCid(cid, state);
+        if (state.attempted % 50 === 0) {
+            console.log(`[HARVESTER] Progress: ${state.attempted} attempted | ${state.fetched} fetched | ${state.valid} valid | ${state.warned} warned | ${state.failedFetches.length} fetch_failed`);
         }
         await sleep(BATCH_DELAY_MS);
     }
 
-    const outputFile = path.join(OUTPUT_DIR, `compounds-cid-${START_CID}-${START_CID + LIMIT - 1}.jsonl`);
-    await fs.writeFile(outputFile, entities.map(e => JSON.stringify(e)).join('\n'));
-    if (violationsLog.length > 0) {
-        const violationsFile = path.join(OUTPUT_DIR, `violations-cid-${START_CID}-${START_CID + LIMIT - 1}.json`);
-        await fs.writeFile(violationsFile, JSON.stringify(violationsLog, null, 2));
-        console.log(`[HARVESTER] ⚠️ ${violationsLog.length} entities had warnings (saved to ${violationsFile})`);
+    const rangeTag = `${START_CID}-${START_CID + LIMIT - 1}`;
+    const outputFile = path.join(OUTPUT_DIR, `compounds-cid-${rangeTag}.jsonl`);
+    await fs.writeFile(outputFile, state.entities.map(e => JSON.stringify(e)).join('\n'));
+
+    if (state.violationsLog.length > 0) {
+        const violationsFile = path.join(OUTPUT_DIR, `violations-cid-${rangeTag}.json`);
+        await fs.writeFile(violationsFile, JSON.stringify(state.violationsLog, null, 2));
     }
 
-    console.log(`[HARVESTER] ✅ Complete: ${fetched} attempted | ${valid} valid | ${warned} warned`);
-    console.log(`[HARVESTER] Output: ${outputFile} (${entities.length} entities)`);
+    if (state.warned > 0) {
+        console.warn(`[HARVESTER-AUDIT] ${state.warned} entities flagged across categories: ${buildHistogram(state.violationsLog)}`);
+    }
+
+    const manifest = {
+        run: {
+            mode,
+            start_cid: START_CID,
+            limit: LIMIT,
+            retry_cids_in: RETRY_CIDS,
+            ts: new Date().toISOString(),
+        },
+        stats: {
+            attempted: state.attempted,
+            fetched: state.fetched,
+            valid: state.valid,
+            warned: state.warned,
+            fetch_failed_count: state.failedFetches.length,
+        },
+        failed_fetches: state.failedFetches,
+        retry_successes: state.retrySuccesses,
+        retry_failures: state.retryFailures,
+    };
+    const manifestFile = path.join(OUTPUT_DIR, `harvest-manifest-${rangeTag}.json`);
+    await fs.writeFile(manifestFile, JSON.stringify(manifest, null, 2));
+
+    console.log(`[HARVESTER] ✅ Complete: ${state.attempted} attempted | ${state.fetched} fetched | ${state.valid} valid | ${state.warned} warned | ${state.failedFetches.length} fetch_failed`);
+    console.log(`[HARVESTER] Output:   ${outputFile} (${state.entities.length} entities)`);
+    console.log(`[HARVESTER] Manifest: ${manifestFile}`);
+
+    if (mode === MODE_WARN && state.fetched > 0) {
+        const ratio = state.warned / state.fetched;
+        if (ratio > WARN_RATIO_THRESHOLD) {
+            throw new Error(
+                `[HARVESTER] WARN ratio ${(ratio * 100).toFixed(2)}% exceeds threshold ` +
+                `${(WARN_RATIO_THRESHOLD * 100).toFixed(1)}% — sustained schema drift treated as ` +
+                `REJECT trigger. Manifest written; investigate before next harvest.`
+            );
+        }
+    }
 }
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-main().catch(err => { console.error('[HARVESTER] Fatal:', err); process.exit(1); });
+main().catch(err => { console.error('[HARVESTER] Fatal:', err.message); process.exit(1); });
