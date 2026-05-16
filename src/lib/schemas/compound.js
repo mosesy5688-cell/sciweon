@@ -55,9 +55,9 @@ export const COMPOUND_SCHEMA = {
             log_p: {
                 type: 'object', required: false,
                 shape: {
-                    // Range widened progressively from 5000 CID empirical data.
-                    // Real extremes: -14 (hydrophilic), +26.8 (extreme lipophilic dyes).
-                    value: { type: 'number', min: -25, max: 30 },
+                    // Empirical: CID 1-15000 hit max +26.8, CID 16369 hit +36.6.
+                    // Cap = 2x headroom; > 80 still REJECT as degenerate XLogP3 output.
+                    value: { type: 'number', min: -25, max: 80 },
                     method: { type: 'string', enum: ['XLogP3', 'AlogP', 'computed'] },
                 },
             },
