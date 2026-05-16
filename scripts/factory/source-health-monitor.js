@@ -29,6 +29,7 @@ import path from 'path';
 import { createReadStream } from 'fs';
 import readline from 'readline';
 import { createGunzip } from 'zlib';
+import { runBoundaryChecks } from './lib/boundary-health.js';
 
 const HEALTHY_MAX_HOURS = 36;
 const STALE_MAX_HOURS = 96;
@@ -155,6 +156,28 @@ async function main() {
     console.log(`Total entities scanned: ${totalEntities}`);
     console.log(`Sources with data: ${seen} of ${KNOWN_SOURCES.length} known`);
 
+    // Boundary checks (V0.5.2 — PR #19 deferred A.3): retry queue depth +
+    // sustained-WARN aggregate. Skipped silently when R2 env is absent so
+    // local `npm run health` still works on developer machines.
+    let boundary = null;
+    if (process.env.R2_ENDPOINT && process.env.R2_BUCKET) {
+        console.log('');
+        console.log('Boundary Health Checks');
+        console.log('======================');
+        try {
+            boundary = await runBoundaryChecks();
+            for (const c of boundary.checks) {
+                console.log(`[${c.status.padEnd(4)}] ${c.check}: ${c.message}`);
+            }
+        } catch (err) {
+            console.warn(`[WARN] Boundary checks failed: ${err.message}`);
+            boundary = { status: 'WARN', checks: [], error: err.message };
+        }
+    } else {
+        console.log('');
+        console.log('[skip] Boundary checks (R2 env not configured)');
+    }
+
     const report = {
         generated_at: new Date().toISOString(),
         total_entities_scanned: totalEntities,
@@ -163,6 +186,7 @@ async function main() {
             stale_max_hours: STALE_MAX_HOURS,
         },
         sources: rows,
+        boundary,
     };
     const outPath = 'output/source-health.json';
     await fs.mkdir(path.dirname(outPath), { recursive: true });
@@ -171,15 +195,22 @@ async function main() {
 
     const hasCritical = rows.some(r => r.status === 'CRITICAL');
     const hasStale = rows.some(r => r.status === 'STALE');
-    if (hasCritical) {
-        console.log('[FAIL] One or more sources are CRITICAL.');
+    const boundaryStatus = boundary?.status || 'OK';
+
+    // Exit code: highest severity across sources AND boundary checks wins.
+    // 2=CRITICAL/FAIL, 1=STALE/WARN, 0=OK. Boundary FAIL maps to exit 2 so
+    // the workflow surface escalates (queue cap breach = real upstream outage).
+    if (hasCritical || boundaryStatus === 'FAIL') {
+        if (hasCritical) console.log('[FAIL] One or more sources are CRITICAL.');
+        if (boundaryStatus === 'FAIL') console.log('[FAIL] Boundary check exceeded FAIL threshold.');
         process.exit(2);
     }
-    if (hasStale) {
-        console.log('[WARN] One or more sources are STALE.');
+    if (hasStale || boundaryStatus === 'WARN') {
+        if (hasStale) console.log('[WARN] One or more sources are STALE.');
+        if (boundaryStatus === 'WARN') console.log('[WARN] Boundary check surfaced WARN signal.');
         process.exit(1);
     }
-    console.log('[OK] All sources HEALTHY.');
+    console.log('[OK] All sources HEALTHY, boundary checks clean.');
     process.exit(0);
 }
 
