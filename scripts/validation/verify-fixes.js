@@ -20,9 +20,15 @@ async function main() {
 
     // Bug 1 — PubChem SMILES fix
     console.log('[Bug 1] PubChem smiles_canonical');
-    const compound = await getCompound(GABA_CID);
+    let compound = null;
+    try {
+        compound = await getCompound(GABA_CID);
+    } catch (err) {
+        console.log(`  ❌ PubChem fetch threw: ${err.message}`);
+        return;
+    }
     if (!compound) {
-        console.log('  ❌ Failed to fetch compound');
+        console.log('  ❌ PubChem returned no record (deprecated CID?)');
         return;
     }
     const smiles = compound.smiles_canonical;

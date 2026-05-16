@@ -141,11 +141,19 @@ export async function fetchFingerprint2DBatch(cids, batchSize = 100) {
 }
 
 /**
- * Fetch + normalize a compound by CID. Returns null if invalid.
+ * Fetch + normalize a compound by CID.
+ *
+ * - Throws on transient fetch failure (HTTP 5xx, network error, timeout) so
+ *   the caller can route the CID to the retry queue. Conflating "fetch
+ *   failed" with "no data" silently advanced the cursor past failed CIDs;
+ *   V0.5.1 separates the two so transient failures are recoverable across
+ *   cron cycles via the persistent retry queue.
+ * - Returns null when the CID is reachable but has no property record
+ *   (deprecated / superseded CIDs that genuinely have no data to harvest).
  */
 export async function getCompound(cid) {
     const [raw, synonyms] = await Promise.all([
-        fetchCompound(cid).catch(e => { console.warn(`[PUBCHEM] CID ${cid}: ${e.message}`); return null; }),
+        fetchCompound(cid),
         fetchSynonyms(cid),
     ]);
     if (!raw) return null;
