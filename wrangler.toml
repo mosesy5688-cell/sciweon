@@ -7,12 +7,12 @@ directory = "./dist"
 binding = "ASSETS"
 
 # R2 bucket binding — gives the Worker direct read access to the snapshot
-# bucket without round-tripping through the public CDN. The bucket itself
-# must be created in the Cloudflare dashboard or via `wrangler r2 bucket
-# create sciweon-snapshots` before deploy.
+# bucket without round-tripping through the public CDN. The bucket
+# `sciweon-prod` is the same bucket snapshot-uploader.js writes daily
+# snapshots into (env R2_BUCKET in GHA secrets).
 #
 # The Cloudflare dashboard binding must use the same `binding` name below.
 # Local dev (`wrangler dev`) reads `bucket_name` directly.
 [[r2_buckets]]
 binding = "SCIWEON_R2"
-bucket_name = "sciweon-snapshots"
+bucket_name = "sciweon-prod"
