@@ -37,6 +37,7 @@ import {
     readQueue, writeQueue, mergeFailures, pruneExhausted, MAX_QUEUE_DEPTH,
 } from './lib/harvest-retry-queue.js';
 import { uploadStage, uploadRaw, deriveRunId, verifyNonEmpty } from './lib/r2-stage-bridge.js';
+import { writeHarvestHistory } from './lib/harvest-history.js';
 
 const LIMIT_PER_RUN = parseInt(process.env.HARVEST_LIMIT || '5000');
 const MANUAL_START_CID = parseInt(process.env.MANUAL_START_CID || '0');
@@ -140,6 +141,16 @@ async function main() {
     } catch (err) {
         console.error(`[STAGE-1] R2 upload failed: ${err.message}`);
         process.exit(4);
+    }
+
+    // Harvest history is observability, not critical path — best-effort only.
+    // Failure here must NOT crash stage-1 (cursor still advances, baseline
+    // already in R2). source-health.yml will read these summaries to detect
+    // sustained WARN signal across consecutive cycles.
+    try {
+        await writeHarvestHistory({ runId, manifest, startCid, endCid });
+    } catch (err) {
+        console.warn(`[STAGE-1] Harvest history write failed (non-fatal): ${err.message}`);
     }
 
     console.log('\n[STAGE-1] === Update retry queue ===');
