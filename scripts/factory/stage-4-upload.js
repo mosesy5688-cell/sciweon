@@ -35,6 +35,7 @@ const AGGREGATED_FILES = [
     'paper-links.jsonl',
     'negative-evidence-raw.jsonl',
     'neg-evidence.jsonl',
+    'sciweon-search.db',
 ];
 
 const REQUIRED_NONEMPTY = [

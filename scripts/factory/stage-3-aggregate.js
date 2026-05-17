@@ -30,6 +30,7 @@ import { spawn } from 'child_process';
 import path from 'path';
 import { downloadStage, uploadStage, deriveRunId, readStagePointer, downloadStageByRunId } from './lib/r2-stage-bridge.js';
 import { mergeLocalAggregatedWithPrevious, MERGE_FILES } from './lib/aggregated-merger.js';
+import { buildIndex as buildSearchIndex, OUTPUT_FILE as SEARCH_INDEX_FILE } from './lib/search-index-builder.js';
 
 const SCRIPT_DIR = 'scripts/factory';
 const AGGREGATED_FILES = [
@@ -41,6 +42,7 @@ const AGGREGATED_FILES = [
     'paper-links.jsonl',
     'negative-evidence-raw.jsonl',
     'neg-evidence.jsonl',
+    'sciweon-search.db',
 ];
 
 function runScript(name) {
@@ -141,6 +143,22 @@ async function main() {
         // source-health check, alerting operators without losing fresh data.
         console.error(`[STAGE-3] Cumulative merge failed (non-fatal): ${err.message}`);
         console.error('[STAGE-3] Falling back to per-cycle aggregated upload — historical compounds may disappear from API view until next successful merge.');
+    }
+
+    // V0.5.3 Tier 1.5 search index — rebuild SQLite FTS5 over cumulative
+    // aggregated. Runs AFTER the cumulative merge so the index reflects
+    // historical + current compounds together. Failure here is non-fatal:
+    // search endpoint returns "index unavailable, fallback to ID lookup"
+    // rather than halting the chain (search is enhancement, not lifeline).
+    console.log('\n[STAGE-3] === Build Tier 1.5 search index (FTS5) ===');
+    try {
+        const stats = await buildSearchIndex({
+            outputPath: path.join('./output/linked', SEARCH_INDEX_FILE),
+        });
+        console.log(`[STAGE-3] Search index: ${stats.compoundCount + stats.trialCount + stats.paperCount} total rows, ${(stats.sizeBytes / 1024 / 1024).toFixed(1)} MB in ${stats.elapsedSec}s`);
+    } catch (err) {
+        console.error(`[STAGE-3] Search index build failed (non-fatal): ${err.message}`);
+        console.error('[STAGE-3] Will upload aggregated bundle without search index; previous cycle\'s index remains current in R2 until next successful build.');
     }
 
     console.log('\n[STAGE-3] === Upload aggregated bundle to R2 ===');

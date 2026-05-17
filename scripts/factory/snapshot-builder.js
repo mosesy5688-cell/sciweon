@@ -41,6 +41,7 @@ const SNAPSHOT_FILES = [
     'paper-links.jsonl',
     'negative-evidence-raw.jsonl',
     'neg-evidence.jsonl',
+    'sciweon-search.db',
 ];
 
 // V0.5.x: refuse to publish a snapshot without these files. Prevents the
