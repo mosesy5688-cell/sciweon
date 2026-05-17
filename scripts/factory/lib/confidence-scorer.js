@@ -21,6 +21,7 @@ const SOURCE_WEIGHTS = {
     s2: 5,
     semantic_scholar: 5, // alias for s2 — both names accepted in provenance.sources
     pubmed: 7,           // NIH NCBI authoritative biomedical index
+    dailymed: 10,        // FDA/NLM prescribing info — authoritative for drug labels
 };
 
 const SINGLE_SOURCE_CEILING = 60;
