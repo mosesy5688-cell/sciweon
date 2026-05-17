@@ -28,7 +28,8 @@
 
 import { spawn } from 'child_process';
 import path from 'path';
-import { downloadStage, uploadStage, deriveRunId } from './lib/r2-stage-bridge.js';
+import { downloadStage, uploadStage, deriveRunId, readStagePointer, downloadStageByRunId } from './lib/r2-stage-bridge.js';
+import { mergeLocalAggregatedWithPrevious, MERGE_FILES } from './lib/aggregated-merger.js';
 
 const SCRIPT_DIR = 'scripts/factory';
 const AGGREGATED_FILES = [
@@ -110,6 +111,37 @@ async function main() {
         { name: 'bidirectional-linker', fn: () => runScript('bidirectional-linker.js') },
         { name: 'neg-evidence-builder', fn: () => runScript('neg-evidence-builder.js') },
     ]);
+
+    // V0.5.2.1 cumulative aggregation: merge this cycle's outputs with the
+    // PREVIOUSLY-published aggregated bundle. Without this step each cycle
+    // would completely replace the API-visible state and historical CIDs
+    // would disappear (cross-cycle silent data loss anti-pattern).
+    // Replace-by-id (newer cycle wins) for retry-queue / re-harvest cases.
+    console.log('\n[STAGE-3] === Cumulative merge with previous aggregated ===');
+    try {
+        const prevPointer = await readStagePointer('aggregated');
+        if (!prevPointer || !prevPointer.run_id || prevPointer.run_id === runId) {
+            console.log('[STAGE-3] No previous aggregated bundle (first run or same run_id) — skipping merge.');
+        } else {
+            console.log(`[STAGE-3] Merging current cycle with previous aggregated run_id=${prevPointer.run_id}`);
+            const previousBuffers = await downloadStageByRunId('aggregated', prevPointer.run_id, MERGE_FILES);
+            const totalBytesIn = Object.values(previousBuffers).reduce((s, b) => s + b.length, 0);
+            console.log(`[STAGE-3] Downloaded ${MERGE_FILES.length} previous files (${(totalBytesIn / 1024).toFixed(1)} KB)`);
+            const mergeResult = await mergeLocalAggregatedWithPrevious(previousBuffers);
+            console.log('[STAGE-3] Merge stats per file:');
+            for (const [fname, stats] of Object.entries(mergeResult.perFile)) {
+                console.log(`  ${fname.padEnd(35)} total=${stats.total} (cur=${stats.from_current} prev_kept=${stats.from_previous_kept} replaced=${stats.replaced_by_current})`);
+            }
+            console.log(`[STAGE-3] Cumulative records across all files: ${mergeResult.totalMergedRecords}`);
+        }
+    } catch (err) {
+        // Merge failure must NOT block stage upload — fall back to per-cycle
+        // (existing pre-V0.5.2.1 behavior) rather than halting the chain.
+        // The merge gap will surface as historical-CID 0-result on next
+        // source-health check, alerting operators without losing fresh data.
+        console.error(`[STAGE-3] Cumulative merge failed (non-fatal): ${err.message}`);
+        console.error('[STAGE-3] Falling back to per-cycle aggregated upload — historical compounds may disappear from API view until next successful merge.');
+    }
 
     console.log('\n[STAGE-3] === Upload aggregated bundle to R2 ===');
     try {

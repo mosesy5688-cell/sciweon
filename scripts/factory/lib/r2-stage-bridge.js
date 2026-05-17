@@ -199,6 +199,31 @@ export async function uploadRaw(prefix, runId, localFiles) {
     return { runId, files: count, bytes };
 }
 
+/**
+ * Download a specific run's stage bundle from R2 without touching local
+ * filesystem. Returns `{ [fname]: Buffer }`. Missing files yield empty
+ * buffers (different from downloadStage which throws on missing required
+ * file). Use this to fetch a historical / previous bundle for in-memory
+ * comparison or cumulative merge (V0.5.2.1 cumulative aggregation).
+ */
+export async function downloadStageByRunId(stage, runId, files) {
+    const client = makeClient();
+    const result = {};
+    for (const fname of files) {
+        const key = `processed/${stage}/${runId}/${fname}`;
+        try {
+            result[fname] = await getObjectBuf(client, key);
+        } catch (err) {
+            if (err.name === 'NoSuchKey' || err.$metadata?.httpStatusCode === 404) {
+                result[fname] = Buffer.alloc(0);
+                continue;
+            }
+            throw err;
+        }
+    }
+    return result;
+}
+
 export function deriveRunId() {
     return process.env.GITHUB_RUN_ID
         || new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
