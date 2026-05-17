@@ -41,6 +41,7 @@ const SNAPSHOT_FILES = [
     'paper-links.jsonl',
     'negative-evidence-raw.jsonl',
     'neg-evidence.jsonl',
+    'drug-labels.jsonl',
     'sciweon-search-index.json',
 ];
 
