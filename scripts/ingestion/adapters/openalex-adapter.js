@@ -142,11 +142,26 @@ function extractPmid(raw) {
  * @param {string} compoundIdHint — optional compound ID for linkage
  * @param {string} extractionMethod — how this paper was matched to compound
  */
+// Sciweon Paper schema requires DOI regex `^10\.\d{4,}/\S+$`. OpenAlex
+// occasionally returns DOIs that fail this pattern (e.g., raw `raw.doi`
+// containing placeholders or unusually-formatted identifiers). Validate
+// after URL prefix strip; return null on mismatch so downstream schema
+// gate doesn't REJECT-halt the chain (caused stage-3 halt 2026-05-17,
+// PR #35 fixed retraction-watch adapter; this PR fixes openalex adapter).
+const DOI_PATTERN = /^10\.\d{4,}\/\S+$/;
+
+function normalizeDoi(raw) {
+    if (!raw) return null;
+    const s = String(raw).trim().replace(/^https?:\/\/(dx\.)?doi\.org\//, '').toLowerCase();
+    if (!s) return null;
+    return DOI_PATTERN.test(s) ? s : null;
+}
+
 export function normalize(raw, compoundIdHint = null, extractionMethod = 'concept_match') {
     if (!raw || !raw.id) return null;
 
     const openalexId = normalizeOpenAlexId(raw.id);
-    const doi = raw.doi ? raw.doi.replace(/^https?:\/\/doi\.org\//, '') : null;
+    const doi = normalizeDoi(raw.doi);
     const title = raw.title ?? raw.display_name ?? '';
     if (!title) return null;
 
