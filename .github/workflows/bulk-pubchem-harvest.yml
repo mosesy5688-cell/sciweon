@@ -1,0 +1,79 @@
+name: V0.6 Bulk Harvest — PubChem CURRENT-Full (matrix-8)
+
+# V0.6 Sprint 2 B.2 — one-shot PubChem 111M Bulk Backfill.
+# 8-way matrix workers each process ~31 SDF chunks (~14M compounds each).
+# Per worker estimate: ~30-45 min wall time (8 GB runner, JS streaming).
+# Matrix total wall time: ~30-45 min (parallel).
+#
+# Manual dispatch only — never on schedule. One run per PubChem CURRENT-Full
+# version refresh (monthly cadence per §8.9.3).
+#
+# Outputs:
+#   per-worker upload-artifact for diagnostic (kept 30 days)
+#   ./output/bulk/worker-{N}/*.jsonl + manifest.json (in-runner)
+#
+# Sprint 2 B.3 (next PR) will add R2 sharded upload + index.json manifest
+# after each worker completes. Current B.2 ship is local-only output for
+# parser + matrix split validation.
+
+on:
+  workflow_dispatch:
+    inputs:
+      chunk_limit:
+        description: 'Optional chunk limit per worker (for testing; default empty = process all assigned)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v06-bulk-harvest
+  cancel-in-progress: false
+
+jobs:
+  bulk-harvest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    name: Bulk Worker ${{ matrix.shard }}/8
+    env:
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Run bulk harvest worker ${{ matrix.shard }}/8
+        run: |
+          ARGS="--matrix-shard=${{ matrix.shard }} --matrix-total=8"
+          if [ -n "${{ inputs.chunk_limit }}" ]; then
+            ARGS="$ARGS --chunk-limit=${{ inputs.chunk_limit }}"
+          fi
+          node scripts/factory/bulk-pubchem-harvest.js $ARGS
+
+      - name: Upload worker artifact (diagnostic)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bulk-worker-${{ matrix.shard }}
+          path: output/bulk/worker-${{ matrix.shard }}/manifest.json
+          retention-days: 30
