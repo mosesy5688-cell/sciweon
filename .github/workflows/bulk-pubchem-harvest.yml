@@ -1,20 +1,18 @@
 name: V0.6 Bulk Harvest — PubChem CURRENT-Full (matrix-8)
 
-# V0.6 Sprint 2 B.2 — one-shot PubChem 111M Bulk Backfill.
+# V0.6 Sprint 2 B.2 + B.3 — one-shot PubChem 111M Bulk Backfill.
 # 8-way matrix workers each process ~31 SDF chunks (~14M compounds each).
-# Per worker estimate: ~30-45 min wall time (8 GB runner, JS streaming).
-# Matrix total wall time: ~30-45 min (parallel).
+# After harvest, each worker shards output into 1000-CID .jsonl.gz files
+# and uploads to R2 (bulk/pubchem/YYYY-MM/shards/). A fan-in job then
+# builds the global index.json from per-worker manifests.
 #
 # Manual dispatch only — never on schedule. One run per PubChem CURRENT-Full
 # version refresh (monthly cadence per §8.9.3).
 #
-# Outputs:
-#   per-worker upload-artifact for diagnostic (kept 30 days)
-#   ./output/bulk/worker-{N}/*.jsonl + manifest.json (in-runner)
-#
-# Sprint 2 B.3 (next PR) will add R2 sharded upload + index.json manifest
-# after each worker completes. Current B.2 ship is local-only output for
-# parser + matrix split validation.
+# R2 layout:
+#   bulk/pubchem/YYYY-MM/shards/shard-cid-XXXXXXXXX-XXXXXXXXX.jsonl.gz
+#   bulk/pubchem/YYYY-MM/workers/worker-N.json
+#   bulk/pubchem/YYYY-MM/index.json  (uploaded last by shard-index job)
 
 on:
   workflow_dispatch:
@@ -70,6 +68,13 @@ jobs:
           fi
           node scripts/factory/bulk-pubchem-harvest.js $ARGS
 
+      - name: Shard + upload to R2 (B.3)
+        run: |
+          RUN_MONTH=$(date -u +%Y-%m)
+          node scripts/factory/bulk-pubchem-shard.js \
+            --worker-shard=${{ matrix.shard }} \
+            --run-month=${RUN_MONTH}
+
       - name: Upload worker artifact (diagnostic)
         if: always()
         uses: actions/upload-artifact@v4
@@ -77,3 +82,34 @@ jobs:
           name: bulk-worker-${{ matrix.shard }}
           path: output/bulk/worker-${{ matrix.shard }}/manifest.json
           retention-days: 30
+
+  shard-index:
+    name: Build global index.json (B.3 fan-in)
+    needs: bulk-harvest
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+
+      - name: Build and upload global index.json
+        run: |
+          RUN_MONTH=$(date -u +%Y-%m)
+          node scripts/factory/bulk-pubchem-shard.js \
+            --build-index-only \
+            --run-month=${RUN_MONTH} \
+            --worker-total=8
