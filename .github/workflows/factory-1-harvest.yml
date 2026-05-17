@@ -3,12 +3,18 @@ name: Factory 1/4 Harvest
 # Stage 1 of 4: incremental harvest from upstream, cross-source linking,
 # upload raw + baseline to R2. Triggers stage 2 on success.
 #
-# Cron Mon + Thu 02:00 UTC. Cursor in R2 (state/harvest-cursor.json)
-# tracks next CID; never duplicates fetched range.
+# Cron daily 02:00 UTC. Cursor in R2 (state/harvest-cursor.json) tracks
+# next CID; never duplicates fetched range. Daily cadence is safe under
+# V0.5.2.1 cumulative aggregation (PR #26) — historical compounds are
+# preserved across cycles instead of overwritten each cycle.
+#
+# 02:00 UTC chosen so daily-snapshot (00:00 UTC, ~30 min) + source-health
+# (00:30 UTC, ~5 min) have released the factory-pipeline concurrency
+# lock before this workflow starts.
 
 on:
   schedule:
-    - cron: '0 2 * * 1,4'
+    - cron: '0 2 * * *'
   workflow_dispatch:
     inputs:
       manual_start_cid:
