@@ -42,7 +42,7 @@ const AGGREGATED_FILES = [
     'paper-links.jsonl',
     'negative-evidence-raw.jsonl',
     'neg-evidence.jsonl',
-    'sciweon-search.db',
+    'sciweon-search-index.json',
 ];
 
 function runScript(name) {

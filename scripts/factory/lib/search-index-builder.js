@@ -1,70 +1,61 @@
 /**
- * Search Index Builder — Tier 1.5 V0.5.3
+ * Search Index Builder — V0.5.3 (Sprint 1a rework per §10 simplified arch).
  *
- * Builds a SQLite FTS5 full-text index over Tier 1 cumulative aggregated
- * entities (compounds + trials + papers). Output is `sciweon-search.db`,
- * a single SQLite file that Worker reads via wa-sqlite + R2RangeVFS for
- * `GET /api/v1/search?q=...` Agent queries.
+ * REPLACES SQLite FTS5 approach with plain JSON inverted index. Original
+ * FTS5 design was a mechanical transfer from ai-nexus that didn't fit
+ * sciweon's API-only function (no SSR rendering = no SQL JOIN/BM25 needed).
+ * See feedback_pattern_transfer_function_match for the framing correction.
  *
- * Why this exists: Tier 0/1/2 are CID→entity lookup paths. Without an
- * inverted index, Agent's `search_compound("metformin")` would require
- * brute-force scan of cumulative aggregated (~2-5s for 1M Tier 1 +
- * impossible for 111M Tier 2). FTS5 sub-100ms latency with proper
- * sharding-by-table.
+ * Output: ./output/linked/sciweon-search-index.json
+ * Format (single file with per-type indices):
+ *   {
+ *     "version": "0.5.3",
+ *     "built_at": ISO timestamp,
+ *     "compounds": { "tokens": {token: [ids]}, "meta": {id: {name, snippet}} },
+ *     "trials":    { "tokens": {token: [ids]}, "meta": {id: {title, status}} },
+ *     "papers":    { "tokens": {token: [ids]}, "meta": {id: {title, year}} }
+ *   }
  *
- * Stack rationale: same pattern as ai-nexus `data/fts.db` (proven at
- * 150K+ entities, sub-50ms p95 via R2RangeVFS). Sciweon scope V0.7+:
- * Tier 1 entities only (~1M Top Core). Tier 2 bulk 111M not indexed
- * here (per §9.4 design — chemical synonym data not in bulk stub).
+ * Worker query path: load JSON on cold start, parse to Maps, do O(1) lookup
+ * + set intersection for multi-term queries. No SQLite engine, no WASM, no VFS.
  *
- * Build context: runs as the LAST step of Stage 3, AFTER cumulative
- * merger (V0.5.2.1) has written the merged JSONL files to ./output/linked/.
- * Output is uploaded to R2 as part of aggregated bundle via Stage 3
- * uploadStage call.
+ * Scale envelope (per §10):
+ *   Up to ~250K compounds: JSON Map approach OK (decompressed ~50MB in V8)
+ *   1M+ compounds: need to switch to SQLite FTS5 + R2RangeVFS (defer to V0.6+)
+ *   For now (25K cumulative, 1M Tier 1 Core target), JSON is sufficient.
  *
- * Memory budget: better-sqlite3 native binding; streaming JSONL parser
- * + batched (1000 records / transaction). Peak ~150MB for 1M compounds.
+ * Tier 2 (111M PubChem stub) intentionally NOT indexed — would explode
+ * Worker memory at 1GB+. Agent queries Tier 2 only by exact CID, not name.
  */
 
 import fs from 'fs/promises';
 import { createReadStream } from 'fs';
 import readline from 'readline';
 import path from 'path';
-import Database from 'better-sqlite3';
 
 const LINKED_DIR = './output/linked';
-const OUTPUT_FILE = 'sciweon-search.db';
-const BATCH_SIZE = 1000;
+const OUTPUT_FILE = 'sciweon-search-index.json';
+const MIN_TOKEN_LEN = 2;
+const MAX_TOKEN_LEN = 50;
+const MAX_SNIPPET_LEN = 200;
 
-// FTS5 schemas. UNINDEXED columns are stored but not tokenized — saves
-// index space + ensures lookup-only fields (cid, inchi_key) don't bloat
-// the inverted index.
-const SCHEMAS = {
-    compound_search: `CREATE VIRTUAL TABLE compound_search USING fts5(
-        name,
-        synonyms,
-        iupac_name,
-        cid UNINDEXED,
-        inchi_key UNINDEXED,
-        tier UNINDEXED,
-        tokenize='unicode61 remove_diacritics 2'
-    )`,
-    trial_search: `CREATE VIRTUAL TABLE trial_search USING fts5(
-        title,
-        conditions,
-        interventions,
-        trial_id UNINDEXED,
-        status UNINDEXED,
-        tokenize='unicode61 remove_diacritics 2'
-    )`,
-    paper_search: `CREATE VIRTUAL TABLE paper_search USING fts5(
-        title,
-        doi UNINDEXED,
-        paper_id UNINDEXED,
-        publication_year UNINDEXED,
-        tokenize='unicode61 remove_diacritics 2'
-    )`,
-};
+// Tokenize: lowercase, strip punctuation, keep alphanumeric + basic unicode.
+// Conservative — Sciweon doesn't need fuzzy/phonetic; exact + multi-word.
+function tokenize(text) {
+    if (!text) return [];
+    return String(text).toLowerCase()
+        .replace(/[^\p{L}\p{N}]+/gu, ' ')
+        .split(/\s+/)
+        .filter(t => t.length >= MIN_TOKEN_LEN && t.length <= MAX_TOKEN_LEN);
+}
+
+function uniqueTokens(...parts) {
+    const seen = new Set();
+    for (const part of parts) {
+        for (const tok of tokenize(part)) seen.add(tok);
+    }
+    return [...seen];
+}
 
 function streamJsonl(filePath) {
     return readline.createInterface({
@@ -74,147 +65,133 @@ function streamJsonl(filePath) {
 }
 
 async function safeReadJsonl(filePath, onRecord) {
-    try {
-        await fs.access(filePath);
-    } catch {
-        console.log(`[SEARCH-INDEX]   ${path.basename(filePath)}: file absent, skipping`);
-        return 0;
-    }
-    let count = 0;
+    try { await fs.access(filePath); }
+    catch { console.log(`[SEARCH-INDEX]   ${path.basename(filePath)}: file absent, skipping`); return 0; }
+    let parsedCount = 0;
     const rl = streamJsonl(filePath);
     for await (const line of rl) {
         if (!line.trim()) continue;
-        try {
-            const rec = JSON.parse(line);
-            await onRecord(rec);
-            count++;
-        } catch {
-            // Skip malformed lines (defensive; validation gate should prevent these)
-        }
+        try { onRecord(JSON.parse(line)); parsedCount++; }
+        catch { /* skip malformed */ }
     }
-    return count;
+    return parsedCount;
 }
 
-function extractCompoundName(rec) {
-    // Priority: first non-empty synonym → iupac_name → "PubChem CID:N" fallback
+function deriveCompoundName(rec) {
     if (Array.isArray(rec.synonyms) && rec.synonyms.length > 0 && rec.synonyms[0]) {
-        return String(rec.synonyms[0]).slice(0, 200);
+        return String(rec.synonyms[0]).slice(0, MAX_SNIPPET_LEN);
     }
-    if (rec.iupac_name) return String(rec.iupac_name).slice(0, 200);
+    if (rec.iupac_name) return String(rec.iupac_name).slice(0, MAX_SNIPPET_LEN);
     return `PubChem CID:${rec.pubchem_cid || 'unknown'}`;
 }
 
-function extractCompoundSynonyms(rec) {
-    // Join all synonyms with space; cap at 4KB to keep FTS5 row reasonable
-    if (!Array.isArray(rec.synonyms)) return '';
-    return rec.synonyms.slice(0, 50).join(' ').slice(0, 4000);
-}
-
-function extractTrialTitle(rec) {
-    // Trial schema: brief_title / official_title / id fallback
-    return String(rec.brief_title || rec.official_title || rec.title || '').slice(0, 500);
-}
-
-function extractTrialConditions(rec) {
-    if (!Array.isArray(rec.conditions)) return '';
-    return rec.conditions.slice(0, 30).join(' ').slice(0, 2000);
-}
-
-function extractTrialInterventions(rec) {
-    if (!Array.isArray(rec.interventions)) return '';
-    return rec.interventions
-        .slice(0, 30)
-        .map(i => (typeof i === 'string' ? i : i?.name || ''))
-        .filter(Boolean)
-        .join(' ')
-        .slice(0, 2000);
-}
-
-async function buildIndex({ outputPath, inputDir = LINKED_DIR }) {
-    const startTime = Date.now();
-    console.log('[SEARCH-INDEX] V0.5.3 — building Tier 1.5 FTS5 index');
-
-    // Remove any prior file to ensure clean rebuild.
-    try { await fs.unlink(outputPath); } catch { /* not present */ }
-
-    const db = new Database(outputPath);
-
-    // Bulk-insert pragmas (WAL faster for our pattern; we VACUUM at end).
-    db.pragma('journal_mode = WAL');
-    db.pragma('synchronous = NORMAL');
-    db.pragma('cache_size = -64000'); // 64MB page cache
-    db.pragma('temp_store = MEMORY');
-
-    for (const ddl of Object.values(SCHEMAS)) db.exec(ddl);
-
-    const insertCompound = db.prepare(`INSERT INTO compound_search (name, synonyms, iupac_name, cid, inchi_key, tier) VALUES (?, ?, ?, ?, ?, ?)`);
-    const insertTrial = db.prepare(`INSERT INTO trial_search (title, conditions, interventions, trial_id, status) VALUES (?, ?, ?, ?, ?)`);
-    const insertPaper = db.prepare(`INSERT INTO paper_search (title, doi, paper_id, publication_year) VALUES (?, ?, ?, ?)`);
-
-    const txCompound = db.transaction((batch) => { for (const r of batch) insertCompound.run(r); });
-    const txTrial = db.transaction((batch) => { for (const r of batch) insertTrial.run(r); });
-    const txPaper = db.transaction((batch) => { for (const r of batch) insertPaper.run(r); });
-
-    async function indexFile(fname, mapFn, txFn) {
-        const buffer = [];
-        let insertedCount = 0;
-        await safeReadJsonl(path.join(inputDir, fname), async (rec) => {
-            const row = mapFn(rec);
-            if (row) {
-                buffer.push(row);
-                insertedCount++;
-                if (buffer.length >= BATCH_SIZE) {
-                    txFn(buffer.splice(0, buffer.length));
-                }
-            }
-        });
-        if (buffer.length > 0) txFn(buffer);
-        return insertedCount;
+function deriveCompoundSnippet(rec) {
+    const parts = [];
+    if (rec.molecular_formula) parts.push(rec.molecular_formula);
+    if (Array.isArray(rec.synonyms) && rec.synonyms.length > 1) {
+        parts.push(`aka: ${rec.synonyms.slice(1, 4).join(', ')}`);
     }
+    return parts.join(' — ').slice(0, MAX_SNIPPET_LEN);
+}
 
-    const compoundCount = await indexFile('compounds-enriched.jsonl', rec => {
-        if (!rec.id || !rec.inchi_key) return null;
-        return [
-            extractCompoundName(rec),
-            extractCompoundSynonyms(rec),
-            String(rec.iupac_name || '').slice(0, 500),
-            String(rec.id),
-            String(rec.inchi_key),
-            '1', // tier 1 (Top 1M Core); Tier 0 hot shard membership derived at API time
-        ];
-    }, txCompound);
-    console.log(`[SEARCH-INDEX]   compound_search:  ${compoundCount} rows`);
+function makeBucket() {
+    return { tokens: Object.create(null), meta: Object.create(null) };
+}
 
-    const trialCount = await indexFile('trials.jsonl', rec => {
-        if (!rec.id) return null;
-        return [
-            extractTrialTitle(rec),
-            extractTrialConditions(rec),
-            extractTrialInterventions(rec),
-            String(rec.id),
-            String(rec.status || ''),
-        ];
-    }, txTrial);
-    console.log(`[SEARCH-INDEX]   trial_search:     ${trialCount} rows`);
+function addToken(bucket, token, id) {
+    const list = bucket.tokens[token];
+    if (list) list.push(id);
+    else bucket.tokens[token] = [id];
+}
 
-    const paperCount = await indexFile('papers.jsonl', rec => {
-        if (!rec.id) return null;
-        return [
-            String(rec.title || '').slice(0, 500),
-            String(rec.doi || ''),
-            String(rec.id),
-            String(rec.publication_year || ''),
-        ];
-    }, txPaper);
-    console.log(`[SEARCH-INDEX]   paper_search:     ${paperCount} rows`);
+async function buildCompoundIndex(bucket, inputDir) {
+    const file = path.join(inputDir, 'compounds-enriched.jsonl');
+    let inserted = 0;
+    await safeReadJsonl(file, rec => {
+        if (!rec.id || !rec.inchi_key) return;
+        const tokens = uniqueTokens(
+            deriveCompoundName(rec),
+            Array.isArray(rec.synonyms) ? rec.synonyms.slice(0, 50).join(' ') : '',
+            rec.iupac_name,
+        );
+        for (const t of tokens) addToken(bucket, t, rec.id);
+        bucket.meta[rec.id] = {
+            name: deriveCompoundName(rec),
+            snippet: deriveCompoundSnippet(rec),
+        };
+        inserted++;
+    });
+    return inserted;
+}
 
-    // VACUUM to compact + reduce final file size. FTS5 indexes compact well.
-    db.exec('VACUUM');
-    db.close();
+async function buildTrialIndex(bucket, inputDir) {
+    const file = path.join(inputDir, 'trials.jsonl');
+    let inserted = 0;
+    await safeReadJsonl(file, rec => {
+        if (!rec.id) return;
+        const title = String(rec.brief_title || rec.official_title || rec.title || '').slice(0, MAX_SNIPPET_LEN);
+        const conditions = Array.isArray(rec.conditions) ? rec.conditions.slice(0, 30).join(' ') : '';
+        const interventions = Array.isArray(rec.interventions)
+            ? rec.interventions.slice(0, 30).map(i => typeof i === 'string' ? i : i?.name || '').filter(Boolean).join(' ')
+            : '';
+        const tokens = uniqueTokens(title, conditions, interventions);
+        for (const t of tokens) addToken(bucket, t, rec.id);
+        bucket.meta[rec.id] = {
+            title,
+            status: String(rec.status || '').slice(0, 50),
+        };
+        inserted++;
+    });
+    return inserted;
+}
+
+async function buildPaperIndex(bucket, inputDir) {
+    const file = path.join(inputDir, 'papers.jsonl');
+    let inserted = 0;
+    await safeReadJsonl(file, rec => {
+        if (!rec.id) return;
+        const title = String(rec.title || '').slice(0, MAX_SNIPPET_LEN);
+        const tokens = uniqueTokens(title);
+        for (const t of tokens) addToken(bucket, t, rec.id);
+        bucket.meta[rec.id] = {
+            title,
+            year: rec.publication_year || null,
+        };
+        inserted++;
+    });
+    return inserted;
+}
+
+export async function buildIndex({ outputPath, inputDir = LINKED_DIR }) {
+    const startTime = Date.now();
+    console.log('[SEARCH-INDEX] V0.5.3 — building JSON inverted index (per §10)');
+
+    const compounds = makeBucket();
+    const trials = makeBucket();
+    const papers = makeBucket();
+
+    const compoundCount = await buildCompoundIndex(compounds, inputDir);
+    console.log(`[SEARCH-INDEX]   compounds: ${compoundCount} records, ${Object.keys(compounds.tokens).length} unique tokens`);
+    const trialCount = await buildTrialIndex(trials, inputDir);
+    console.log(`[SEARCH-INDEX]   trials:    ${trialCount} records, ${Object.keys(trials.tokens).length} unique tokens`);
+    const paperCount = await buildPaperIndex(papers, inputDir);
+    console.log(`[SEARCH-INDEX]   papers:    ${paperCount} records, ${Object.keys(papers.tokens).length} unique tokens`);
+
+    const index = {
+        version: '0.5.3',
+        built_at: new Date().toISOString(),
+        compounds,
+        trials,
+        papers,
+    };
+
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    const serialized = JSON.stringify(index);
+    await fs.writeFile(outputPath, serialized, 'utf-8');
 
     const stat = await fs.stat(outputPath);
     const elapsed = Math.round((Date.now() - startTime) / 1000);
-    console.log(`[SEARCH-INDEX] Done: ${outputPath} (${(stat.size / 1024 / 1024).toFixed(1)} MB) in ${elapsed}s`);
+    console.log(`[SEARCH-INDEX] Done: ${outputPath} (${(stat.size / 1024 / 1024).toFixed(1)} MB raw) in ${elapsed}s`);
     return { compoundCount, trialCount, paperCount, sizeBytes: stat.size, elapsedSec: elapsed };
 }
 
@@ -228,4 +205,4 @@ if (import.meta.url === `file://${process.argv[1].replace(/\\/g, '/')}`) {
     main().catch(err => { console.error('[SEARCH-INDEX] Fatal:', err); process.exit(1); });
 }
 
-export { buildIndex, OUTPUT_FILE, SCHEMAS };
+export { OUTPUT_FILE };

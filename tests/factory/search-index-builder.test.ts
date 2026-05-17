@@ -1,16 +1,12 @@
 /**
- * Tests for V0.5.3 Tier 1.5 FTS5 search index builder.
- *
- * Anchored in §9.4 design: full-text search over Tier 1 cumulative
- * aggregated. Verifies the indexer produces a queryable SQLite FTS5 db
- * with expected schemas and that representative searches return hits.
+ * Tests for V0.5.3 search index builder (JSON inverted index per §10).
+ * Replaces FTS5 SQLite tests after framing correction.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import Database from 'better-sqlite3';
 import { buildIndex } from '../../scripts/factory/lib/search-index-builder.js';
 
 let tmpDir: string;
@@ -22,11 +18,15 @@ async function writeJsonl(fname: string, records: object[]) {
     await fs.writeFile(path.join(inputDir, fname), text, 'utf-8');
 }
 
+async function readIndex(): Promise<any> {
+    return JSON.parse(await fs.readFile(outputPath, 'utf-8'));
+}
+
 beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sciweon-search-test-'));
     inputDir = path.join(tmpDir, 'linked');
     await fs.mkdir(inputDir, { recursive: true });
-    outputPath = path.join(tmpDir, 'sciweon-search.db');
+    outputPath = path.join(tmpDir, 'sciweon-search-index.json');
 });
 
 afterEach(async () => {
@@ -49,10 +49,10 @@ function makeCompound(cid: number, synonyms: string[], iupac?: string) {
     };
 }
 
-function makeTrial(ncIdNum: string, title: string, conditions: string[]) {
+function makeTrial(nctId: string, title: string, conditions: string[]) {
     return {
-        id: `sciweon::trial::NCT:${ncIdNum}`,
-        nct_id: ncIdNum,
+        id: `sciweon::trial::NCT:${nctId}`,
+        nct_id: nctId,
         status: 'COMPLETED',
         brief_title: title,
         conditions,
@@ -69,107 +69,100 @@ function makePaper(doi: string, title: string, year: number) {
     };
 }
 
-describe('buildIndex', () => {
-    it('produces FTS5 db with 3 virtual tables', async () => {
-        await writeJsonl('compounds-enriched.jsonl', [makeCompound(2244, ['aspirin', 'acetylsalicylic acid'])]);
-        await writeJsonl('trials.jsonl', []);
-        await writeJsonl('papers.jsonl', []);
+describe('buildIndex (JSON inverted index)', () => {
+    it('produces version + per-type buckets', async () => {
+        await writeJsonl('compounds-enriched.jsonl', [makeCompound(2244, ['aspirin'])]);
 
         const stats = await buildIndex({ inputDir, outputPath });
         expect(stats.compoundCount).toBe(1);
 
-        const db = new Database(outputPath, { readonly: true });
-        const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{name: string}>;
-        const tableNames = tables.map(t => t.name);
-        expect(tableNames).toContain('compound_search');
-        expect(tableNames).toContain('trial_search');
-        expect(tableNames).toContain('paper_search');
-        db.close();
+        const idx = await readIndex();
+        expect(idx.version).toBe('0.5.3');
+        expect(idx.built_at).toMatch(/^\d{4}-\d{2}-\d{2}/);
+        expect(idx.compounds).toBeDefined();
+        expect(idx.trials).toBeDefined();
+        expect(idx.papers).toBeDefined();
     });
 
-    it('compound search finds by name', async () => {
+    it('compound search finds by name token', async () => {
         await writeJsonl('compounds-enriched.jsonl', [
-            makeCompound(2244, ['aspirin', 'acetylsalicylic acid'], '2-acetyloxybenzoic acid'),
-            makeCompound(4091, ['metformin', 'glucophage'], '1,1-dimethylbiguanide'),
-            makeCompound(3672, ['ibuprofen'], '2-(4-isobutylphenyl)propanoic acid'),
+            makeCompound(2244, ['aspirin', 'acetylsalicylic acid']),
+            makeCompound(4091, ['metformin', 'glucophage']),
+            makeCompound(3672, ['ibuprofen']),
         ]);
 
-        const stats = await buildIndex({ inputDir, outputPath });
-        expect(stats.compoundCount).toBe(3);
+        await buildIndex({ inputDir, outputPath });
+        const idx = await readIndex();
 
-        const db = new Database(outputPath, { readonly: true });
-        const results = db.prepare("SELECT cid FROM compound_search WHERE compound_search MATCH ? LIMIT 5").all('metformin') as Array<{cid: string}>;
-        expect(results.length).toBe(1);
-        expect(results[0].cid).toBe('sciweon::compound::CID:4091');
-        db.close();
+        expect(idx.compounds.tokens['metformin']).toEqual(['sciweon::compound::CID:4091']);
+        expect(idx.compounds.tokens['aspirin']).toEqual(['sciweon::compound::CID:2244']);
+        expect(idx.compounds.tokens['ibuprofen']).toEqual(['sciweon::compound::CID:3672']);
     });
 
-    it('compound search finds by IUPAC fragment', async () => {
+    it('compound search indexes IUPAC tokens', async () => {
         await writeJsonl('compounds-enriched.jsonl', [
             makeCompound(2244, ['aspirin'], '2-acetyloxybenzoic acid'),
-            makeCompound(4091, ['metformin'], '1,1-dimethylbiguanide'),
         ]);
 
-        const stats = await buildIndex({ inputDir, outputPath });
-        const db = new Database(outputPath, { readonly: true });
-        const results = db.prepare("SELECT cid FROM compound_search WHERE compound_search MATCH ? LIMIT 5").all('acetyloxybenzoic') as Array<{cid: string}>;
-        expect(results.length).toBe(1);
-        expect(results[0].cid).toBe('sciweon::compound::CID:2244');
-        db.close();
+        await buildIndex({ inputDir, outputPath });
+        const idx = await readIndex();
+
+        expect(idx.compounds.tokens['acetyloxybenzoic']).toEqual(['sciweon::compound::CID:2244']);
     });
 
-    it('compound search finds by synonym fragment', async () => {
+    it('compound search indexes all synonym tokens', async () => {
         await writeJsonl('compounds-enriched.jsonl', [
             makeCompound(4091, ['metformin', 'glucophage', 'fortamet'], 'dimethylbiguanide'),
         ]);
 
-        const stats = await buildIndex({ inputDir, outputPath });
-        const db = new Database(outputPath, { readonly: true });
-        const r1 = db.prepare("SELECT cid FROM compound_search WHERE compound_search MATCH ?").all('glucophage') as Array<{cid: string}>;
-        const r2 = db.prepare("SELECT cid FROM compound_search WHERE compound_search MATCH ?").all('fortamet') as Array<{cid: string}>;
-        expect(r1.length).toBe(1);
-        expect(r2.length).toBe(1);
-        db.close();
+        await buildIndex({ inputDir, outputPath });
+        const idx = await readIndex();
+
+        expect(idx.compounds.tokens['glucophage']).toEqual(['sciweon::compound::CID:4091']);
+        expect(idx.compounds.tokens['fortamet']).toEqual(['sciweon::compound::CID:4091']);
+        expect(idx.compounds.tokens['dimethylbiguanide']).toEqual(['sciweon::compound::CID:4091']);
     });
 
-    it('trial search finds by title token', async () => {
+    it('trial index tokenizes title + conditions', async () => {
         await writeJsonl('compounds-enriched.jsonl', []);
         await writeJsonl('trials.jsonl', [
             makeTrial('04123456', 'Metformin for Type 2 Diabetes', ['diabetes', 'insulin resistance']),
-            makeTrial('04999999', 'Aspirin in Cardiac Prevention', ['cardiovascular disease']),
         ]);
         await writeJsonl('papers.jsonl', []);
 
-        const stats = await buildIndex({ inputDir, outputPath });
-        expect(stats.trialCount).toBe(2);
+        await buildIndex({ inputDir, outputPath });
+        const idx = await readIndex();
 
-        const db = new Database(outputPath, { readonly: true });
-        const r = db.prepare("SELECT trial_id FROM trial_search WHERE trial_search MATCH ? LIMIT 5").all('diabetes') as Array<{trial_id: string}>;
-        expect(r.length).toBe(1);
-        expect(r[0].trial_id).toBe('sciweon::trial::NCT:04123456');
-        db.close();
+        expect(idx.trials.tokens['diabetes']).toEqual(['sciweon::trial::NCT:04123456']);
+        expect(idx.trials.tokens['metformin']).toEqual(['sciweon::trial::NCT:04123456']);
+        expect(idx.trials.meta['sciweon::trial::NCT:04123456'].status).toBe('COMPLETED');
     });
 
-    it('paper search finds by title token', async () => {
+    it('paper index tokenizes title', async () => {
         await writeJsonl('compounds-enriched.jsonl', []);
         await writeJsonl('trials.jsonl', []);
         await writeJsonl('papers.jsonl', [
             makePaper('10.1038/nature12373', 'Mechanism of metformin in diabetes', 2013),
-            makePaper('10.1056/nejm200001063', 'Aspirin Resistance and Cardiovascular Events', 2005),
+        ]);
+
+        await buildIndex({ inputDir, outputPath });
+        const idx = await readIndex();
+
+        expect(idx.papers.tokens['mechanism']).toEqual(['sciweon::paper::DOI:10.1038/nature12373']);
+        expect(idx.papers.meta['sciweon::paper::DOI:10.1038/nature12373'].year).toBe(2013);
+    });
+
+    it('rejects records lacking required fields', async () => {
+        await writeJsonl('compounds-enriched.jsonl', [
+            makeCompound(2244, ['aspirin']),
+            { id: 'sciweon::compound::CID:9999', synonyms: ['mystery'] } as any,
         ]);
 
         const stats = await buildIndex({ inputDir, outputPath });
-        expect(stats.paperCount).toBe(2);
-
-        const db = new Database(outputPath, { readonly: true });
-        const r = db.prepare("SELECT paper_id FROM paper_search WHERE paper_search MATCH ?").all('metformin') as Array<{paper_id: string}>;
-        expect(r.length).toBe(1);
-        expect(r[0].paper_id).toBe('sciweon::paper::DOI:10.1038/nature12373');
-        db.close();
+        expect(stats.compoundCount).toBe(1);
     });
 
-    it('handles absent input files gracefully (Stage 3 partial run)', async () => {
-        // Only compounds present, trials + papers absent
+    it('handles absent input files gracefully', async () => {
         await writeJsonl('compounds-enriched.jsonl', [makeCompound(2244, ['aspirin'])]);
 
         const stats = await buildIndex({ inputDir, outputPath });
@@ -177,26 +170,27 @@ describe('buildIndex', () => {
         expect(stats.trialCount).toBe(0);
         expect(stats.paperCount).toBe(0);
 
-        // db still valid (3 empty tables + 1 populated)
-        const db = new Database(outputPath, { readonly: true });
-        const trialRows = db.prepare("SELECT COUNT(*) as c FROM trial_search").get() as {c: number};
-        expect(trialRows.c).toBe(0);
-        db.close();
+        const idx = await readIndex();
+        expect(Object.keys(idx.trials.tokens).length).toBe(0);
+        expect(Object.keys(idx.papers.tokens).length).toBe(0);
     });
 
-    it('rejects compound records lacking required fields (id / inchi_key)', async () => {
+    it('compound meta carries name + snippet', async () => {
         await writeJsonl('compounds-enriched.jsonl', [
-            makeCompound(2244, ['aspirin']),
-            { id: 'sciweon::compound::CID:9999', /* missing inchi_key */ synonyms: ['mystery'] } as any,
+            makeCompound(2244, ['aspirin', 'acetylsalicylic acid', 'salicylic acid acetate']),
         ]);
 
-        const stats = await buildIndex({ inputDir, outputPath });
-        expect(stats.compoundCount).toBe(1);  // only aspirin indexed
+        await buildIndex({ inputDir, outputPath });
+        const idx = await readIndex();
+
+        const meta = idx.compounds.meta['sciweon::compound::CID:2244'];
+        expect(meta.name).toBe('aspirin');
+        expect(meta.snippet).toContain('C9H8O4');
     });
 
-    it('builds against 1000-compound dataset in under 5 seconds (perf smoke)', async () => {
+    it('1000-compound dataset builds in under 5 seconds (perf smoke)', async () => {
         const compounds = Array.from({ length: 1000 }, (_, i) =>
-            makeCompound(10000 + i, [`compound-${i}`, `synonym-${i}-a`, `synonym-${i}-b`], `iupac-name-${i}`),
+            makeCompound(10000 + i, [`compound-${i}`, `syn-${i}-a`, `syn-${i}-b`], `iupac-${i}`),
         );
         await writeJsonl('compounds-enriched.jsonl', compounds);
 
