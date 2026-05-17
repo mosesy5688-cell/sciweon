@@ -49,10 +49,18 @@ function parseCsvLine(line) {
     return fields;
 }
 
+// Sciweon Compound/Paper schemas require DOI regex `^10\.\d{4,}/\S+$`.
+// RW CSV occasionally has placeholder values ("unavailable", "n/a", etc.)
+// in the RetractionDOI column. Strip URL prefix + validate format; return
+// null on mismatch so downstream consumers don't propagate non-DOI strings
+// into schema-bound fields (caused bidirectional-linker REJECT halt 2026-05-17).
+const DOI_PATTERN = /^10\.\d{4,}\/\S+$/;
+
 function normalizeDoi(doi) {
     if (!doi) return null;
     const s = String(doi).trim().toLowerCase().replace(/^https?:\/\/(dx\.)?doi\.org\//, '');
-    return s || null;
+    if (!s) return null;
+    return DOI_PATTERN.test(s) ? s : null;
 }
 
 function parseDate(s) {
