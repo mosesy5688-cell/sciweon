@@ -45,7 +45,8 @@ export const COMPOUND_SCHEMA = {
     },
 
     // ─── Names ───
-    iupac_name: { type: 'string', required: false, maxLength: 1000 },
+    // Cycle-4 CID:24763 hit length 2712 (macromolecule). Widened 1000 → 10000.
+    iupac_name: { type: 'string', required: false, maxLength: 10000 },
     synonyms: { type: 'array', required: false, maxItems: 100, itemType: 'string' },
 
     // ─── Computed Properties ───
@@ -55,26 +56,25 @@ export const COMPOUND_SCHEMA = {
             log_p: {
                 type: 'object', required: false,
                 shape: {
-                    // Empirical: CID 1-15000 hit max +26.8, CID 16369 hit +36.6.
-                    // Cap = 2x headroom; > 80 still REJECT as degenerate XLogP3 output.
-                    value: { type: 'number', min: -25, max: 80 },
+                    // PR #20 widened max 30 → 80. Cycle-4 CID:24763 hit -70.2
+                    // (macromolecule); widened min -25 → -150.
+                    value: { type: 'number', min: -150, max: 80 },
                     method: { type: 'string', enum: ['XLogP3', 'AlogP', 'computed'] },
                 },
             },
             tpsa: {
                 type: 'object', required: false,
                 shape: {
-                    // Range widened from 500 → 1500 based on 1000 CID empirical data.
-                    // Real extremes: up to 685 for large polar molecules (peptides, polyphenols).
-                    value: { type: 'number', min: 0, max: 1500 },
+                    // 500 → 1500 (1K CID data) → 10000 (cycle-4 CID:24763=3040).
+                    value: { type: 'number', min: 0, max: 10000 },
                     unit: { type: 'string', enum: ['angstrom_squared'] },
                 },
             },
             complexity: { type: 'number', required: false, min: 0 },
-            // Widened max 50 → 100 based on 5000 CID data (CID 3807/4672 had 53/54 acceptors).
-            // Large peptides / oligosaccharides routinely exceed 50 H-bond sites.
-            h_bond_donors: { type: 'integer', required: false, min: 0, max: 100 },
-            h_bond_acceptors: { type: 'integer', required: false, min: 0, max: 100 },
+            // 50 → 100 (5K CID) → 1000 (cycle-4 CID:24763 had 116 donors / 191 acceptors,
+            // macromolecule). Large biomolecules have hundreds of H-bond sites.
+            h_bond_donors: { type: 'integer', required: false, min: 0, max: 1000 },
+            h_bond_acceptors: { type: 'integer', required: false, min: 0, max: 1000 },
             rotatable_bonds: { type: 'integer', required: false, min: 0, max: 200 },
             // Lipinski Rule of Five — computed from above 4 fields
             // Drug-likeness quick check. AI Agent screening uses this heavily.
