@@ -22,6 +22,7 @@
  */
 
 import { handleNegativeEvidence } from './worker/api/negative-evidence';
+import { handleMcp } from './worker/api/mcp';
 
 export interface Env {
     ASSETS: Fetcher;
@@ -35,6 +36,14 @@ export default {
         if (url.pathname.startsWith('/api/v1/compound/') && url.pathname.endsWith('/negative-evidence')) {
             try {
                 return await handleNegativeEvidence(req, env, ctx);
+            } catch (err) {
+                return json500(err);
+            }
+        }
+
+        if (url.pathname === '/api/mcp' || url.pathname === '/api/v1/mcp') {
+            try {
+                return await handleMcp(req, env, ctx);
             } catch (err) {
                 return json500(err);
             }
