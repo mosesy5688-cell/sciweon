@@ -1,7 +1,7 @@
 /**
  * Sciweon Data Quality Audit — 6-principle quantification against latest R2 snapshot.
  *
- * Per Sciweon first principles (LABNEXUS_EXECUTION_DETAILS):
+ * Per Sciweon first principles:
  *   1. Machine-readable types + units + ranges
  *   2. Validation, not "existence"
  *   3. Explicit gaps (unknown / not_collected / excluded)

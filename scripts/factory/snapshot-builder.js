@@ -1,10 +1,9 @@
 /**
- * Snapshot Builder V0.4.3 — daily entity graph snapshot for Layer 4 time-series.
+ * Snapshot Builder V0.4.3 — daily entity graph time-series snapshot.
  *
- * Per 2026-05-13 strategic plan: Layer 4 (time dimension) is the only
- * physically non-copyable moat. A competitor starting today cannot
- * retroactively get last year's daily snapshots. Every day Sciweon
- * misses, the catch-up window stays open one more day.
+ * Continuous accumulation builds a retroactive dataset that cannot be
+ * reconstructed from a later starting point. Every calendar day contributes
+ * to citation / retraction / approval trajectory analysis.
  *
  * This step packages the output/linked/*.jsonl files into a date-stamped
  * R2 prefix with manifest (record counts + SHA-256 checksums). Upload
@@ -121,7 +120,7 @@ async function main() {
     console.log(`  Uncompressed:       ${(manifest.total_uncompressed_bytes / 1024 / 1024).toFixed(2)} MB`);
     console.log(`  Compressed:         ${(manifest.total_compressed_bytes / 1024 / 1024).toFixed(2)} MB`);
     console.log(`  Manifest:           ${manifestPath}`);
-    console.log(`\n[SNAPSHOT-BUILDER] Layer 4 clock: TICK (this is snapshot ${dateStr})`);
+    console.log(`\n[SNAPSHOT-BUILDER] Snapshot complete: TICK (this is snapshot ${dateStr})`);
 }
 
 main().catch(err => { console.error('[SNAPSHOT-BUILDER] Fatal:', err); process.exit(1); });

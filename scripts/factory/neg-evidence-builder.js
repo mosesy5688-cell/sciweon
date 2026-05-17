@@ -1,10 +1,9 @@
 /**
  * NegEvidence Builder V0.4.2 — synthesize all negative signals into entity.
  *
- * Sciweon's primary differentiation pillar (per SCIWEON_NEGATIVE_EVIDENCE_DB.md
- * + 2026-05-13 strategic reframe Layer 3). Single entity type unifies
- * 6+ kinds of negative signals; Agent issues one query to get the full
- * negative profile of any compound/paper/trial.
+ * Unified Negative Evidence synthesis. Single entity type unifies 6+ kinds
+ * of negative signals; Agent issues one query to get the full negative
+ * profile of any compound/paper/trial.
  *
  * Input data sources (all already in output/linked/):
  *   - negative-evidence-raw.jsonl  (V0.1 keyword classifier output)

@@ -10,7 +10,7 @@
  * API docs: https://www.ncbi.nlm.nih.gov/books/NBK25497/
  * Base: https://eutils.ncbi.nlm.nih.gov/entrez/eutils
  *
- * PRIMARY-DATA contract (feedback_no_secondary_processed_data):
+ * PRIMARY-DATA contract (primary-data-only policy):
  *   Consumed (raw NCBI-indexed publisher metadata):
  *     - uid (PMID) — international biomedical paper ID
  *     - source (journal name — publisher-supplied)

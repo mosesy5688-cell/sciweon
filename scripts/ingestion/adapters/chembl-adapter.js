@@ -113,7 +113,7 @@ export function normalizeDrugStatus(molecule) {
 // from PRIMARY measurement data (value + unit + activity_type), NOT from
 // ChEMBL's `activity_comment` text or `confidence_score`. Both ChEMBL fields
 // are curator secondary annotations and are excluded per the primary-data
-// principle (feedback_no_secondary_processed_data).
+// principle (primary-data-only policy).
 
 const UNIT_MAP = {
     // Molar concentration

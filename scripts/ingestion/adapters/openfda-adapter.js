@@ -13,7 +13,7 @@
  * API docs: https://open.fda.gov/apis/drug/
  * Base: https://api.fda.gov
  *
- * PRIMARY-DATA contract (feedback_no_secondary_processed_data):
+ * PRIMARY-DATA contract (primary-data-only policy):
  *   Consumed (FDA-curated authoritative regulatory data):
  *     - brand_name / generic_name / manufacturer_name
  *     - application_number      (FDA-issued canonical ID)

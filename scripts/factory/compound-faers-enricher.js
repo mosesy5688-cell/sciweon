@@ -6,9 +6,9 @@
  * `count=patient.reaction.reactionmeddrapt.exact` returns top ADR terms
  * with FAERS report counts in a single API call.
  *
- * Per V0.4 strategic plan (2026-05-13): NegEvidence Cat E (adverse events)
- * promoted from Phase E to V0.4 in signal-level form. Full per-report
- * data deferred indefinitely (24M records, not needed for Agent decision).
+ * V0.4 design: NegEvidence Cat E (adverse events) covered in signal-level
+ * form (top ADR terms + report counts). Full per-report data deferred
+ * indefinitely (24M records, not needed for Agent decision).
  *
  * Pipeline position: runs after fda-enricher (which produces fda_signals).
  * Extends compound.fda_signals with faers_top_adr_terms.

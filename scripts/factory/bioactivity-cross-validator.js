@@ -5,8 +5,7 @@
  * (pharmaceutical literature curated by EMBL-EBI). PubChem BioAssay
  * aggregates from an independent pool (NIH MLP / NCI / academic / industry
  * deposits). When the same compound + target + activity_type has records
- * in both, we have genuine cross-source consensus — the foundation of
- * Sciweon's third differentiation pillar.
+ * in both, we have genuine cross-source consensus.
  *
  * Pipeline position: runs after target-resolver (which stamps
  * bioactivity.target.uniprot_accession). Operates in place on

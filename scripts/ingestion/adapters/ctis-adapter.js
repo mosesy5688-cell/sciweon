@@ -9,7 +9,7 @@
  * API docs: https://euclinicaltrials.eu/ctis-public-api/
  * Base: https://euclinicaltrials.eu/ctis-public-api
  *
- * PRIMARY-DATA contract (feedback_no_secondary_processed_data):
+ * PRIMARY-DATA contract (primary-data-only policy):
  *   Consumed (EMA-supplied trial protocol data):
  *     - ctNumber       (CTIS canonical trial ID, e.g. 2022-501031-30-00)
  *     - ctStatus       (EMA-defined enum: AUTHORISED / ONGOING / ENDED / etc)

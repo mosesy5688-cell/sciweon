@@ -1,7 +1,7 @@
 /**
  * Snapshot Uploader V0.4.3 — push daily snapshot to Cloudflare R2.
  *
- * Layer 4 time-series clock requires durable off-machine storage. R2 is
+ * Daily time-series snapshot requires durable off-machine storage. R2 is
  * Sciweon's primary persistence (zero egress fees, CC0-friendly).
  *
  * Required environment variables (set as GHA repo secrets):

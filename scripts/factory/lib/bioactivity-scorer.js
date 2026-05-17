@@ -1,7 +1,7 @@
 /**
  * Bioactivity Scorer V0.1 — Sciweon-computed is_active + confidence.
  *
- * Per feedback_no_secondary_processed_data: ChEMBL's `activity_comment` text
+ * Per primary-data-only policy: ChEMBL's `activity_comment` text
  * is a curator's secondary annotation, and ChEMBL native `confidence_score`
  * (0-9) is a curator's secondary assessment of target-assay reliability.
  * Neither should leak into Sciweon's data graph as fact.

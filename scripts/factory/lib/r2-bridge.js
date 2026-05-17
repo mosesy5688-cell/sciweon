@@ -30,7 +30,7 @@ export function createR2ClientFFI() {
             accountId: process.env.R2_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID || process.env.CF_ACCOUNT_ID || '',
             accessKeyId: process.env.R2_ACCESS_KEY_ID || '',
             secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || '',
-            bucket: process.env.R2_BUCKET || 'ai-nexus-assets',
+            bucket: process.env.R2_BUCKET || 'sciweon-prod',
         };
         if (!config.accountId || !config.accessKeyId || !config.secretAccessKey) return null;
         return _r2Engine.createR2Client(config);
@@ -42,7 +42,7 @@ export function createR2ClientFFI() {
 /** Fetch all R2 ETags with optional prefix filtering. P2: directory-level LIST → S3 SDK. */
 export async function fetchAllR2ETagsFFI(client, prefixFilter = []) {
     const { fetchAllR2ETags } = await import('./r2-helpers.js');
-    const bucket = process.env.R2_BUCKET || 'ai-nexus-assets';
+    const bucket = process.env.R2_BUCKET || 'sciweon-prod';
     const s3 = (_r2Engine && client?.constructor?.name === 'R2Client')
         ? (_cachedJsClient ||= (await import('./r2-helpers.js')).createR2Client())
         : client;
@@ -59,14 +59,14 @@ export async function uploadFileFFI(client, localPath, remotePath, remoteETag) {
         return _r2Engine.uploadFile(client, localPath, remotePath, remoteETag || null, 3);
     }
     const { uploadFile } = await import('./r2-helpers.js');
-    return uploadFile(client, process.env.R2_BUCKET || 'ai-nexus-assets', localPath, remotePath, remoteETag);
+    return uploadFile(client, process.env.R2_BUCKET || 'sciweon-prod', localPath, remotePath, remoteETag);
 }
 
 // Multipart upload for files >8MB. Streams 8MB chunks from disk per part.
 export async function uploadFileMultipartFFI(client, localPath, remotePath) {
     if (_r2Engine && client?.constructor?.name === 'R2Client') return _r2Engine.uploadFileMultipart(client, localPath, remotePath);
     const { uploadFileMultipart } = await import('./r2-helpers.js');
-    return uploadFileMultipart(client, process.env.R2_BUCKET || 'ai-nexus-assets', localPath, remotePath);
+    return uploadFileMultipart(client, process.env.R2_BUCKET || 'sciweon-prod', localPath, remotePath);
 }
 
 /** Stream JSON to R2. */
@@ -76,7 +76,7 @@ export async function streamToR2FFI(client, key, data) {
         return _r2Engine.streamToR2(client, key, body);
     }
     const { streamToR2 } = await import('./r2-helpers.js');
-    const bucket = process.env.R2_BUCKET || 'ai-nexus-assets';
+    const bucket = process.env.R2_BUCKET || 'sciweon-prod';
     return streamToR2(client, bucket, key, data);
 }
 
@@ -86,7 +86,7 @@ export async function downloadFromR2FFI(client, key, localPath) {
         return _r2Engine.downloadFromR2(client, key, localPath);
     }
     const { downloadFromR2 } = await import('./r2-helpers.js');
-    const bucket = process.env.R2_BUCKET || 'ai-nexus-assets';
+    const bucket = process.env.R2_BUCKET || 'sciweon-prod';
     const jsClient = client?.constructor?.name === 'R2Client' ? require('./r2-helpers.js').createR2Client() : client;
     return downloadFromR2(jsClient, bucket, key);
 }
@@ -98,7 +98,7 @@ export async function downloadBufferFromR2FFI(client, key) {
         if (!_cachedJsClient) _cachedJsClient = require('./r2-helpers.js').createR2Client();
         client = _cachedJsClient;
     }
-    const bucket = process.env.R2_BUCKET || 'ai-nexus-assets';
+    const bucket = process.env.R2_BUCKET || 'sciweon-prod';
     const { Body } = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
     const chunks = []; for await (const c of Body) chunks.push(c);
     return Buffer.concat(chunks);
@@ -106,7 +106,7 @@ export async function downloadBufferFromR2FFI(client, key) {
 
 export async function uploadBufferToR2FFI(client, key, buffer, contentType = 'application/octet-stream') {
     const jsClient = (client?.constructor?.name === 'R2Client') ? require('./r2-helpers.js').createR2Client() : client;
-    const bucket = process.env.R2_BUCKET || 'ai-nexus-assets';
+    const bucket = process.env.R2_BUCKET || 'sciweon-prod';
     if (buffer.length > 100 * 1024 * 1024) {
         const { Upload } = await import('@aws-sdk/lib-storage');
         await new Upload({ client: jsClient, params: { Bucket: bucket, Key: key, Body: buffer, ContentType: contentType }, partSize: 64 * 1024 * 1024 }).done();
@@ -147,7 +147,7 @@ export async function batchUploadFFI(client, files, etagMap, concurrency) {
     }
     // JS fallback: use processQueue pattern from r2-upload-s3.js
     const { uploadFile, uploadFileMultipart } = await import('./r2-helpers.js');
-    const bucket = process.env.R2_BUCKET || 'ai-nexus-assets';
+    const bucket = process.env.R2_BUCKET || 'sciweon-prod';
     let success = 0, failed = 0, unchanged = 0;
     for (const f of files) {
         const etag = etagMap instanceof Map ? etagMap.get(f.remotePath) : etagMap[f.remotePath];
@@ -198,5 +198,5 @@ export async function restoreFileFromR2FFI(r2Key, localPath, opts = {}) {
 /** Purge entropy. P2: cross-key batch op → S3 SDK. */
 export async function purgeEntropyFFI(client, etagMap) {
     const { purgeEntropy } = await import('./r2-helpers.js');
-    return purgeEntropy(client, process.env.R2_BUCKET || 'ai-nexus-assets', etagMap);
+    return purgeEntropy(client, process.env.R2_BUCKET || 'sciweon-prod', etagMap);
 }

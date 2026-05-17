@@ -6,10 +6,11 @@
  *
  * CRITICAL for Negative Evidence DB (V0.4):
  *   is_retracted=true + retraction_doi → V0.4 fetches original retraction notice
- *   full text and classifies reason with Sciweon's own 6-category NLP (not RW's
- *   predefined categories — those are secondary processed data, see [[feedback_no_secondary_processed_data]]).
+ *   full text and classifies reason with Sciweon's own 6-category NLP (not
+ *   Retraction Watch's predefined categories — primary-source-only policy
+ *   requires re-classifying from raw notice text).
  *
- * See: brain/SCIWEON_DATA_ARCHITECTURE.md §3.4
+ * See V8 first principles for type / unit / range / provenance / confidence contract.
  */
 
 export const PAPER_SCHEMA = {

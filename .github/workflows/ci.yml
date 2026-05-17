@@ -112,7 +112,7 @@ jobs:
           "
 
       - name: Primary-data deny-list check
-        # Enforces feedback_no_secondary_processed_data: certain field names
+        # Enforces primary-data-only policy: certain field names
         # are reserved for secondary processed data and MUST NOT reappear
         # in entity schemas. V0.4 may re-introduce equivalent fields as
         # Sciweon-computed under different names (sciweon_confidence,
@@ -121,7 +121,7 @@ jobs:
           set -e
           deny="concepts|fields_of_study|retraction_reason|retraction_reason_categories|confidence_score|institutions|s2FieldsOfStudy|influentialCitationCount|tldr|keywords|subcellularLocation|dbReferences"
           if grep -nE "(${deny})\\s*:" src/lib/schemas/*.js; then
-            echo "::error::Secondary-data field reintroduced in schema. See feedback_no_secondary_processed_data."
+            echo "::error::Secondary-data field reintroduced in schema. See primary-data-only policy."
             exit 1
           fi
           # S2 secondary fields must never enter adapter code as ACTUAL usage.

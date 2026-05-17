@@ -1,14 +1,14 @@
 /**
  * NegEvidence entity schema — Sciweon V0.4
  *
- * Unified Negative Evidence aggregation: Sciweon's true differentiation
- * pillar. One entity type covers all categories of "this compound failed
- * X" / "this drug was retracted/withdrawn" / "this assay was inactive".
+ * Unified Negative Evidence aggregation. One entity type covers all
+ * categories of "this compound failed X" / "this drug was retracted /
+ * withdrawn" / "this assay was inactive".
  *
- * Per SCIWEON_NEGATIVE_EVIDENCE_DB.md section 3. This entity is
- * Sciweon-computed synthesis of primary signals already in our data
- * graph — it is NOT a new external data source. The synthesis itself
- * is the moat (Layer 3 per four-layer moat analysis 2026-05-13).
+ * Sciweon-computed synthesis of primary signals already in the data
+ * graph — NOT a new external data source. The synthesis is the value:
+ * Agent queries one entity to learn every negative signal across all
+ * source DBs.
  *
  * Source signals integrated (V0.4.2):
  *   - trial_failure         (from negative-evidence-raw.jsonl)
@@ -143,7 +143,7 @@ export const NEG_EVIDENCE_SCHEMA = {
         },
     },
 
-    // ─── Cross-source confirmation (Layer 3 consensus) ───
+    // ─── Cross-source confirmation ───
     cross_source_confirmations: {
         type: 'array', required: false, maxItems: 10,
         itemShape: {

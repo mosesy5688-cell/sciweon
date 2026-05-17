@@ -11,7 +11,7 @@
  * API: https://pubchem.ncbi.nlm.nih.gov/rest/pug
  * Endpoint: /compound/cid/{CID}/assaysummary/JSON
  *
- * PRIMARY-DATA contract (feedback_no_secondary_processed_data):
+ * PRIMARY-DATA contract (primary-data-only policy):
  *   Consumed (raw assay metadata + experimenter-supplied labels):
  *     - AID (PubChem Assay ID)
  *     - SID (substance ID) / CID

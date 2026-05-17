@@ -1,6 +1,5 @@
 /**
- * R2 object fetcher with V27.5 chunk-size validation (transferred from
- * ai-nexus src/lib/r2-vfs.ts — see LABNEXUS 2026-05-17 §Phase 1 Step 3).
+ * R2 object fetcher with chunk-size validation.
  *
  * Why this matters: when an R2 binding returns an object with a partial
  * body (rare, but possible during edge-side transient pressure), the
@@ -8,14 +7,13 @@
  * HTTP layer still reports 200 OK. Caching that short body poisons all
  * subsequent isolates until cache eviction.
  *
- * ai-nexus V27.5 fix: validate body length against expected size BEFORE
- * any caching. This file embeds the same defense from line one — no
- * future port debt, no opportunity to forget the check.
+ * Defense: validate body length against expected size BEFORE any caching.
+ * This file embeds the check from line one so it cannot be forgotten.
  *
- * For Sciweon V0.5.2 the snapshot files (`snapshots/<date>/*.gz`) are
- * immutable once published; we cache the full decompressed contents per
- * isolate keyed by (key, etag). If the validation rejects a fetch, the
- * caller surfaces the error rather than serving zero-padded garbage.
+ * Snapshot files (`snapshots/<date>/*.gz`) are immutable once published;
+ * we cache the full decompressed contents per isolate keyed by (key, etag).
+ * If the validation rejects a fetch, the caller surfaces the error rather
+ * than serving zero-padded garbage.
  */
 
 interface R2FetchResult {

@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """
 Compliance Enforcement Script (CES) — Sciweon V1.0
-Synced from Free2AITools CES V6.2 (Art V, VIII, IX).
+Articles V, VIII, IX of the Sciweon engineering charter.
 
 Checks:
 1. [Art 5.1] Monolith Check: No source file > 250 lines.
 2. [Art 5.1] Security Check: No D1 credentials or secrets in code.
 3. [Art 8.1] English Mandate: No non-ASCII (CJK) characters in code/comments.
-4. [Art 9.1] IP Protection: No classified documents (CONSTITUTION, STRATEGY,
-   PLAN, AUDIT, PROMPT, HANDOVER, EXECUTION_DETAILS, NEGATIVE_EVIDENCE,
-   DATA_ARCHITECTURE, IDEA_LAB, POSITIONING, LABNEXUS, SCIWEON, IMMIGRATION)
-   committed to the repo.
+4. [Art 9.1] IP Protection: No classified documents matching the patterns
+   in FORBIDDEN_FILES below committed to the repo.
 
 V0.5.x policy (2026-05-15): every WARN is a FAIL.
 - Data quality is the lifeline. CI green must mean every rule passed,
@@ -61,7 +59,7 @@ IGNORE_FILES = {
 
 SCAN_EXTENSIONS = {'.js', '.ts', '.jsx', '.tsx', '.py', '.css', '.html'}
 
-# Secret regex (synced from Free2AITools, plus Sciweon-relevant additions).
+# Secret regex (D1, JWT, GitHub PAT, OpenAI/API, AWS, etc.).
 SECRET_PATTERNS = [
     (r"d1_token\s*=\s*['\"].+['\"]", "D1 Token Leak"),
     (r"bearer\s+ey[a-zA-Z0-9-._]+", "JWT Token Leak"),

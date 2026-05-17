@@ -8,7 +8,7 @@
  * API docs: https://www.uniprot.org/help/api_queries
  * Base: https://rest.uniprot.org/uniprotkb
  *
- * PRIMARY-DATA contract (feedback_no_secondary_processed_data):
+ * PRIMARY-DATA contract (primary-data-only policy):
  *   Consumed (raw IDs / international standard names / objective measurements):
  *     - primaryAccession           (international protein ID, like InChIKey for compounds)
  *     - uniProtkbId                (entry name; HGNC/IUBMB international consensus)
