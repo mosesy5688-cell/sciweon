@@ -1,0 +1,21 @@
+# Sciweon Code Owners
+#
+# Every PR requires review from the listed owner. Combined with branch
+# protection (Require review from Code Owners), this enforces owner sign-off
+# on all changes to main.
+#
+# Catch-all rule covers the entire repository. Path-specific rules below
+# document which surfaces are highest-stakes; they inherit the catch-all
+# but are listed for visibility to contributors.
+
+* @mosesy5688-cell
+
+# High-stakes surfaces (explicit for documentation; catch-all already applies)
+/scripts/factory/                @mosesy5688-cell
+/scripts/ingestion/adapters/     @mosesy5688-cell
+/src/lib/schemas/                @mosesy5688-cell
+/src/worker/                     @mosesy5688-cell
+/wrangler.toml                   @mosesy5688-cell
+/.github/                        @mosesy5688-cell
+/scripts/check_compliance.py     @mosesy5688-cell
+/LICENSE                         @mosesy5688-cell
