@@ -1,0 +1,50 @@
+name: Recovery — Cumulative Aggregated Merge
+
+# One-time recovery for pre-V0.5.2.1 cross-cycle silent data loss.
+# Lists all historical processed/aggregated/<run_id>/ bundles, merges
+# them with replace-by-id semantics, uploads as a new run_id, and
+# advances the latest pointer. After this completes, dispatch
+# factory-4-upload.yml manually to rebuild snapshot from the merged
+# bundle.
+#
+# Manual dispatch only — never on schedule. Idempotent: re-running
+# generates a fresh recovery run_id and merges again from scratch.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: factory-pipeline
+  cancel-in-progress: false
+
+jobs:
+  recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Run cumulative recovery
+        run: node scripts/factory/recovery-merge-all.js
