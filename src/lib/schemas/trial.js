@@ -41,8 +41,13 @@ export const TRIAL_SCHEMA = {
     phase: { type: 'number', required: false, min: 0, max: 4 }, // 0=Early Phase 1, 1-4 = Phase 1-4
     conditions: { type: 'array', required: false, itemType: 'string', maxItems: 100 },
 
+    // Empirical widening (per primary-source widen-schema policy):
+    //   50 → 200. Strategic FDA harvest 2026-05-17 halted at trial
+    //   NCT03878524 with 56 interventions. Basket/umbrella oncology
+    //   trials can carry 50-100+ arms; 200 cap covers known extremes
+    //   while still catching degenerate data (1000+ would be ML noise).
     interventions: {
-        type: 'array', required: false, maxItems: 50,
+        type: 'array', required: false, maxItems: 200,
         itemShape: {
             // V0.5.1 widened 500 -> 2000. CTIS (EU) trials carry multilingual,
             // multi-compound combination descriptions that routinely exceed 500
