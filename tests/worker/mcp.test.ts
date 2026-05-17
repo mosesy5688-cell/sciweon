@@ -1,20 +1,8 @@
 /**
  * MCP server contract tests — V0.5.3 (Sprint 1b.1).
- *
- * Verifies JSON-RPC 2.0 protocol conformance + sciweon_get_negative_evidence
- * tool wiring against mocked R2 bucket. Anchored in SCIWEON_DATA_ARCHITECTURE
- * §9 hot/cold layer 1.5 (search NOT in scope this PR; deferred to 1b.2).
- *
- * Test coverage:
- *   - HTTP method semantics (POST only; OPTIONS 204; GET/PUT 405)
- *   - jsonrpc 2.0 envelope validation (parse error, missing fields)
- *   - initialize handshake
- *   - tools/list returns 1 tool with valid inputSchema
- *   - tools/call sciweon_get_negative_evidence happy path
- *   - tools/call invalid cid → -32602
- *   - tools/call unknown tool → -32601
- *   - notifications/initialized → 204 no body
- *   - method not found → -32601
+ * JSON-RPC 2.0 protocol + sciweon_get_negative_evidence tool wiring.
+ * Coverage: HTTP method semantics, envelope validation, initialize,
+ * tools/list, tools/call (happy + error paths), notifications.
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
