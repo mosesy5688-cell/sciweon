@@ -6,7 +6,9 @@ name: Factory 2/4 Process
 
 on:
   workflow_run:
-    workflows: ['Factory 1/4 Harvest']
+    workflows:
+      - 'Factory 1/4 Harvest'
+      - 'Factory Strategic Harvest (FDA-approved subset)'
     types: [completed]
   workflow_dispatch:
 

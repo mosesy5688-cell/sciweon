@@ -1,0 +1,52 @@
+name: Factory Strategic Harvest (FDA-approved subset)
+
+# One-shot harvest of curated FDA-approved CID subset from
+# data/strategic-cids-fda-approved.json. Bypasses cursor mechanism;
+# re-runs are idempotent (V0.5.2.1 cumulative merger handles dedup).
+#
+# Manual dispatch only — never on schedule. Drains the strategic CID
+# list, uploads as baseline run_id="strategic-<github-run-id>".
+# Stage 2/3/4 cascade via workflow_run trigger (same as natural cron).
+#
+# Expected wall time: ~50 CIDs × 250ms PubChem rate limit + linker +
+# upload ≈ 2-3 minutes for the initial V0.5.3 curated list.
+# At 2500 CIDs (V0.5.4 full Drug@FDA): ~12-15 minutes.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: factory-pipeline
+  cancel-in-progress: false
+
+jobs:
+  strategic-harvest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Run strategic harvest
+        run: node scripts/factory/stage-1-strategic-harvest.js
