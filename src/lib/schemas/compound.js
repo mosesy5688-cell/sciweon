@@ -45,7 +45,12 @@ export const COMPOUND_SCHEMA = {
     },
 
     // ─── Names ───
-    iupac_name: { type: 'string', required: false, maxLength: 1000 },
+    // Cycle-4 (CID 20001-25000 range) hit CID:24763 with IUPAC name length 2712 —
+    // macromolecule / polypeptide territory. Widened 1000 → 10000 to accept
+    // polymer / large peptide names while still rejecting truly degenerate
+    // (>10000) output. PubChem PUG-REST is the primary authority on IUPAC
+    // computed names; we widen for them, not validate against them.
+    iupac_name: { type: 'string', required: false, maxLength: 10000 },
     synonyms: { type: 'array', required: false, maxItems: 100, itemType: 'string' },
 
     // ─── Computed Properties ───
@@ -55,26 +60,37 @@ export const COMPOUND_SCHEMA = {
             log_p: {
                 type: 'object', required: false,
                 shape: {
-                    // Empirical: CID 1-15000 hit max +26.8, CID 16369 hit +36.6.
-                    // Cap = 2x headroom; > 80 still REJECT as degenerate XLogP3 output.
-                    value: { type: 'number', min: -25, max: 80 },
+                    // Empirical widening cycle:
+                    //   PR #20 widened max 30 → 80 (CID:16369 +36.6).
+                    //   Cycle-4 hit CID:24763 with -70.2 — macromolecule (highly
+                    //   hydrophilic polypeptide). Widen min -25 → -150.
+                    // logP for biomolecules can dip to -100+ (charged peptides).
+                    // Max stays 80; we have no evidence for higher positive yet.
+                    value: { type: 'number', min: -150, max: 80 },
                     method: { type: 'string', enum: ['XLogP3', 'AlogP', 'computed'] },
                 },
             },
             tpsa: {
                 type: 'object', required: false,
                 shape: {
-                    // Range widened from 500 → 1500 based on 1000 CID empirical data.
-                    // Real extremes: up to 685 for large polar molecules (peptides, polyphenols).
-                    value: { type: 'number', min: 0, max: 1500 },
+                    // Empirical widening cycle:
+                    //   500 → 1500 (1K CID data; small peptide range).
+                    //   Cycle-4 hit CID:24763 with TPSA=3040 — macromolecule.
+                    //   Widen 1500 → 10000 to accept polymers / large peptides.
+                    // Truly degenerate output (TPSA > 10000) still REJECT.
+                    value: { type: 'number', min: 0, max: 10000 },
                     unit: { type: 'string', enum: ['angstrom_squared'] },
                 },
             },
             complexity: { type: 'number', required: false, min: 0 },
-            // Widened max 50 → 100 based on 5000 CID data (CID 3807/4672 had 53/54 acceptors).
-            // Large peptides / oligosaccharides routinely exceed 50 H-bond sites.
-            h_bond_donors: { type: 'integer', required: false, min: 0, max: 100 },
-            h_bond_acceptors: { type: 'integer', required: false, min: 0, max: 100 },
+            // Empirical widening cycle:
+            //   50 → 100 (5K CID data; CID 3807/4672 had 53/54 acceptors).
+            //   Cycle-4 hit CID:24763 with 116 donors / 191 acceptors —
+            //   macromolecule with many OH/NH/O groups. Widen 100 → 1000.
+            // Large biomolecules (proteins, polysaccharides) routinely have
+            // hundreds of H-bond sites; cap at 1000 still catches degenerate.
+            h_bond_donors: { type: 'integer', required: false, min: 0, max: 1000 },
+            h_bond_acceptors: { type: 'integer', required: false, min: 0, max: 1000 },
             rotatable_bonds: { type: 'integer', required: false, min: 0, max: 200 },
             // Lipinski Rule of Five — computed from above 4 fields
             // Drug-likeness quick check. AI Agent screening uses this heavily.
