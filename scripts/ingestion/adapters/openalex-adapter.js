@@ -100,7 +100,7 @@ function extractAuthors(raw) {
     // PRIMARY-DATA contract: keep the paper's own byline + affiliation text.
     // OpenAlex's normalized author.display_name and institution.display_name
     // are secondary entity-resolution outputs — NOT consumed here.
-    // See feedback_no_secondary_processed_data.
+    // See primary-data-only policy.
     const authorships = raw.authorships ?? [];
     return authorships.slice(0, 1000).map(a => ({
         // raw_author_name = paper byline string; display_name only as fallback

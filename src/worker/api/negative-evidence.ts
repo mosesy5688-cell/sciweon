@@ -1,10 +1,9 @@
 /**
  * GET /api/v1/compound/:id/negative-evidence — V0.5.2 flagship endpoint.
  *
- * Surfaces Sciweon's Layer 3 differentiation (NegEvidence Entity, 4,328
- * records as of cycle-3 2026-05-16) to Agents for the first time. Before
- * this endpoint, the NegEvidence synthesis sat in R2 invisible to any
- * caller — backbone work without a faucet.
+ * Surfaces the unified NegEvidence Entity (4,328 records as of 2026-05-16)
+ * to Agents. Before this endpoint, the NegEvidence synthesis sat in R2
+ * invisible to any caller — backbone work without a faucet.
  *
  * Contract per SCIWEON_DATA_ARCHITECTURE §3.0:
  *   200  full negative-evidence response (signals + verdict)

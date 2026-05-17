@@ -7,7 +7,7 @@
  * Critical for AI Agent: distinguishes active vs inactive results.
  * Inactive (is_active=false) feeds Negative Evidence DB (V0.4).
  *
- * See: brain/SCIWEON_DATA_ARCHITECTURE.md §3.2
+ * See V8 first principles for type / unit / range / provenance / confidence contract.
  */
 
 export const BIOACTIVITY_SCHEMA = {
@@ -18,7 +18,7 @@ export const BIOACTIVITY_SCHEMA = {
     // ─── Target metadata (cross-source ChEMBL + UniProt, V0.2.2) ───
     // UniProt is the international protein authority (EMBL-EBI), independent
     // curation from ChEMBL. Together they provide multi-source target consensus.
-    // Per feedback_no_secondary_processed_data: keywords / subcellularLocation /
+    // Per primary-data-only policy: keywords / subcellularLocation /
     // features / dbReferences from UniProt are NOT consumed (curator-derived).
     target: {
         type: 'object', required: false,
@@ -65,7 +65,7 @@ export const BIOACTIVITY_SCHEMA = {
     // ─── Quality Flags (Sciweon-computed, NOT consumed from ChEMBL secondary fields) ───
     // is_active is derived from value + unit + activity_type thresholds, not
     // from ChEMBL's `activity_comment` text (curator annotation). See
-    // bioactivity-scorer.js and feedback_no_secondary_processed_data.
+    // bioactivity-scorer.js and primary-data-only policy.
     is_active: { type: 'boolean', required: false },
     is_active_method: {
         type: 'string', required: false,

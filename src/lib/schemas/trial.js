@@ -7,7 +7,7 @@
  * CRITICAL for Negative Evidence DB (V0.4):
  *   status = TERMINATED / WITHDRAWN + status_reason → Failure DB raw material
  *
- * See: brain/SCIWEON_DATA_ARCHITECTURE.md §3.3
+ * See V8 first principles for type / unit / range / provenance / confidence contract.
  */
 
 export const TRIAL_SCHEMA = {

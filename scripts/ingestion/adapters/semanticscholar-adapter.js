@@ -10,7 +10,7 @@
  * API docs: https://api.semanticscholar.org/api-docs/graph
  * Base: https://api.semanticscholar.org/graph/v1
  *
- * PRIMARY-DATA contract (feedback_no_secondary_processed_data):
+ * PRIMARY-DATA contract (primary-data-only policy):
  *   Consumed fields (raw / objective / source IDs):
  *     - paperId, externalIds.{DOI,PubMed,ArXiv}
  *     - title, abstract  (paper-authored text)

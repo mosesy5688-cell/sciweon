@@ -15,11 +15,10 @@
  *      - WARN:  latest warned > 0 but previous warned == 0   (transient)
  *      - WARN:  latest warned > 0 AND previous warned > 0    (sustained)
  *
- * Sustained-WARN escalation is the PR #19 deferred A.3 rule from
- * LABNEXUS_EXECUTION_DETAILS.md 2026-05-16: "any WARN is allowed in code,
- * but never invisible; sustained WARN is FAIL". The transient single-cycle
- * case stays WARN (not FAIL) because PubChem schema drift is a Postel-law
- * upstream boundary — one bad cycle should surface but not halt operations.
+ * Sustained-WARN escalation rule: any WARN is allowed in code, but never
+ * invisible; sustained WARN is FAIL. The transient single-cycle case stays
+ * WARN (not FAIL) because PubChem schema drift is a Postel-law upstream
+ * boundary — one bad cycle should surface but not halt operations.
  *
  * Status precedence: FAIL > WARN > OK. The source-health-monitor merges
  * this status with the per-source attribution status using the same

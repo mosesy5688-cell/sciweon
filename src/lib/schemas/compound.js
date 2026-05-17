@@ -1,8 +1,6 @@
 /**
  * Compound entity schema — Sciweon V0.1
  * Strict contract per V8 first principles (machine-readable + validated + provenance + confidence).
- *
- * See: brain/SCIWEON_DATA_ARCHITECTURE.md §3.1
  */
 
 export const COMPOUND_SCHEMA = {

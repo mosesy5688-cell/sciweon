@@ -4,7 +4,7 @@ import path from 'path';
 import { createR2Client, fetchR2Etags } from './r2-helpers.js';
 import { PutObjectCommand, GetObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 
-const BUCKET = process.env.R2_BUCKET || 'ai-nexus-assets';
+const BUCKET = process.env.R2_BUCKET || 'sciweon-prod';
 
 /**
  * Backup a single local file to R2.

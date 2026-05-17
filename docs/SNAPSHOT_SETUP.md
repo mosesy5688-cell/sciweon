@@ -1,16 +1,16 @@
 # Daily Snapshot — R2 Setup Guide
 
-V0.4.3 launches Sciweon's Layer 4 time-series clock. Daily snapshots of the
-entity graph are pushed to Cloudflare R2 to enable retroactive analysis
-(citation trajectories, retraction lags, FDA approval shifts, cross-source
-disagreement evolution).
+V0.4.3 launches Sciweon's daily time-series snapshot cadence. Daily
+snapshots of the entity graph are pushed to Cloudflare R2 to enable
+retroactive analysis (citation trajectories, retraction lags, FDA approval
+shifts, cross-source disagreement evolution).
 
-## Why Layer 4 matters
+## Why daily snapshots matter
 
-Per `brain/SCIWEON_DATA_SOURCES_GLOBAL.md` four-layer moat analysis, time
-is the only physically non-copyable resource. A competitor starting later
-cannot retroactively obtain prior daily snapshots. Every missed day widens
-the catch-up window for Sciweon's lead.
+Time-series data is built by continuous accumulation — there is no way to
+reconstruct a prior day's snapshot from a later starting point. Every
+calendar day that Sciweon ticks contributes a permanent data point to the
+historical record.
 
 ## Step 1: Cloudflare R2 bucket
 

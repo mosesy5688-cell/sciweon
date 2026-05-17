@@ -5,7 +5,7 @@
  * V0.1 baseline: keyword rules, ~70-80% accuracy.
  * V0.4 upgrade path: NLP model (BioBERT or domain LLM), target 90%+.
  *
- * Categories (aligned with brain/SCIWEON_NEGATIVE_EVIDENCE_DB.md §2):
+ * Categories:
  *   SAFETY       — adverse events, toxicity, safety concerns
  *   EFFICACY     — futility, lack of efficacy
  *   ENROLLMENT   — recruitment/accrual failure (NOT a drug failure)

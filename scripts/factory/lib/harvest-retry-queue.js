@@ -6,10 +6,9 @@
  * the queue at the start of every run so failed CIDs eventually land in R2
  * even when the upstream PubChem PUG-REST endpoint has brief outages.
  *
- * Pattern is the architectural twin of Free2AITools params-cache.json.zst
- * (PR #1990 root-cause class): persistent cross-cycle R2 state that turns
- * single-point fetch failures into eventually-consistent harvest, without
- * halting the chain on every transient blip.
+ * Persistent cross-cycle R2 state turns single-point fetch failures into
+ * eventually-consistent harvest, without halting the chain on every
+ * transient blip.
  *
  * R2 key: state/harvest-retry-queue.json
  *

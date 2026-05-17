@@ -11,9 +11,9 @@
  * batch-fetch via existing PubChem PUG-REST infrastructure.
  *
  * V0.5+ may add RDKit Morgan as second source for cross-validation
- * (per Layer 3 cross-source consensus, fingerprints can disagree).
+ * (cross-source consensus check — fingerprints can disagree across sources).
  *
- * Scale plan (per 2026-05-13 strategic discussion):
+ * Scale plan:
  *   V0.3.5: 5000 compounds × 156 base64 chars ≈ 0.8 MB     -> brute-force OK
  *   V0.1b:  111M  compounds × 156 base64 chars ≈ 17 GB     -> ANN index needed
  *

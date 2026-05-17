@@ -16,7 +16,9 @@ test-results/
 
 # ============================================================
 # CONFIDENTIAL PROJECT DOCUMENTS (NEVER COMMIT)
-# Synced from Free2AITools CES (Art 9.1 IP Protection)
+# CES Article 9.1 IP Protection — internal-doc filename patterns
+# blocked from accidental commit. Patterns enforced by both git +
+# scripts/check_compliance.py (CI gatekeeper).
 # ============================================================
 
 # Agent / brain artifacts
