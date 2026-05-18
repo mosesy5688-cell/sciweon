@@ -18,6 +18,11 @@
 import fs from 'fs/promises';
 import path from 'path';
 
+// V2 adapter contract: incremental via CSV retraction_date filter.
+// Full CSV downloaded each run; records filtered by sinceToken date.
+export const supportsIncremental = true;
+export const fallbackFullRefreshDays = 7;
+
 const RW_CSV_URL = 'https://gitlab.com/crossref/retraction-watch-data/-/raw/main/retraction_watch.csv';
 const INDEX_PATH = './data/retraction_watch_index.json';
 const STALE_DAYS = 7;
@@ -170,4 +175,79 @@ export function lookup(paper, index) {
     if (doi && index.byDoi[doi]) return index.byDoi[doi];
     if (paper.pmid && index.byPmid[paper.pmid]) return index.byPmid[paper.pmid];
     return null;
+}
+
+// ── V2 incremental interface ──────────────────────────────────────────────────
+
+function sinceDateDefault() {
+    const d = new Date();
+    d.setDate(d.getDate() - 7);
+    return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Check for updates: always true when sinceToken is older than today.
+ * RW CSV has no ETag/If-Modified-Since support on GitLab raw URLs;
+ * rely on fallbackFullRefreshDays=7 cadence from the worker scheduler.
+ */
+export async function checkForUpdates(sinceToken) {
+    const since = sinceToken ?? sinceDateDefault();
+    const today = new Date().toISOString().slice(0, 10);
+    const hasUpdates = since < today;
+    return { hasUpdates, count: null, nextSinceToken: today };
+}
+
+/**
+ * Download full CSV, filter to rows with retraction_date > sinceToken,
+ * and return normalized retraction records.
+ */
+export async function fetchIncremental(sinceToken) {
+    const since = sinceToken ?? sinceDateDefault();
+    const nextSinceToken = new Date().toISOString().slice(0, 10);
+
+    let csv;
+    try {
+        const res = await fetch(RW_CSV_URL);
+        if (!res.ok) throw new Error(`HTTP ${res.status} fetching RW CSV`);
+        csv = await res.text();
+    } catch (e) {
+        console.warn(`[RETRACTION-WATCH] fetchIncremental download: ${e.message}`);
+        return { records: [], nextSinceToken };
+    }
+
+    const lines = csv.split('\n');
+    const header = parseCsvLine(lines[0]);
+    const colIdx = (name) => header.indexOf(name);
+    const cDoi = colIdx('OriginalPaperDOI');
+    const cPmid = colIdx('OriginalPaperPubMedID');
+    const cDate = colIdx('RetractionDate');
+    const cNature = colIdx('RetractionNature');
+    const cRetDoi = colIdx('RetractionDOI');
+
+    const records = [];
+    for (let i = 1; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line || !line.trim()) continue;
+        const f = parseCsvLine(line);
+        if (f.length < cNature + 1) continue;
+        const retDate = parseDate(f[cDate]);
+        if (!retDate || retDate <= since) continue;
+        const doi = normalizeDoi(f[cDoi]);
+        const pmid = f[cPmid] && /^\d+$/.test(f[cPmid].trim()) ? f[cPmid].trim() : null;
+        if (!doi && !pmid) continue;
+        const id = doi
+            ? `sciweon::retraction::doi::${doi}`
+            : `sciweon::retraction::pmid::${pmid}`;
+        records.push({
+            id,
+            source: 'crossref_retraction_watch',
+            doi,
+            pmid,
+            retraction_doi: normalizeDoi(f[cRetDoi]),
+            retraction_date: retDate,
+            nature: f[cNature] || null,
+        });
+    }
+    console.log(`[RETRACTION-WATCH] fetchIncremental since=${since}: ${records.length} new records`);
+    return { records, nextSinceToken };
 }
