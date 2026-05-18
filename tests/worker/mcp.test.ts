@@ -1,8 +1,9 @@
 /**
- * MCP server contract tests — V0.5.3 (Sprint 1b.1).
+ * MCP server contract tests — V0.5.4 (Sprint 1b.2).
  * JSON-RPC 2.0 protocol + sciweon_get_negative_evidence tool wiring.
  * Coverage: HTTP method semantics, envelope validation, initialize,
  * tools/list, tools/call (happy + error paths), notifications.
+ * sciweon_search tests live in mcp-search.test.ts.
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -118,16 +119,18 @@ describe('handleMcp — initialize', () => {
 });
 
 describe('handleMcp — tools/list', () => {
-    it('returns 1 tool with valid inputSchema in V0.5.3', async () => {
+    it('returns 2 tools including sciweon_search in V0.5.4', async () => {
         const req = mcpRequest({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
         const res = await handleMcp(req, makeEnv(), fakeCtx());
         const body = await res.json() as any;
-        expect(body.result.tools).toHaveLength(1);
-        const tool = body.result.tools[0];
-        expect(tool.name).toBe('sciweon_get_negative_evidence');
-        expect(tool.inputSchema.type).toBe('object');
-        expect(tool.inputSchema.required).toContain('cid');
-        expect(tool.inputSchema.properties.cid.type).toBe('string');
+        expect(body.result.tools).toHaveLength(2);
+        const names = (body.result.tools as any[]).map((t: any) => t.name);
+        expect(names).toContain('sciweon_search');
+        expect(names).toContain('sciweon_get_negative_evidence');
+        const neg = (body.result.tools as any[]).find((t: any) => t.name === 'sciweon_get_negative_evidence');
+        expect(neg.inputSchema.required).toContain('cid');
+        const search = (body.result.tools as any[]).find((t: any) => t.name === 'sciweon_search');
+        expect(search.inputSchema.required).toContain('query');
     });
 });
 
