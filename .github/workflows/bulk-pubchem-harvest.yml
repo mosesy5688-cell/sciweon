@@ -1,13 +1,13 @@
 name: V0.6 Bulk Harvest — PubChem CURRENT-Full (matrix-8)
 
-# V0.6 Sprint 2 B.2 + B.3 — one-shot PubChem 111M Bulk Backfill.
+# V0.6 B.2 + B.3 + B.5 — PubChem 111M Bulk Harvest + Shard Upload.
 # 8-way matrix workers each process ~31 SDF chunks (~14M compounds each).
 # After harvest, each worker shards output into 1000-CID .jsonl.gz files
 # and uploads to R2 (bulk/pubchem/YYYY-MM/shards/). A fan-in job then
 # builds the global index.json from per-worker manifests.
 #
-# Manual dispatch only — never on schedule. One run per PubChem CURRENT-Full
-# version refresh (monthly cadence per §8.9.3).
+# Schedule: 1st of each month at 04:00 UTC (B.5 monthly refresh).
+# Each run creates a new YYYY-MM prefix in R2; previous months are retained.
 #
 # R2 layout:
 #   bulk/pubchem/YYYY-MM/shards/shard-cid-XXXXXXXXX-XXXXXXXXX.jsonl.gz
@@ -15,6 +15,8 @@ name: V0.6 Bulk Harvest — PubChem CURRENT-Full (matrix-8)
 #   bulk/pubchem/YYYY-MM/index.json  (uploaded last by shard-index job)
 
 on:
+  schedule:
+    - cron: '0 4 1 * *'
   workflow_dispatch:
     inputs:
       chunk_limit:
