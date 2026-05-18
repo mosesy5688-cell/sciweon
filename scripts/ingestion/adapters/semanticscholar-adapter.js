@@ -29,6 +29,9 @@
  *   classifier over abstract + MeSH primary signal).
  */
 
+// V2 adapter contract: reactive DOI/paperId batch lookup — no source-side incremental API.
+export const supportsIncremental = false;
+
 const S2_BASE = 'https://api.semanticscholar.org/graph/v1';
 const REQUEST_TIMEOUT_MS = 20000;
 const REQUEST_DELAY_MS = 200; // anonymous polite pool

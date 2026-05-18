@@ -24,6 +24,9 @@
  *   This is identifier mapping, not derived classification.
  */
 
+// V2 adapter contract: reactive lookup only — no source-side incremental API.
+export const supportsIncremental = false;
+
 const UNICHEM_BASE = 'https://www.ebi.ac.uk/unichem/rest';
 const REQUEST_TIMEOUT_MS = 20000;
 const REQUEST_DELAY_MS = 200;

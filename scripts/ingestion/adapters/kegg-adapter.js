@@ -29,6 +29,9 @@
  *     - COMMENT (curator notes)
  */
 
+// V2 adapter contract: reactive drug-name/D-number lookup — no date-based incremental API.
+export const supportsIncremental = false;
+
 const KEGG_BASE = 'https://rest.kegg.jp';
 const REQUEST_TIMEOUT_MS = 20000;
 const REQUEST_DELAY_MS = 300;

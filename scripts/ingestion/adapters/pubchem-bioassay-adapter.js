@@ -31,6 +31,9 @@
  *   for cross-source agreement checks, never for decision logic.
  */
 
+// V2 adapter contract: reactive AID/CID lookup — called per-compound from stage-2 enrichment.
+export const supportsIncremental = false;
+
 const PUBCHEM_BASE = 'https://pubchem.ncbi.nlm.nih.gov/rest/pug';
 const REQUEST_TIMEOUT_MS = 30000;
 const REQUEST_DELAY_MS = 250;

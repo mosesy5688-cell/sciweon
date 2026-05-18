@@ -22,6 +22,9 @@
  */
 
 const RXNAV_BASE = 'https://rxnav.nlm.nih.gov/REST';
+// V2 adapter contract: reactive UNII/RXCUI lookup only — no source-side incremental API.
+export const supportsIncremental = false;
+
 const REQUEST_TIMEOUT_MS = 15000;
 const REQUEST_DELAY_MS = 150;
 
