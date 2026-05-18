@@ -10,6 +10,7 @@ on:
       - 'Factory 1/4 Harvest'
       - 'Factory Strategic Harvest (FDA-approved subset)'
     types: [completed]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
