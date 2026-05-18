@@ -1,18 +1,18 @@
 /**
- * Sciweon Worker entry (V0.5.2 — API surface bootstrap).
+ * Sciweon Worker entry (V0.5.5 — bioactivity/trial/paper endpoints).
  *
  * Cloudflare Workers Static Assets pattern: this Worker handles `/api/*`
  * requests; everything else falls through to env.ASSETS (the static Astro
  * build at ./dist). Adding API endpoints does NOT change the existing
  * landing-page behavior.
  *
- * Routing table (V0.6 B.4):
+ * Routing table:
  *   GET /api/v1/compound/:id                    → dual-tier compound lookup (T1/T2)
- *   GET /api/v1/compound/:id/negative-evidence  → NegEvidence signals for compound
- *
- * Future routes (Phase 2):
- *   GET /api/v1/compound/:id (V0.6 B.4 — dual-tier T1/T2 lookup)
- *   GET /api/v1/search?q=&type=
+ *   GET /api/v1/compound/:id/negative-evidence  → NegEvidence signals
+ *   GET /api/v1/compound/:id/bioactivities      → bioactivity records
+ *   GET /api/v1/compound/:id/trials             → clinical trials
+ *   GET /api/v1/compound/:id/papers             → papers mentioning compound
+ *   POST /api/mcp                               → MCP JSON-RPC 2.0 (V0.5.4)
  *
  * Error contract (per SCIWEON_DATA_ARCHITECTURE §3.0):
  *   400 — malformed entity ID
@@ -24,6 +24,9 @@
 import { handleNegativeEvidence } from './worker/api/negative-evidence';
 import { handleMcp } from './worker/api/mcp';
 import { handleCompound } from './worker/api/compound';
+import { handleBioactivities } from './worker/api/bioactivities';
+import { handleTrials } from './worker/api/trials';
+import { handlePapers } from './worker/api/papers';
 
 export interface Env {
     ASSETS: Fetcher;
@@ -37,6 +40,30 @@ export default {
         if (url.pathname.startsWith('/api/v1/compound/') && url.pathname.endsWith('/negative-evidence')) {
             try {
                 return await handleNegativeEvidence(req, env, ctx);
+            } catch (err) {
+                return json500(err);
+            }
+        }
+
+        if (url.pathname.startsWith('/api/v1/compound/') && url.pathname.endsWith('/bioactivities')) {
+            try {
+                return await handleBioactivities(req, env, ctx);
+            } catch (err) {
+                return json500(err);
+            }
+        }
+
+        if (url.pathname.startsWith('/api/v1/compound/') && url.pathname.endsWith('/trials')) {
+            try {
+                return await handleTrials(req, env, ctx);
+            } catch (err) {
+                return json500(err);
+            }
+        }
+
+        if (url.pathname.startsWith('/api/v1/compound/') && url.pathname.endsWith('/papers')) {
+            try {
+                return await handlePapers(req, env, ctx);
             } catch (err) {
                 return json500(err);
             }
