@@ -24,6 +24,7 @@
 import { spawn } from 'child_process';
 import path from 'path';
 import { downloadStage, uploadStage, deriveRunId } from './lib/r2-stage-bridge.js';
+import { downloadAdapterCumulative } from './lib/adapter-bridge.js';
 
 const SCRIPT_DIR = 'scripts/factory';
 
@@ -70,6 +71,14 @@ async function main() {
         process.exit(2);
     }
 
+    console.log('\n[STAGE-2] === Download adapter cumulative from R2 (optional) ===');
+    try {
+        const got = await downloadAdapterCumulative();
+        if (!got) console.log('[STAGE-2] No adapter cumulative yet — adapter-cross-linker will no-op');
+    } catch (err) {
+        console.warn(`[STAGE-2] Adapter cumulative download failed (non-fatal): ${err.message}`);
+    }
+
     // V0.5.x: compound enrichers all run sequentially.
     // Same-file race: every enricher loads compounds-enriched.jsonl, modifies, writes
     // back — concurrent writers overwrite each other (last writer wins). Previously
@@ -85,6 +94,7 @@ async function main() {
         // drug_status is available; and before fda/faers which gate on UNII.
         { name: 'chembl-compound', fn: () => runScript('chembl-compound-enricher.js') },
         { name: 'compound-id-resolver', fn: () => runScript('compound-id-resolver.js') },
+        { name: 'adapter-cross-linker', fn: () => runScript('adapter-cross-linker.js') },
         { name: 'fda', fn: () => runScript('fda-enricher.js') },
         { name: 'compound-faers', fn: () => runScript('compound-faers-enricher.js') },
     ]);
