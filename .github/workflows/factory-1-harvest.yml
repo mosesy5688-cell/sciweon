@@ -1,20 +1,16 @@
 name: Factory 1/4 Harvest
 
-# Stage 1 of 4: incremental harvest from upstream, cross-source linking,
-# upload raw + baseline to R2. Triggers stage 2 on success.
+# Stage 1 of 4: PubChem compound harvest (cursor-based) runs in parallel with
+# 17 supplementary source adapters (incremental sinceToken). Fan-in merges
+# all adapter deltas into the cumulative R2 store. Triggers stage 2 on success.
 #
-# Cron daily 10:00 UTC. Cursor in R2 (state/harvest-cursor.json) tracks
-# next CID; never duplicates fetched range. Public repo = unlimited GHA
-# minutes, so daily cadence is safe and maximises data freshness.
-#
-# 10:00 UTC chosen to clear daily-snapshot (cron 00:00 UTC, fires 03-07 UTC
-# with GitHub delay, runs up to 2h) releasing factory-pipeline concurrency
-# before this workflow starts. Using 02:00 UTC caused permanent schedule skip
-# because daily-snapshot held the factory-pipeline lock when factory-1 fired.
+# Cron 10:05 UTC daily — staggered per GHA reliability guidance (avoid :00).
+# PubChem and adapter jobs run concurrently; wall time ~1.5h (PubChem gate).
+# Adapter continue-on-error: true so transient API failures don't block stage 2.
 
 on:
   schedule:
-    - cron: '0 10 * * *'
+    - cron: '5 10 * * *'
   workflow_dispatch:
     inputs:
       manual_start_cid:
@@ -25,6 +21,15 @@ on:
         description: 'Compounds to fetch this run (default 5000)'
         required: false
         default: '5000'
+      source_filter:
+        description: 'Single adapter source to run (blank = all 17)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Dry run — no R2 writes (adapters only)'
+        type: choice
+        options: ['false', 'true']
+        default: 'false'
 
 concurrency:
   group: factory-pipeline
@@ -33,17 +38,21 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+  R2_BUCKET: ${{ secrets.R2_BUCKET }}
+  R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+  R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+
 jobs:
-  stage-1-harvest:
+
+  pubchem:
+    name: PubChem Harvest
     runs-on: ubuntu-latest
     timeout-minutes: 350
     env:
       HARVEST_LIMIT: ${{ github.event.inputs.limit || '5000' }}
       MANUAL_START_CID: ${{ github.event.inputs.manual_start_cid || '0' }}
-      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-      R2_BUCKET: ${{ secrets.R2_BUCKET }}
-      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -57,9 +66,9 @@ jobs:
           else
             npm install
           fi
-      - name: Run stage 1
+      - name: Run PubChem harvest
         run: node scripts/factory/stage-1-harvest.js
-      - name: Upload stage-1 log artifact
+      - name: Upload harvest log
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -69,3 +78,71 @@ jobs:
             output/linked/*.jsonl
           retention-days: 7
           if-no-files-found: warn
+
+  adapters:
+    name: Adapter [${{ matrix.source }}]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        source:
+          - chembl
+          - clinicaltrials
+          - ctis
+          - dailymed
+          - pubmed
+          - openalex
+          - openfda
+          - retraction-watch
+          - uniprot
+          - unichem
+          - rxnorm
+          - semanticscholar
+          - pubchem-bioassay
+          - kegg
+          - orangebook
+          - who-atc
+          - nci-thesaurus
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run adapter worker
+        run: |
+          SOURCE="${{ matrix.source }}"
+          FILTER="${{ inputs.source_filter }}"
+          if [ -n "$FILTER" ] && [ "$FILTER" != "$SOURCE" ]; then
+            echo "[ADAPTER:$SOURCE] Skipped by source_filter=$FILTER"
+            exit 0
+          fi
+          RUN_ID=$(date -u +%Y-%m-%d)
+          ARGS="--source=$SOURCE --run-id=$RUN_ID"
+          if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          node scripts/factory/incremental-worker.js $ARGS
+
+  merge-adapters:
+    name: Merge Adapters (fan-in)
+    needs: adapters
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run incremental merge
+        run: |
+          RUN_ID=$(date -u +%Y-%m-%d)
+          ARGS="--run-id=$RUN_ID"
+          if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          node scripts/factory/incremental-merge-all.js $ARGS

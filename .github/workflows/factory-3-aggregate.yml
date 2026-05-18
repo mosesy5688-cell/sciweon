@@ -8,6 +8,7 @@ on:
   workflow_run:
     workflows: ['Factory 2/4 Process']
     types: [completed]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
