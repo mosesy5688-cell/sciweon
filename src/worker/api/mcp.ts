@@ -1,22 +1,21 @@
 /**
- * Sciweon MCP server — V0.5.3 (Sprint 1b.1).
+ * Sciweon MCP server — V0.5.4 (Sprint 1b.2).
  *
  * JSON-RPC 2.0 protocol over HTTP POST per MCP spec
  * (https://modelcontextprotocol.io). Sciweon's Agent surface.
  *
  * Methods supported:
  *   initialize          — handshake; returns server capabilities + version
- *   tools/list          — enumerate Sciweon tools (1 tool in 1b.1)
+ *   tools/list          — enumerate Sciweon tools
  *   tools/call          — invoke a specific tool with args
  *
- * Tools available (V0.5.3 Sprint 1b.1):
+ * Tools available (V0.5.4):
+ *   sciweon_search              — substring search over enriched compound snapshot
  *   sciweon_get_negative_evidence — Layer 3 moat surface. Returns 0-N
  *     negative signals for a compound (CID), severity-grouped + verdict.
  *
- * 1b.2 will add:
- *   sciweon_search    — FTS5 full-text search (requires wa-sqlite + VFS)
+ * 1b.3 will add:
  *   sciweon_entity    — generic entity fetch (requires /api/v1/entity/:id)
- *   Out-of-corpus     — explicit disclaimer per feedback_api_launch_data_completeness
  *
  * Error contract:
  *   -32600 Invalid Request
@@ -29,15 +28,35 @@
 import type { Env } from '../../worker';
 import { parseCompoundId } from '../lib/id-parse';
 import { loadNegEvidenceForCompound } from '../lib/neg-evidence-loader';
+import { searchCompounds } from '../lib/compound-search';
 
 const SERVER_INFO = {
     name: 'sciweon',
-    version: '0.5.3',
+    version: '0.5.4',
 };
 
 const PROTOCOL_VERSION = '2025-03-26';
 
 const TOOLS = [
+    {
+        name: 'sciweon_search',
+        description: 'Search the Sciweon compound database by name, synonym, molecular formula, ChEMBL ID, or PubChem CID. Returns a ranked list of matching compounds with key metadata. Use this to identify the correct compound (and its CID) before calling sciweon_get_negative_evidence. Results include pubchem_cid, chembl_id, drug_status.max_phase, and confidence_overall. Matching is case-insensitive substring; exact matches score highest.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                query: {
+                    type: 'string',
+                    description: 'Search term — compound name, synonym, molecular formula (e.g. "C9H8O4"), ChEMBL ID (e.g. "CHEMBL25"), or PubChem CID (e.g. "2244"). Examples: "aspirin", "metformin", "ibuprofen".',
+                },
+                limit: {
+                    type: 'integer',
+                    description: 'Maximum number of results to return (1-25, default 10).',
+                    default: 10,
+                },
+            },
+            required: ['query'],
+        },
+    },
     {
         name: 'sciweon_get_negative_evidence',
         description: 'Get the complete negative evidence profile for a drug compound by PubChem CID. Returns 0+ signals across categories (trial_failure, inactive_bioassay, drug_withdrawal, black_box_warning, faers_adr_signal, serious_adverse_event_per_trial, paper_retraction), grouped by severity (critical / major / minor / unknown), with provenance and confidence per signal. Use this when an Agent needs to assess safety/efficacy risks for a candidate drug compound. The result includes a synthesized verdict and agent_recommendation; Agents may ignore the synthesis and read raw signals[] directly. Read-only, no side effects.',
@@ -59,7 +78,7 @@ const JSONRPC_HEADERS = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    'x-sciweon-mcp-version': '0.5.3',
+    'x-sciweon-mcp-version': '0.5.4',
 };
 
 function jsonrpcResult(id: unknown, result: unknown): Response {
@@ -91,6 +110,28 @@ async function handleInitialize(_params: Record<string, unknown>): Promise<unkno
 
 async function handleToolsList(): Promise<unknown> {
     return { tools: TOOLS };
+}
+
+async function handleToolSearch(args: Record<string, unknown>, env: Env): Promise<unknown> {
+    const q = args?.query;
+    if (typeof q !== 'string' || q.trim().length === 0) {
+        throw new ToolError(-32602, 'Invalid params: query is required and must be a non-empty string');
+    }
+    if (q.trim().length > 200) {
+        throw new ToolError(-32602, 'Invalid params: query must be 200 characters or fewer');
+    }
+    const rawLimit = typeof args.limit === 'number' ? args.limit : 10;
+    const limit = Math.min(Math.max(1, Math.floor(rawLimit)), 25);
+    if (!env.SCIWEON_R2) {
+        throw new ToolError(-32603, 'Data layer not configured (R2 binding missing)');
+    }
+    const results = await searchCompounds(env.SCIWEON_R2, q.trim().toLowerCase(), limit);
+    return {
+        content: [{
+            type: 'text',
+            text: JSON.stringify({ query: q.trim(), count: results.length, results }, null, 2),
+        }],
+    };
 }
 
 async function handleToolNegativeEvidence(args: Record<string, unknown>, env: Env, req: Request): Promise<unknown> {
@@ -126,6 +167,8 @@ async function handleToolsCall(params: Record<string, unknown>, env: Env, req: R
         throw new ToolError(-32602, 'Invalid params: name is required and must be a string');
     }
     switch (toolName) {
+        case 'sciweon_search':
+            return handleToolSearch(args, env);
         case 'sciweon_get_negative_evidence':
             return handleToolNegativeEvidence(args, env, req);
         default:
