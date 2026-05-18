@@ -37,7 +37,8 @@ function parseArgs() {
 }
 
 async function loadAdapterV2(source) {
-    const p = path.resolve(__dirname, `../../ingestion/adapters/${source}-adapter.js`);
+    // __dirname = scripts/factory/ → ../ingestion/adapters/ = scripts/ingestion/adapters/
+    const p = path.resolve(__dirname, `../ingestion/adapters/${source}-adapter.js`);
     try {
         const mod = await import(p);
         if (typeof mod.checkForUpdates !== 'function' || typeof mod.fetchIncremental !== 'function') {
@@ -45,8 +46,8 @@ async function loadAdapterV2(source) {
             return null;
         }
         return mod;
-    } catch {
-        console.log(`[WORKER:${source}] No adapter found — skip`);
+    } catch (err) {
+        console.log(`[WORKER:${source}] No adapter found — skip (${err.message})`);
         return null;
     }
 }
