@@ -1,18 +1,23 @@
 /**
- * PubChem Adapter — Sciweon V0.1
+ * PubChem Adapter V2 — Sciweon DataSourceAdapterV2 interface (§11.2).
  *
- * Fetches compound data from PubChem PUG-REST API and normalizes to Sciweon
- * Compound schema (V8 strict contract).
+ * sinceToken: last processed CID (string integer). null = bootstrap from 0.
+ * Incremental batch = 200 CIDs/run (new CIDs only; bulk backfill handled by
+ * the separate bulk-pubchem-harvest pipeline, not this adapter).
  *
- * Rate limit: 5 req/sec anonymous (higher with API key).
- * API docs: https://pubchem.ncbi.nlm.nih.gov/docs/pug-rest
- *
- * V0.1a usage: small-scale (1000 compounds) for schema validation.
- * V0.1b: scale via Bulk FTP, not this adapter.
+ * Rate limit: 5 req/sec anonymous. Batch property fetch (100 CIDs/request)
+ * keeps daily incremental cost well under the limit.
  */
 
 import { computeLipinskiViolations } from '../../factory/lib/lipinski.js';
 import { scoreEntity } from '../../factory/lib/confidence-scorer.js';
+
+// ─── V2 adapter contract ──────────────────────────────────────────────────
+export const supportsIncremental     = true;
+export const fallbackFullRefreshDays = 7;
+
+const BATCH_SIZE       = 200; // CIDs per daily incremental run
+const PROP_CHUNK_SIZE  = 100; // CIDs per PubChem batch-property call
 
 const PUBCHEM_BASE = 'https://pubchem.ncbi.nlm.nih.gov/rest/pug';
 const REQUEST_TIMEOUT_MS = 15000;
@@ -158,4 +163,56 @@ export async function getCompound(cid) {
     ]);
     if (!raw) return null;
     return normalize(raw, synonyms);
+}
+
+// ─── V2 adapter functions ─────────────────────────────────────────────────
+
+async function fetchPubchemCount() {
+    const data = await fetchJson(`${PUBCHEM_BASE}/compound/count/JSON`);
+    return data?.PC_Count?.TotalCount ?? 0;
+}
+
+async function batchFetchProperties(cids) {
+    const body = `cid=${cids.join(',')}`;
+    const res = await fetch(
+        `${PUBCHEM_BASE}/compound/cid/property/${PROPERTIES}/JSON`,
+        { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) },
+    );
+    if (!res.ok) throw new Error(`PubChem batch property HTTP ${res.status}`);
+    const data = await res.json();
+    return data?.PropertyTable?.Properties ?? [];
+}
+
+async function batchFetchSynonyms(cids) {
+    try {
+        const data = await fetchJson(`${PUBCHEM_BASE}/compound/cid/${cids.join(',')}/synonyms/JSON`);
+        const info = data?.InformationList?.Information ?? [];
+        return new Map(info.map(it => [it.CID, it.Synonym?.slice(0, 100) ?? []]));
+    } catch { return new Map(); }
+}
+
+export async function checkForUpdates(sinceToken) {
+    const lastCid  = sinceToken ? parseInt(sinceToken, 10) : 0;
+    const total    = await fetchPubchemCount();
+    return {
+        hasUpdates: total > lastCid,
+        count: Math.max(0, total - lastCid),
+        nextSinceToken: String(total),
+    };
+}
+
+export async function fetchIncremental(sinceToken) {
+    const lastCid  = sinceToken ? parseInt(sinceToken, 10) : 0;
+    const cidRange = Array.from({ length: BATCH_SIZE }, (_, i) => lastCid + 1 + i);
+    const records  = [];
+    for (let i = 0; i < cidRange.length; i += PROP_CHUNK_SIZE) {
+        const chunk = cidRange.slice(i, i + PROP_CHUNK_SIZE);
+        const [props, synMap] = await Promise.all([batchFetchProperties(chunk), batchFetchSynonyms(chunk)]);
+        for (const raw of props) {
+            const entity = normalize(raw, synMap.get(raw.CID) ?? []);
+            if (entity) records.push(entity);
+        }
+        if (i + PROP_CHUNK_SIZE < cidRange.length) await new Promise(r => setTimeout(r, 200));
+    }
+    return { records, nextSinceToken: String(lastCid + BATCH_SIZE) };
 }
