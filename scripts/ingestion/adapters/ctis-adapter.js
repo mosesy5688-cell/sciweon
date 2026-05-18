@@ -29,6 +29,14 @@
  *   raw sponsor-submitted text.
  */
 
+// V2 adapter contract: real incremental via decisionDate cursor.
+export const supportsIncremental = true;
+export const fallbackFullRefreshDays = 14;
+
+import {
+    TERMINATED_STATUSES, normalizePhase, normalizeStatus,
+} from './ctis-helpers.js';
+
 const CTIS_BASE = 'https://euclinicaltrials.eu/ctis-public-api';
 const REQUEST_TIMEOUT_MS = 25000;
 const REQUEST_DELAY_MS = 300;
@@ -95,58 +103,6 @@ export async function fetchByCtNumber(ctNumber) {
     }
 }
 
-const PHASE_NORMALIZE = {
-    'Phase 1': 1, 'Phase I': 1,
-    'Phase 2': 2, 'Phase II': 2,
-    'Phase 3': 3, 'Phase III': 3,
-    'Phase 4': 4, 'Phase IV': 4,
-};
-
-function normalizePhase(rawPhase) {
-    if (rawPhase == null) return null;
-    const s = String(rawPhase);
-    for (const [k, v] of Object.entries(PHASE_NORMALIZE)) {
-        if (s.includes(k)) return v;
-    }
-    return null;
-}
-
-const TERMINATED_STATUSES = new Set(['ENDED_PREMATURELY', 'TERMINATED', 'HALTED', 'CANCELLED', 'WITHDRAWN']);
-
-// CTIS /search endpoint returns ctStatus as a numeric lifecycle code while
-// /retrieve returns a string. The numeric codes map to the same coarse-grained
-// string status set verified empirically against representative trials:
-//   codes 2/3/4/5 -> "Authorised"  (different lifecycle sub-phases, all approved)
-//   code 6        -> "Halted"
-//   code 8        -> "Ended"       (normal completion)
-//   code 11       -> "Not authorised"
-const SEARCH_STATUS_CODE_MAP = {
-    2: 'AUTHORISED',
-    3: 'AUTHORISED',
-    4: 'AUTHORISED',
-    5: 'AUTHORISED',
-    6: 'HALTED',
-    8: 'ENDED',
-    11: 'NOT_YET_AUTHORISED',
-};
-
-const RETRIEVE_STATUS_STRING_MAP = {
-    'Authorised': 'AUTHORISED',
-    'Under evaluation': 'UNDER_EVALUATION',
-    'Ongoing': 'ONGOING',
-    'Ended': 'ENDED',
-    'Ended prematurely': 'ENDED_PREMATURELY',
-    'Halted': 'HALTED',
-    'Cancelled': 'CANCELLED',
-    'Not authorised': 'NOT_YET_AUTHORISED',
-};
-
-function normalizeStatus(rawStatus) {
-    if (typeof rawStatus === 'number') return SEARCH_STATUS_CODE_MAP[rawStatus] ?? 'UNKNOWN';
-    if (typeof rawStatus === 'string') return RETRIEVE_STATUS_STRING_MAP[rawStatus] ?? 'UNKNOWN';
-    return 'UNKNOWN';
-}
-
 /**
  * Normalize a CTIS summary record to Sciweon Trial schema fields.
  * Note: CTIS uses ctNumber as its canonical ID; CT.gov NCT IDs are NOT
@@ -199,3 +155,58 @@ export function normalizeToTrial(raw, compoundIdHint = null) {
 }
 
 export { REQUEST_DELAY_MS };
+
+function sinceDefault() {
+    const d = new Date();
+    d.setDate(d.getDate() - 14);
+    return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Check if any CTIS trials have a decisionDate >= sinceToken (YYYY-MM-DD).
+ */
+export async function checkForUpdates(sinceToken) {
+    const since = sinceToken ?? sinceDefault();
+    const today = new Date().toISOString().slice(0, 10);
+    try {
+        const data = await fetchJson(`${CTIS_BASE}/search`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                pagination: { page: 1, size: 1 },
+                searchCriteria: { decisionDateFrom: since },
+                sort: { property: 'decisionDate', direction: 'DESC' },
+            }),
+        });
+        const count = data?.totalNumberOfResults ?? (Array.isArray(data?.data) && data.data.length > 0 ? 1 : 0);
+        return { hasUpdates: count > 0, count, nextSinceToken: today };
+    } catch (e) {
+        console.warn(`[CTIS] checkForUpdates: ${e.message}`);
+        return { hasUpdates: false, count: 0, nextSinceToken: sinceToken };
+    }
+}
+
+/**
+ * Fetch CTIS trials updated since sinceToken. Returns normalized Trial records.
+ */
+export async function fetchIncremental(sinceToken) {
+    const since = sinceToken ?? sinceDefault();
+    const nextSinceToken = new Date().toISOString().slice(0, 10);
+    try {
+        const data = await fetchJson(`${CTIS_BASE}/search`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                pagination: { page: 1, size: 200 },
+                searchCriteria: { decisionDateFrom: since },
+                sort: { property: 'decisionDate', direction: 'ASC' },
+            }),
+        });
+        const rows = Array.isArray(data?.data) ? data.data : [];
+        const records = rows.map(r => normalizeToTrial(r)).filter(Boolean);
+        return { records, nextSinceToken };
+    } catch (e) {
+        console.warn(`[CTIS] fetchIncremental: ${e.message}`);
+        return { records: [], nextSinceToken };
+    }
+}
