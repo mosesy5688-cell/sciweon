@@ -81,6 +81,9 @@ async function main() {
     const compoundResults = await runSequential('Compound Enrichers', [
         { name: 'fingerprint', fn: () => runScript('compound-fingerprint-enricher.js') },
         { name: 'kegg', fn: () => runScript('compound-kegg-enricher.js') },
+        // chembl-compound-enricher must run before compound-id-resolver so that
+        // drug_status is available; and before fda/faers which gate on UNII.
+        { name: 'chembl-compound', fn: () => runScript('chembl-compound-enricher.js') },
         { name: 'compound-id-resolver', fn: () => runScript('compound-id-resolver.js') },
         { name: 'fda', fn: () => runScript('fda-enricher.js') },
         { name: 'compound-faers', fn: () => runScript('compound-faers-enricher.js') },
@@ -107,7 +110,7 @@ async function main() {
     const elapsed = Math.round((Date.now() - startTime) / 1000);
     console.log(`\n[STAGE-2] === Summary ===`);
     console.log(`  Elapsed:        ${elapsed}s (${(elapsed / 60).toFixed(1)} min)`);
-    console.log(`  Compound enrichers OK: ${compoundResults.filter(r => r.ok).length}/5`);
+    console.log(`  Compound enrichers OK: ${compoundResults.filter(r => r.ok).length}/6`);
     console.log(`  ID resolver:    ${idResolverOk ? 'OK' : 'FAIL'}`);
     console.log(`  Bioactivity OK: ${bioactivityResults.filter(r => r.ok).length}/2`);
     console.log(`  R2 run prefix:  processed/enriched/${runId}/`);
