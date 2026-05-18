@@ -1,24 +1,23 @@
 /**
- * ClinicalTrials.gov Adapter — Sciweon V0.1
+ * ClinicalTrials.gov Adapter V2 — Sciweon DataSourceAdapterV2 interface (§11.2).
  *
- * Fetches clinical trial data from ClinicalTrials.gov V2 REST API.
+ * sinceToken: YYYY-MM-DD (LastUpdatePostDate filter). null = today − 7 days.
+ * Incremental fetches recently updated studies and normalizes to Sciweon Trial schema.
+ * V1 functions (searchByIntervention, fetchResultsByNctId, normalize) kept for stage-2 pipeline.
  *
  * API docs: https://clinicaltrials.gov/data-api/api
- * Base: https://clinicaltrials.gov/api/v2/studies
- * Public, no auth required.
- *
- * Search strategies (in order of preference):
- *   1. By intervention name (compound synonym → trials)
- *   2. By NCT ID (direct lookup)
- *
- * KEY for Negative Evidence (V0.4):
- *   TERMINATED/WITHDRAWN trials + whyStopped text = failure raw data
  */
 
 import { scoreDataPoint } from '../../factory/lib/confidence-scorer.js';
+import { extractResultsSignals } from './clinicaltrials-helpers.js';
+
+// ─── V2 adapter contract ──────────────────────────────────────────────────
+export const supportsIncremental     = true;
+export const fallbackFullRefreshDays = 14;
 
 const CT_BASE = 'https://clinicaltrials.gov/api/v2/studies';
 const REQUEST_TIMEOUT_MS = 20000;
+const INCREMENTAL_PAGE_SIZE = 200;
 
 async function fetchJson(url) {
     const res = await fetch(url, {
@@ -63,43 +62,7 @@ export async function fetchResultsByNctId(nctId) {
     }
 }
 
-function extractResultsSignals(raw) {
-    const hasResults = raw.hasResults === true;
-    const rs = raw.resultsSection ?? {};
-    const om = rs.outcomeMeasuresModule?.outcomeMeasures ?? [];
-    const primary = om.filter(o => o.type === 'PRIMARY').map(o => ({
-        title: (o.title ?? '').slice(0, 500),
-        type: o.type,
-        time_frame: (o.timeFrame ?? '').slice(0, 200),
-        param_type: o.paramType ?? null,
-        group_count: Array.isArray(o.groups) ? o.groups.length : 0,
-        has_analyses: Array.isArray(o.analyses) && o.analyses.length > 0,
-    }));
-    const secondaryCount = om.filter(o =>
-        o.type === 'SECONDARY' || o.type === 'OTHER_PRE_SPECIFIED' || o.type === 'POST_HOC').length;
-    const pf = rs.participantFlowModule;
-    let enrollmentActual = null;
-    if (pf?.periods?.[0]?.milestones) {
-        const started = pf.periods[0].milestones.find(m => m.type === 'STARTED');
-        if (started) {
-            const total = (started.achievements ?? []).reduce(
-                (s, a) => s + (typeof a.numSubjects === 'string' ? parseInt(a.numSubjects, 10) || 0 : (a.numSubjects ?? 0)),
-                0,
-            );
-            if (total > 0) enrollmentActual = total;
-        }
-    }
-    const ae = rs.adverseEventsModule;
-    return {
-        has_results: hasResults,
-        primary_outcomes: primary,
-        secondary_outcomes_count: secondaryCount,
-        enrollment_actual: enrollmentActual,
-        serious_events_count: ae?.seriousEvents?.length ?? 0,
-        other_events_count: ae?.otherEvents?.length ?? 0,
-        results_extracted_at: new Date().toISOString(),
-    };
-}
+// extractResultsSignals lives in clinicaltrials-helpers.js (CES split)
 
 /**
  * Search trials by intervention name.
@@ -212,5 +175,43 @@ export function normalize(raw, compoundIdHint = null) {
             method: 'cross_source_consensus_v2',
             cross_source_agreement: { structural_match: false, conflicts: [] },
         },
+    };
+}
+
+// ─── V2 adapter functions ─────────────────────────────────────────────────
+
+function bootstrapSince() {
+    const d = new Date(); d.setDate(d.getDate() - 7);
+    return d.toISOString().slice(0, 10);
+}
+
+function buildUpdateQuery(since) {
+    // ClinicalTrials.gov V2 AREA/RANGE syntax for LastUpdatePostDate
+    return `AREA[LastUpdatePostDate]RANGE[${since},MAX]`;
+}
+
+export async function checkForUpdates(sinceToken) {
+    const since = sinceToken ?? bootstrapSince();
+    const query = encodeURIComponent(buildUpdateQuery(since));
+    const url = `${CT_BASE}?query.term=${query}&countTotal=true&pageSize=1&format=json`;
+    const data = await fetchJson(url);
+    const count = data?.totalCount ?? 0;
+    return {
+        hasUpdates: count > 0,
+        count,
+        nextSinceToken: new Date().toISOString().slice(0, 10),
+    };
+}
+
+export async function fetchIncremental(sinceToken) {
+    const since = sinceToken ?? bootstrapSince();
+    const query = encodeURIComponent(buildUpdateQuery(since));
+    const url = `${CT_BASE}?query.term=${query}&pageSize=${INCREMENTAL_PAGE_SIZE}&format=json`;
+    const data = await fetchJson(url);
+    const studies = data?.studies ?? [];
+    const records = studies.map(s => normalize(s)).filter(Boolean);
+    return {
+        records,
+        nextSinceToken: new Date().toISOString().slice(0, 10),
     };
 }
