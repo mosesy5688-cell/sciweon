@@ -1,0 +1,128 @@
+name: Factory Incremental Daily (V0.7)
+
+# V0.7 Unified Daily Incremental Architecture.
+# 18-way matrix fan-out (one worker per source) + cumulative-merge fan-in.
+# Each worker: checkForUpdates (fast, <1 min) -> early exit if no updates,
+# or fetchIncremental -> stage delta to R2 -> advance cursor.
+# Fan-in: zero-delta guard + replace-by-id merge + upload new cumulative.
+#
+# cron: 02:00 UTC daily. Manual dispatch for testing.
+# Concurrency guard: cancel-in-progress: false (never cancel a running merge).
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      source_filter:
+        description: 'Single source to run (leave empty for all 18)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Dry run (no R2 writes)'
+        type: choice
+        options: ['false', 'true']
+        default: 'false'
+      run_id_override:
+        description: 'Override run-id date (YYYY-MM-DD). Default: today UTC.'
+        required: false
+        default: ''
+
+concurrency:
+  group: factory-incremental
+  cancel-in-progress: false
+
+jobs:
+  fan-out:
+    name: Worker [${{ matrix.source }}]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        source:
+          - pubchem
+          - chembl
+          - clinicaltrials
+          - ctis
+          - dailymed
+          - pubmed
+          - openalex
+          - openfda
+          - retraction-watch
+          - uniprot
+          - unichem
+          - rxnorm
+          - semanticscholar
+          - pubchem-bioassay
+          - kegg
+          - orangebook
+          - who-atc
+          - nci-thesaurus
+    env:
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run worker
+        run: |
+          SOURCE="${{ matrix.source }}"
+          # Skip if source_filter is set and doesn't match this worker
+          FILTER="${{ inputs.source_filter }}"
+          if [ -n "$FILTER" ] && [ "$FILTER" != "$SOURCE" ]; then
+            echo "[WORKER:$SOURCE] Skipped by source_filter=$FILTER"
+            exit 0
+          fi
+
+          RUN_ID="${{ inputs.run_id_override }}"
+          if [ -z "$RUN_ID" ]; then RUN_ID=$(date -u +%Y-%m-%d); fi
+
+          ARGS="--source=$SOURCE --run-id=$RUN_ID"
+          if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+
+          node scripts/factory/incremental-worker.js $ARGS
+
+  cumulative-merge:
+    name: Cumulative Merge (fan-in)
+    needs: fan-out
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run cumulative merge
+        run: |
+          RUN_ID="${{ inputs.run_id_override }}"
+          if [ -z "$RUN_ID" ]; then RUN_ID=$(date -u +%Y-%m-%d); fi
+
+          ARGS="--run-id=$RUN_ID"
+          if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+
+          node scripts/factory/incremental-merge-all.js $ARGS
