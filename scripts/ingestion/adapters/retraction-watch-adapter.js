@@ -177,19 +177,13 @@ export function lookup(paper, index) {
     return null;
 }
 
-// ── V2 incremental interface ──────────────────────────────────────────────────
-
 function sinceDateDefault() {
     const d = new Date();
     d.setDate(d.getDate() - 7);
     return d.toISOString().slice(0, 10);
 }
 
-/**
- * Check for updates: always true when sinceToken is older than today.
- * RW CSV has no ETag/If-Modified-Since support on GitLab raw URLs;
- * rely on fallbackFullRefreshDays=7 cadence from the worker scheduler.
- */
+// No ETag/If-Modified-Since on GitLab raw; cadence via fallbackFullRefreshDays.
 export async function checkForUpdates(sinceToken) {
     const since = sinceToken ?? sinceDateDefault();
     const today = new Date().toISOString().slice(0, 10);
@@ -248,6 +242,5 @@ export async function fetchIncremental(sinceToken) {
             nature: f[cNature] || null,
         });
     }
-    console.log(`[RETRACTION-WATCH] fetchIncremental since=${since}: ${records.length} new records`);
     return { records, nextSinceToken };
 }
