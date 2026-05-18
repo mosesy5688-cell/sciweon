@@ -3,19 +3,18 @@ name: Factory 1/4 Harvest
 # Stage 1 of 4: incremental harvest from upstream, cross-source linking,
 # upload raw + baseline to R2. Triggers stage 2 on success.
 #
-# Cron Mon+Thu 10:00 UTC. Cursor in R2 (state/harvest-cursor.json) tracks
-# next CID; never duplicates fetched range. Batch cadence (Mon+Thu) aligns
-# with V0.5.2.1 cumulative aggregation (PR #26) — daily incremental updates
-# are handled by factory-incremental-daily.yml.
+# Cron daily 10:00 UTC. Cursor in R2 (state/harvest-cursor.json) tracks
+# next CID; never duplicates fetched range. Public repo = unlimited GHA
+# minutes, so daily cadence is safe and maximises data freshness.
 #
 # 10:00 UTC chosen to clear daily-snapshot (cron 00:00 UTC, fires 03-07 UTC
 # with GitHub delay, runs up to 2h) releasing factory-pipeline concurrency
-# before this workflow starts. Running daily caused permanent schedule skip
-# because daily-snapshot held the lock when factory-1 cron fired.
+# before this workflow starts. Using 02:00 UTC caused permanent schedule skip
+# because daily-snapshot held the factory-pipeline lock when factory-1 fired.
 
 on:
   schedule:
-    - cron: '0 10 * * 1,4'
+    - cron: '0 10 * * *'
   workflow_dispatch:
     inputs:
       manual_start_cid:
