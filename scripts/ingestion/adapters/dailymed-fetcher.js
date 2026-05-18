@@ -7,7 +7,7 @@ import { parseSplSections, extractXmlFromZip, LOINC_SECTIONS } from '../../facto
 
 export const DAILYMED_BASE    = 'https://dailymed.nlm.nih.gov/dailymed/services/v2';
 export const DAILYMED_ARCHIVE = 'https://dailymed.nlm.nih.gov/dailymed/archives';
-const LIST_PAGE_SIZE      = 100;
+export const LIST_PAGE_SIZE = 100;
 const REQUEST_TIMEOUT_MS  = 30000;
 const ARCHIVE_TIMEOUT_MS  = 60000;
 export const DELAY_MS     = 350;
