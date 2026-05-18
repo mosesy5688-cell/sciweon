@@ -34,6 +34,10 @@
  *     - history fields  (NCBI internal indexing timeline)
  */
 
+// V2 adapter contract: real incremental via NCBI esearch date filter.
+export const supportsIncremental = true;
+export const fallbackFullRefreshDays = 7;
+
 const EUTILS_BASE = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils';
 const REQUEST_TIMEOUT_MS = 20000;
 const REQUEST_DELAY_MS = 350;  // NCBI polite: <=3 req/sec without API key
@@ -144,4 +148,85 @@ export function compareRetraction(paper, pubmedPrimary) {
         else if (rwSays && !pmSays) conflicts.push('rw_says_retracted_pubmed_says_not');
     }
     return { agree: conflicts.length === 0, conflicts };
+}
+
+// ── V2 incremental interface ──────────────────────────────────────────────────
+
+function todayYmd() {
+    return new Date().toISOString().slice(0, 10).replace(/-/g, '/');
+}
+
+function sinceYmd(sinceToken) {
+    const d = sinceToken
+        ? new Date(sinceToken)
+        : (() => { const t = new Date(); t.setDate(t.getDate() - 7); return t; })();
+    return d.toISOString().slice(0, 10).replace(/-/g, '/');
+}
+
+/**
+ * Check how many papers were added/updated in PubMed since sinceToken (YYYY-MM-DD).
+ * Uses esearch with datetype=pdat (publication date).
+ */
+export async function checkForUpdates(sinceToken) {
+    const since = sinceYmd(sinceToken);
+    const today = todayYmd();
+    const url = buildUrl('esearch.fcgi', {
+        db: 'pubmed',
+        datetype: 'pdat',
+        mindate: since,
+        maxdate: today,
+        retmax: '0',
+        retmode: 'json',
+    });
+    try {
+        const data = await fetchJson(url);
+        const count = parseInt(data?.esearchresult?.count ?? '0', 10);
+        return { hasUpdates: count > 0, count, nextSinceToken: today.replace(/\//g, '-') };
+    } catch (e) {
+        console.warn(`[PUBMED] checkForUpdates: ${e.message}`);
+        return { hasUpdates: false, count: 0, nextSinceToken: sinceToken };
+    }
+}
+
+/**
+ * Fetch papers updated since sinceToken. Uses esearch to retrieve PMIDs,
+ * then esummary for full record normalization. Returns up to BATCH_MAX records.
+ */
+export async function fetchIncremental(sinceToken) {
+    const since = sinceYmd(sinceToken);
+    const today = todayYmd();
+    const nextSinceToken = today.replace(/\//g, '-');
+
+    const searchUrl = buildUrl('esearch.fcgi', {
+        db: 'pubmed',
+        datetype: 'pdat',
+        mindate: since,
+        maxdate: today,
+        retmax: String(BATCH_MAX),
+        retmode: 'json',
+    });
+    let pmids = [];
+    try {
+        const searchData = await fetchJson(searchUrl);
+        pmids = searchData?.esearchresult?.idlist ?? [];
+    } catch (e) {
+        console.warn(`[PUBMED] fetchIncremental esearch: ${e.message}`);
+        return { records: [], nextSinceToken };
+    }
+    if (!pmids.length) return { records: [], nextSinceToken };
+
+    await sleep(REQUEST_DELAY_MS);
+    const rawMap = await fetchByPmidBatch(pmids);
+    const records = [];
+    for (const raw of rawMap.values()) {
+        const p = extractPrimary(raw);
+        if (p) {
+            records.push({
+                id: `sciweon::paper::pubmed::${p.pmid}`,
+                source: 'pubmed',
+                ...p,
+            });
+        }
+    }
+    return { records, nextSinceToken };
 }
