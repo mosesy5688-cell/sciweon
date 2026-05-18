@@ -14,9 +14,17 @@
  * CRITICAL: is_retracted=true is the Negative Evidence signal.
  */
 
+// V2 adapter contract: real incremental via from_updated_date filter.
+export const supportsIncremental = true;
+export const fallbackFullRefreshDays = 7;
+
+import {
+    normalizeDoi, normalizeOpenAlexId, extractPmid,
+    extractAuthors, extractMesh, reconstructAbstract, extractNctIds,
+} from './openalex-helpers.js';
+
 const OPENALEX_BASE = 'https://api.openalex.org/works';
 const REQUEST_TIMEOUT_MS = 20000;
-// OpenAlex recommends polite header for higher rate limit pool
 const POLITE_EMAIL = 'sciweon@example.com';
 
 async function fetchJson(url) {
@@ -96,66 +104,8 @@ export async function fetchByPmidBatch(pmids) {
     return all;
 }
 
-function extractAuthors(raw) {
-    // PRIMARY-DATA contract: keep the paper's own byline + affiliation text.
-    // OpenAlex's normalized author.display_name and institution.display_name
-    // are secondary entity-resolution outputs — NOT consumed here.
-    // See primary-data-only policy.
-    const authorships = raw.authorships ?? [];
-    return authorships.slice(0, 1000).map(a => ({
-        // raw_author_name = paper byline string; display_name only as fallback
-        // when raw is absent (rare; ensures the entity is still listable).
-        name: a.raw_author_name ?? a.author?.display_name ?? '',
-        raw_affiliations: (a.raw_affiliation_strings ?? []).slice(0, 20).filter(Boolean),
-    })).filter(a => a.name);
-}
-
-function extractMesh(raw) {
-    // NIH MEDLINE MeSH terms — primary human-curated. Accept.
-    return (raw.mesh ?? []).slice(0, 100).map(m => m.descriptor_name).filter(Boolean);
-}
 // OpenAlex `concepts` and `fields_of_study` intentionally NOT extracted —
 // secondary ML output, ~50-70% accuracy. V0.4: Sciweon's own classifier.
-
-/**
- * OpenAlex `id` format: "https://openalex.org/W{number}"
- * Normalize to "W{number}".
- */
-function normalizeOpenAlexId(idUrl) {
-    if (!idUrl) return null;
-    const match = idUrl.match(/W\d+/);
-    return match ? match[0] : null;
-}
-
-function extractPmid(raw) {
-    const ids = raw.ids ?? {};
-    const pmidUrl = ids.pmid ?? null;
-    if (!pmidUrl) return null;
-    const m = String(pmidUrl).match(/(\d+)$/);
-    return m ? m[1] : null;
-}
-
-/**
- * Normalize raw OpenAlex work → Sciweon Paper schema.
- *
- * @param {object} raw — OpenAlex work record
- * @param {string} compoundIdHint — optional compound ID for linkage
- * @param {string} extractionMethod — how this paper was matched to compound
- */
-// Sciweon Paper schema requires DOI regex `^10\.\d{4,}/\S+$`. OpenAlex
-// occasionally returns DOIs that fail this pattern (e.g., raw `raw.doi`
-// containing placeholders or unusually-formatted identifiers). Validate
-// after URL prefix strip; return null on mismatch so downstream schema
-// gate doesn't REJECT-halt the chain (caused stage-3 halt 2026-05-17,
-// PR #35 fixed retraction-watch adapter; this PR fixes openalex adapter).
-const DOI_PATTERN = /^10\.\d{4,}\/\S+$/;
-
-function normalizeDoi(raw) {
-    if (!raw) return null;
-    const s = String(raw).trim().replace(/^https?:\/\/(dx\.)?doi\.org\//, '').toLowerCase();
-    if (!s) return null;
-    return DOI_PATTERN.test(s) ? s : null;
-}
 
 export function normalize(raw, compoundIdHint = null, extractionMethod = 'concept_match') {
     if (!raw || !raw.id) return null;
@@ -211,17 +161,45 @@ export function normalize(raw, compoundIdHint = null, extractionMethod = 'concep
     };
 }
 
-function reconstructAbstract(inverted) {
-    if (!inverted || typeof inverted !== 'object') return null;
-    const words = [];
-    for (const [word, positions] of Object.entries(inverted)) {
-        for (const pos of positions) words[pos] = word;
-    }
-    return words.filter(Boolean).join(' ').trim();
+function sinceDefault() {
+    const d = new Date();
+    d.setDate(d.getDate() - 7);
+    return d.toISOString().slice(0, 10);
 }
 
-function extractNctIds(text) {
-    if (!text) return [];
-    const matches = text.match(/NCT\d{8}/g);
-    return matches ? [...new Set(matches)] : [];
+/**
+ * Check if OpenAlex has works updated since sinceToken (YYYY-MM-DD).
+ * Uses from_updated_date filter with per-page=1.
+ */
+export async function checkForUpdates(sinceToken) {
+    const since = sinceToken ?? sinceDefault();
+    const today = new Date().toISOString().slice(0, 10);
+    try {
+        const data = await fetchJson(`${OPENALEX_BASE}?filter=from_updated_date:${since}&per-page=1`);
+        const count = data?.meta?.count ?? 0;
+        return { hasUpdates: count > 0, count, nextSinceToken: today };
+    } catch (e) {
+        console.warn(`[OPENALEX] checkForUpdates: ${e.message}`);
+        return { hasUpdates: false, count: 0, nextSinceToken: sinceToken };
+    }
+}
+
+/**
+ * Fetch works updated since sinceToken. Returns normalized Paper records.
+ * OpenAlex from_updated_date returns up to 10K results; we take first 200.
+ */
+export async function fetchIncremental(sinceToken) {
+    const since = sinceToken ?? sinceDefault();
+    const nextSinceToken = new Date().toISOString().slice(0, 10);
+    try {
+        const data = await fetchJson(
+            `${OPENALEX_BASE}?filter=from_updated_date:${since}&per-page=200&sort=updated_date:asc`,
+        );
+        const rows = data?.results ?? [];
+        const records = rows.map(r => normalize(r)).filter(Boolean);
+        return { records, nextSinceToken };
+    } catch (e) {
+        console.warn(`[OPENALEX] fetchIncremental: ${e.message}`);
+        return { records: [], nextSinceToken };
+    }
 }
