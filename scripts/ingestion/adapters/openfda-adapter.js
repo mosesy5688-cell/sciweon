@@ -35,6 +35,9 @@
  *     - spl_metadata          (PDF rendering metadata, not data)
  */
 
+// V2 adapter contract: reactive UNII-keyed lookup — FDA openFDA has no stable incremental cursor.
+export const supportsIncremental = false;
+
 const OPENFDA_BASE = 'https://api.fda.gov';
 const REQUEST_TIMEOUT_MS = 20000;
 const REQUEST_DELAY_MS = 250;

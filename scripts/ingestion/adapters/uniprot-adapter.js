@@ -29,6 +29,9 @@
  *   secondary processing and must not enter Sciweon's primary data graph.
  */
 
+// V2 adapter contract: reactive accession-list lookup — no standalone incremental cursor.
+export const supportsIncremental = false;
+
 const UNIPROT_BASE = 'https://rest.uniprot.org/uniprotkb';
 const REQUEST_TIMEOUT_MS = 20000;
 const REQUEST_DELAY_MS = 200;
