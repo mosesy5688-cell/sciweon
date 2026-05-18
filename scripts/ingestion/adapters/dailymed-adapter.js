@@ -16,7 +16,7 @@ import {
     sleep, todayIso, bootstrapSince,
     normalizeDailyMedDate, isAcceptedLabelType, buildNullSections,
     fetchJson, fetchSections, listSplPage, fetchLabelMeta,
-    DAILYMED_BASE, DELAY_MS,
+    DAILYMED_BASE, DELAY_MS, LIST_PAGE_SIZE,
 } from './dailymed-fetcher.js';
 
 export const supportsIncremental     = true;
@@ -69,7 +69,7 @@ export async function checkForUpdates(sinceToken) {
         });
         const data = await fetchJson(`${DAILYMED_BASE}/spls.json?${params}`);
         const total = data.metadata?.total ?? 0;
-        return { hasUpdates: total > 0, count: total, nextSinceToken: sinceToken };
+        return { hasUpdates: total > 0, count: total, nextSinceToken: todayIso() };
     } catch (e) {
         console.warn(`[DAILYMED] checkForUpdates: ${e.message}`);
         return { hasUpdates: false, count: 0, nextSinceToken: sinceToken };
