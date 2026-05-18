@@ -57,7 +57,7 @@ async function shardWorkerDir(workerShard, r2, bucket, r2Prefix, dryRun) {
 
     const flushShard = async (entities) => {
         if (entities.length === 0) return;
-        const cids = entities.map(e => e.cid ?? 0).filter(Boolean);
+        const cids = entities.map(e => e.pubchem_cid ?? e.cid ?? 0).filter(Boolean);
         const minCid = cids.length ? Math.min(...cids) : totalRecords;
         const maxCid = cids.length ? Math.max(...cids) : totalRecords + entities.length;
         const raw = Buffer.from(entities.map(e => JSON.stringify(e)).join('\n') + '\n');

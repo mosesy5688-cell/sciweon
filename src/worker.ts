@@ -6,12 +6,12 @@
  * build at ./dist). Adding API endpoints does NOT change the existing
  * landing-page behavior.
  *
- * Routing table (V0.5.2 flagship — single endpoint):
- *   GET /api/v1/compound/:id/negative-evidence
- *     → JSON list of NegEvidence records keyed to that compound
+ * Routing table (V0.6 B.4):
+ *   GET /api/v1/compound/:id                    → dual-tier compound lookup (T1/T2)
+ *   GET /api/v1/compound/:id/negative-evidence  → NegEvidence signals for compound
  *
  * Future routes (Phase 2):
- *   GET /api/v1/entity/:id
+ *   GET /api/v1/compound/:id (V0.6 B.4 — dual-tier T1/T2 lookup)
  *   GET /api/v1/search?q=&type=
  *
  * Error contract (per SCIWEON_DATA_ARCHITECTURE §3.0):
@@ -23,6 +23,7 @@
 
 import { handleNegativeEvidence } from './worker/api/negative-evidence';
 import { handleMcp } from './worker/api/mcp';
+import { handleCompound } from './worker/api/compound';
 
 export interface Env {
     ASSETS: Fetcher;
@@ -41,6 +42,14 @@ export default {
             }
         }
 
+        if (/^\/api\/v1\/compound\/[^/]+$/.test(url.pathname)) {
+            try {
+                return await handleCompound(req, env, ctx);
+            } catch (err) {
+                return json500(err);
+            }
+        }
+
         if (url.pathname === '/api/mcp' || url.pathname === '/api/v1/mcp') {
             try {
                 return await handleMcp(req, env, ctx);
@@ -52,7 +61,7 @@ export default {
         if (url.pathname === '/api/v1/_health') {
             return Response.json({
                 status: 'ok',
-                version: 'V0.5.2',
+                version: 'V0.6',
                 r2_binding: !!env.SCIWEON_R2,
                 timestamp: new Date().toISOString(),
             });
