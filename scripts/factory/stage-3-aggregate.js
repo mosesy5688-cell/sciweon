@@ -31,6 +31,7 @@ import path from 'path';
 import { downloadStage, uploadStage, deriveRunId, readStagePointer, downloadStageByRunId } from './lib/r2-stage-bridge.js';
 import { mergeLocalAggregatedWithPrevious, MERGE_FILES } from './lib/aggregated-merger.js';
 import { buildIndex as buildSearchIndex, OUTPUT_FILE as SEARCH_INDEX_FILE } from './lib/search-index-builder.js';
+import { readFirstRunSentinel, writeFirstRunSentinel, decideMergeAction } from './lib/aggregated-sentinel.js';
 
 const SCRIPT_DIR = 'scripts/factory';
 const AGGREGATED_FILES = [
@@ -122,25 +123,47 @@ async function main() {
     console.log('\n[STAGE-3] === Cumulative merge with previous aggregated ===');
     try {
         const prevPointer = await readStagePointer('aggregated');
-        if (!prevPointer || !prevPointer.run_id || prevPointer.run_id === runId) {
-            console.log('[STAGE-3] No previous aggregated bundle (first run or same run_id) — skipping merge.');
-        } else {
-            console.log(`[STAGE-3] Merging current cycle with previous aggregated run_id=${prevPointer.run_id}`);
-            const previousBuffers = await downloadStageByRunId('aggregated', prevPointer.run_id, MERGE_FILES);
-            const totalBytesIn = Object.values(previousBuffers).reduce((s, b) => s + b.length, 0);
-            console.log(`[STAGE-3] Downloaded ${MERGE_FILES.length} previous files (${(totalBytesIn / 1024).toFixed(1)} KB)`);
-            const mergeResult = await mergeLocalAggregatedWithPrevious(previousBuffers);
-            console.log('[STAGE-3] Merge stats per file:');
-            for (const [fname, stats] of Object.entries(mergeResult.perFile)) {
-                console.log(`  ${fname.padEnd(35)} total=${stats.total} (cur=${stats.from_current} prev_kept=${stats.from_previous_kept} replaced=${stats.replaced_by_current})`);
+        const firstRunDone = await readFirstRunSentinel();
+        let previousBuffers = null;
+        let prevBufferNonEmpty = false;
+        if (prevPointer?.run_id && prevPointer.run_id !== runId) {
+            previousBuffers = await downloadStageByRunId('aggregated', prevPointer.run_id, MERGE_FILES);
+            const compoundsBuf = previousBuffers['compounds-enriched.jsonl'];
+            prevBufferNonEmpty = (compoundsBuf?.length ?? 0) > 100;
+        }
+        const action = decideMergeAction({ prevPointer, runId, firstRunDone, prevBufferNonEmpty });
+        switch (action.kind) {
+            case 'first_run_skip':
+                console.log('[STAGE-3] First-ever run (no sentinel, no pointer) — skipping merge, will mark sentinel after upload.');
+                break;
+            case 'sentinel_present_pointer_missing':
+                console.error('[STAGE-3] FATAL: first_run_complete sentinel set but latest.json pointer missing — refusing merge (would clobber cumulative data). Operator must restore latest.json or remove sentinel before re-running.');
+                process.exit(4);
+                break;
+            case 'same_run_skip':
+                console.log(`[STAGE-3] Pointer already references current run_id=${runId} (re-run) — skipping merge.`);
+                break;
+            case 'empty_buffer_abort':
+                console.error('[STAGE-3] FATAL: Previous bundle compounds-enriched.jsonl empty/missing — refusing merge against empty previous (partial upload crash suspected). Operator must verify previous bundle integrity before re-running.');
+                process.exit(5);
+                break;
+            case 'merge': {
+                console.log(`[STAGE-3] Merging current cycle with previous aggregated run_id=${prevPointer.run_id}`);
+                const totalBytesIn = Object.values(previousBuffers).reduce((s, b) => s + b.length, 0);
+                console.log(`[STAGE-3] Downloaded ${MERGE_FILES.length} previous files (${(totalBytesIn / 1024).toFixed(1)} KB)`);
+                const mergeResult = await mergeLocalAggregatedWithPrevious(previousBuffers);
+                console.log('[STAGE-3] Merge stats per file:');
+                for (const [fname, stats] of Object.entries(mergeResult.perFile)) {
+                    console.log(`  ${fname.padEnd(35)} total=${stats.total} (cur=${stats.from_current} prev_kept=${stats.from_previous_kept} replaced=${stats.replaced_by_current})`);
+                }
+                console.log(`[STAGE-3] Cumulative records across all files: ${mergeResult.totalMergedRecords}`);
+                break;
             }
-            console.log(`[STAGE-3] Cumulative records across all files: ${mergeResult.totalMergedRecords}`);
         }
     } catch (err) {
-        // Merge failure must NOT block stage upload — fall back to per-cycle
-        // (existing pre-V0.5.2.1 behavior) rather than halting the chain.
-        // The merge gap will surface as historical-CID 0-result on next
-        // source-health check, alerting operators without losing fresh data.
+        // Merge download / parse failure (network, R2 hiccup) — fall back to
+        // per-cycle. Hard-abort cases (sentinel mismatch / empty buffer) use
+        // process.exit() above and do not reach this catch.
         console.error(`[STAGE-3] Cumulative merge failed (non-fatal): ${err.message}`);
         console.error('[STAGE-3] Falling back to per-cycle aggregated upload — historical compounds may disappear from API view until next successful merge.');
     }
@@ -167,6 +190,16 @@ async function main() {
     } catch (err) {
         console.error(`[STAGE-3] R2 upload failed: ${err.message}`);
         process.exit(3);
+    }
+
+    // V0.5.5 — mark first_run_complete sentinel after successful upload.
+    // Subsequent runs use this sentinel to distinguish legitimate first-run
+    // skip from "sentinel missing == bootstrap forgot to merge".
+    // Non-fatal: failure to write sentinel does not invalidate this upload.
+    try {
+        await writeFirstRunSentinel(runId);
+    } catch (err) {
+        console.warn(`[STAGE-3] Failed to write first_run_complete sentinel (non-fatal): ${err.message}`);
     }
 
     const failureCount = trialResults.filter(r => !r.ok).length
