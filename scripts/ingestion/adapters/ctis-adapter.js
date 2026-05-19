@@ -36,6 +36,9 @@ export const fallbackFullRefreshDays = 14;
 import {
     TERMINATED_STATUSES, normalizePhase, normalizeStatus,
 } from './ctis-helpers.js';
+import {
+    shouldFetchNextPage, nextSinceTokenAfterLoop,
+} from '../../factory/lib/pagination-control.js';
 
 const CTIS_BASE = 'https://euclinicaltrials.eu/ctis-public-api';
 const REQUEST_TIMEOUT_MS = 25000;
@@ -187,26 +190,56 @@ export async function checkForUpdates(sinceToken) {
 }
 
 /**
- * Fetch CTIS trials updated since sinceToken. Returns normalized Trial records.
+ * Fetch CTIS trials updated since sinceToken across all pages (V0.5.7).
+ * Returns normalized Trial records. Pagination via POST body page/size;
+ * cursor holds at sinceToken if cap aborts before exhaustion.
  */
 export async function fetchIncremental(sinceToken) {
     const since = sinceToken ?? sinceDefault();
-    const nextSinceToken = new Date().toISOString().slice(0, 10);
-    try {
-        const data = await fetchJson(`${CTIS_BASE}/search`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                pagination: { page: 1, size: 200 },
-                searchCriteria: { decisionDateFrom: since },
-                sort: { property: 'decisionDate', direction: 'ASC' },
-            }),
-        });
+    const today = new Date().toISOString().slice(0, 10);
+    const PAGE_SIZE = 100; // CTIS max accepted page size
+    const records = [];
+    let page = 1;
+    let totalAvailable = null;
+    let stopKind = 'stop_exhausted';
+    while (true) {
+        let data;
+        try {
+            data = await fetchJson(`${CTIS_BASE}/search`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    pagination: { page, size: PAGE_SIZE },
+                    searchCriteria: { decisionDateFrom: since },
+                    sort: { property: 'decisionDate', direction: 'ASC' },
+                }),
+            });
+        } catch (e) {
+            console.warn(`[CTIS] fetchIncremental page ${page}: ${e.message}`);
+            break;
+        }
         const rows = Array.isArray(data?.data) ? data.data : [];
-        const records = rows.map(r => normalizeToTrial(r)).filter(Boolean);
-        return { records, nextSinceToken };
-    } catch (e) {
-        console.warn(`[CTIS] fetchIncremental: ${e.message}`);
-        return { records: [], nextSinceToken };
+        for (const r of rows) {
+            const norm = normalizeToTrial(r);
+            if (norm) records.push(norm);
+        }
+        if (totalAvailable === null && typeof data?.totalNumberOfResults === 'number') {
+            totalAvailable = data.totalNumberOfResults;
+        }
+        const hasMore = totalAvailable !== null
+            ? page * PAGE_SIZE < totalAvailable
+            : rows.length === PAGE_SIZE;
+        const decision = shouldFetchNextPage({
+            recordsFetched: records.length,
+            pagesDone: page,
+            hasMoreSignal: hasMore,
+        });
+        if (decision.kind !== 'continue') { stopKind = decision.kind; break; }
+        page++;
+        await sleep(REQUEST_DELAY_MS);
     }
+    if (stopKind !== 'stop_exhausted') {
+        console.warn(`[CTIS] fetchIncremental ${stopKind} after ${page} pages / ${records.length} records — holding cursor at ${since}`);
+    }
+    return { records, nextSinceToken: nextSinceTokenAfterLoop({ stopKind, sinceToken: since, today }) };
 }

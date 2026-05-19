@@ -34,6 +34,10 @@
  *     - history fields  (NCBI internal indexing timeline)
  */
 
+import {
+    shouldFetchNextPage, nextSinceTokenAfterLoop,
+} from '../../factory/lib/pagination-control.js';
+
 // V2 adapter contract: real incremental via NCBI esearch date filter.
 export const supportsIncremental = true;
 export const fallbackFullRefreshDays = 7;
@@ -189,44 +193,56 @@ export async function checkForUpdates(sinceToken) {
 }
 
 /**
- * Fetch papers updated since sinceToken. Uses esearch to retrieve PMIDs,
- * then esummary for full record normalization. Returns up to BATCH_MAX records.
+ * Fetch papers updated since sinceToken across all pages (V0.5.7).
+ * esearch with retstart offset; esummary batch handles record fetch.
  */
 export async function fetchIncremental(sinceToken) {
     const since = sinceYmd(sinceToken);
     const today = todayYmd();
-    const nextSinceToken = today.replace(/\//g, '-');
-
-    const searchUrl = buildUrl('esearch.fcgi', {
-        db: 'pubmed',
-        datetype: 'pdat',
-        mindate: since,
-        maxdate: today,
-        retmax: String(BATCH_MAX),
-        retmode: 'json',
-    });
-    let pmids = [];
-    try {
-        const searchData = await fetchJson(searchUrl);
-        pmids = searchData?.esearchresult?.idlist ?? [];
-    } catch (e) {
-        console.warn(`[PUBMED] fetchIncremental esearch: ${e.message}`);
-        return { records: [], nextSinceToken };
+    const todayDash = today.replace(/\//g, '-');
+    const sinceDash = since.replace(/\//g, '-');
+    const allPmids = [];
+    let retstart = 0;
+    let total = null;
+    let pagesDone = 0;
+    let stopKind = 'stop_exhausted';
+    while (true) {
+        const searchUrl = buildUrl('esearch.fcgi', {
+            db: 'pubmed', datetype: 'pdat',
+            mindate: since, maxdate: today,
+            retstart: String(retstart), retmax: String(BATCH_MAX),
+            retmode: 'json',
+        });
+        let data;
+        try { data = await fetchJson(searchUrl); }
+        catch (e) {
+            console.warn(`[PUBMED] fetchIncremental esearch page ${pagesDone + 1}: ${e.message}`);
+            break;
+        }
+        const ids = data?.esearchresult?.idlist ?? [];
+        allPmids.push(...ids);
+        if (total === null) total = parseInt(data?.esearchresult?.count ?? '0', 10);
+        pagesDone++;
+        retstart += BATCH_MAX;
+        const decision = shouldFetchNextPage({
+            recordsFetched: allPmids.length,
+            pagesDone,
+            hasMoreSignal: retstart < total && ids.length > 0,
+        });
+        if (decision.kind !== 'continue') { stopKind = decision.kind; break; }
+        await sleep(REQUEST_DELAY_MS);
     }
-    if (!pmids.length) return { records: [], nextSinceToken };
-
+    if (stopKind !== 'stop_exhausted') {
+        console.warn(`[PUBMED] fetchIncremental ${stopKind} after ${pagesDone} pages / ${allPmids.length} pmids — holding cursor at ${sinceDash}`);
+    }
+    const nextSinceToken = nextSinceTokenAfterLoop({ stopKind, sinceToken: sinceDash, today: todayDash });
+    if (!allPmids.length) return { records: [], nextSinceToken };
     await sleep(REQUEST_DELAY_MS);
-    const rawMap = await fetchByPmidBatch(pmids);
+    const rawMap = await fetchByPmidBatch(allPmids);
     const records = [];
     for (const raw of rawMap.values()) {
         const p = extractPrimary(raw);
-        if (p) {
-            records.push({
-                id: `sciweon::paper::pubmed::${p.pmid}`,
-                source: 'pubmed',
-                ...p,
-            });
-        }
+        if (p) records.push({ id: `sciweon::paper::pubmed::${p.pmid}`, source: 'pubmed', ...p });
     }
     return { records, nextSinceToken };
 }

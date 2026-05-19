@@ -10,6 +10,9 @@
 
 import { scoreDataPoint } from '../../factory/lib/confidence-scorer.js';
 import { extractResultsSignals } from './clinicaltrials-helpers.js';
+import {
+    shouldFetchNextPage, nextSinceTokenAfterLoop,
+} from '../../factory/lib/pagination-control.js';
 
 // ─── V2 adapter contract ──────────────────────────────────────────────────
 export const supportsIncremental     = true;
@@ -206,12 +209,33 @@ export async function checkForUpdates(sinceToken) {
 export async function fetchIncremental(sinceToken) {
     const since = sinceToken ?? bootstrapSince();
     const query = encodeURIComponent(buildUpdateQuery(since));
-    const url = `${CT_BASE}?query.term=${query}&pageSize=${INCREMENTAL_PAGE_SIZE}&format=json`;
-    const data = await fetchJson(url);
-    const studies = data?.studies ?? [];
-    const records = studies.map(s => normalize(s)).filter(Boolean);
-    return {
-        records,
-        nextSinceToken: new Date().toISOString().slice(0, 10),
-    };
+    const today = new Date().toISOString().slice(0, 10);
+    const records = [];
+    let pageToken = null;
+    let pagesDone = 0;
+    let stopKind = 'stop_exhausted';
+    while (true) {
+        const cursor = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '';
+        const url = `${CT_BASE}?query.term=${query}&pageSize=${INCREMENTAL_PAGE_SIZE}&format=json${cursor}`;
+        let data;
+        try { data = await fetchJson(url); }
+        catch (e) { console.warn(`[CT] fetchIncremental page ${pagesDone + 1}: ${e.message}`); break; }
+        const studies = data?.studies ?? [];
+        for (const s of studies) {
+            const norm = normalize(s);
+            if (norm) records.push(norm);
+        }
+        pagesDone++;
+        pageToken = data?.nextPageToken ?? null;
+        const decision = shouldFetchNextPage({
+            recordsFetched: records.length,
+            pagesDone,
+            hasMoreSignal: Boolean(pageToken),
+        });
+        if (decision.kind !== 'continue') { stopKind = decision.kind; break; }
+    }
+    if (stopKind !== 'stop_exhausted') {
+        console.warn(`[CT] fetchIncremental ${stopKind} after ${pagesDone} pages / ${records.length} records — holding cursor at ${since}`);
+    }
+    return { records, nextSinceToken: nextSinceTokenAfterLoop({ stopKind, sinceToken: since, today }) };
 }

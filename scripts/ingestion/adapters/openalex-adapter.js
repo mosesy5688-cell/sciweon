@@ -22,6 +22,9 @@ import {
     normalizeDoi, normalizeOpenAlexId, extractPmid,
     extractAuthors, extractMesh, reconstructAbstract, extractNctIds,
 } from './openalex-helpers.js';
+import {
+    shouldFetchNextPage, nextSinceTokenAfterLoop,
+} from '../../factory/lib/pagination-control.js';
 
 const OPENALEX_BASE = 'https://api.openalex.org/works';
 const REQUEST_TIMEOUT_MS = 20000;
@@ -185,21 +188,45 @@ export async function checkForUpdates(sinceToken) {
 }
 
 /**
- * Fetch works updated since sinceToken. Returns normalized Paper records.
- * OpenAlex from_updated_date returns up to 10K results; we take first 200.
+ * Fetch works updated since sinceToken across all pages (V0.5.7).
+ * OpenAlex uses cursor pagination — `cursor=*` first call, then
+ * `meta.next_cursor` until null. Caps via shared pagination-control.
  */
 export async function fetchIncremental(sinceToken) {
     const since = sinceToken ?? sinceDefault();
-    const nextSinceToken = new Date().toISOString().slice(0, 10);
-    try {
-        const data = await fetchJson(
-            `${OPENALEX_BASE}?filter=from_updated_date:${since}&per-page=200&sort=updated_date:asc`,
-        );
+    const today = new Date().toISOString().slice(0, 10);
+    const PAGE_SIZE = 200;
+    const records = [];
+    let cursor = '*';
+    let pagesDone = 0;
+    let stopKind = 'stop_exhausted';
+    while (true) {
+        let data;
+        try {
+            data = await fetchJson(
+                `${OPENALEX_BASE}?filter=from_updated_date:${since}&per-page=${PAGE_SIZE}&sort=updated_date:asc&cursor=${encodeURIComponent(cursor)}`,
+            );
+        } catch (e) {
+            console.warn(`[OPENALEX] fetchIncremental page ${pagesDone + 1}: ${e.message}`);
+            break;
+        }
         const rows = data?.results ?? [];
-        const records = rows.map(r => normalize(r)).filter(Boolean);
-        return { records, nextSinceToken };
-    } catch (e) {
-        console.warn(`[OPENALEX] fetchIncremental: ${e.message}`);
-        return { records: [], nextSinceToken };
+        for (const r of rows) {
+            const norm = normalize(r);
+            if (norm) records.push(norm);
+        }
+        pagesDone++;
+        const next = data?.meta?.next_cursor ?? null;
+        const decision = shouldFetchNextPage({
+            recordsFetched: records.length,
+            pagesDone,
+            hasMoreSignal: Boolean(next),
+        });
+        if (decision.kind !== 'continue') { stopKind = decision.kind; break; }
+        cursor = next;
     }
+    if (stopKind !== 'stop_exhausted') {
+        console.warn(`[OPENALEX] fetchIncremental ${stopKind} after ${pagesDone} pages / ${records.length} records — holding cursor at ${since}`);
+    }
+    return { records, nextSinceToken: nextSinceTokenAfterLoop({ stopKind, sinceToken: since, today }) };
 }
