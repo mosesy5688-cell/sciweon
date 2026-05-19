@@ -22,6 +22,7 @@ import { PutObjectCommand } from '@aws-sdk/client-s3';
 import {
     makeIncrementalR2, readIncrementalCursor, writeIncrementalCursor,
 } from './lib/incremental-cursors.js';
+import { decideCursorAdvance } from './lib/incremental-cursor-decision.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STAGING_PREFIX = 'staging/incremental';
@@ -94,15 +95,29 @@ async function runWorker(source, client, bucket, runId, dryRun) {
 
     if (records.length > 0) await stageDelta(client, bucket, source, runId, records, dryRun);
 
+    const decision = decideCursorAdvance({
+        recordsLength: records.length,
+        currentSinceToken: sinceToken,
+        nextSinceToken,
+        source,
+    });
+
+    if (decision.kind === 'anomaly_zero_fetch_hold') {
+        console.warn(`[WORKER:${source}] ${decision.message}`);
+    }
+
     if (!dryRun) {
         await writeIncrementalCursor(client, bucket, source, {
-            sinceToken: nextSinceToken,
-            status: 'success',
+            ...(cursor ?? {}),
+            ...decision.cursorUpdate,
             last_run_at: new Date().toISOString(),
-            record_count: records.length,
             supportsIncremental: adapter.supportsIncremental ?? true,
         });
-        console.log(`[WORKER:${source}] Cursor advanced → ${nextSinceToken}`);
+        if (decision.kind === 'advance') {
+            console.log(`[WORKER:${source}] Cursor advanced → ${nextSinceToken}`);
+        } else {
+            console.log(`[WORKER:${source}] Cursor HELD at ${sinceToken} (status=anomaly_zero_fetch)`);
+        }
     }
 }
 
