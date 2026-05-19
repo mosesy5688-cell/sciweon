@@ -27,6 +27,7 @@ import { downloadStage, uploadStage, deriveRunId } from './lib/r2-stage-bridge.j
 import { downloadAdapterCumulative } from './lib/adapter-bridge.js';
 import { countJsonlRecords } from './lib/snapshot-history-gate.js';
 import { decideYieldAction } from './lib/stage-2-yield.js';
+import { downloadCache, uploadCache } from './lib/r2-cache-bridge.js';
 
 const SCRIPT_DIR = 'scripts/factory';
 
@@ -106,6 +107,13 @@ async function main() {
         console.warn(`[STAGE-2] Adapter cumulative download failed (non-fatal): ${err.message}`);
     }
 
+    console.log('\n[STAGE-2] === Download chembl negative cache (optional) ===');
+    try {
+        await downloadCache('chembl-negative-cache.json');
+    } catch (err) {
+        console.warn(`[STAGE-2] Cache download failed (non-fatal, will rebuild): ${err.message}`);
+    }
+
     // V0.5.x: compound enrichers all run sequentially.
     // Same-file race: every enricher loads compounds-enriched.jsonl, modifies, writes
     // back — concurrent writers overwrite each other (last writer wins). Previously
@@ -132,6 +140,13 @@ async function main() {
         { name: 'target-resolver', fn: () => runScript('target-resolver.js') },
         { name: 'bioactivity-cross-validator', fn: () => runScript('bioactivity-cross-validator.js') },
     ], './output/linked/bioactivities.jsonl');
+
+    console.log('\n[STAGE-2] === Upload chembl negative cache ===');
+    try {
+        await uploadCache('chembl-negative-cache.json');
+    } catch (err) {
+        console.warn(`[STAGE-2] Cache upload failed (non-fatal, will rebuild next run): ${err.message}`);
+    }
 
     console.log('\n[STAGE-2] === Upload enriched bundle to R2 ===');
     try {

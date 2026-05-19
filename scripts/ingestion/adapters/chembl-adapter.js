@@ -24,6 +24,8 @@ import {
 const CHEMBL_BASE = 'https://www.ebi.ac.uk/chembl/api/data';
 const REQUEST_TIMEOUT_MS = 20000;
 const INCREMENTAL_LIMIT  = 200;
+const INCHIKEY_BATCH_SIZE = 50;
+const BATCH_DELAY_MS = 300;
 
 // ─── V2 adapter contract ──────────────────────────────────────────────────
 export const supportsIncremental     = true;
@@ -93,10 +95,7 @@ async function fetchMoleculePages(filter) {
         const url = `${CHEMBL_BASE}/molecule.json?${filter}&limit=${INCREMENTAL_LIMIT}&offset=${offset}`;
         let data;
         try { data = await fetchJson(url); }
-        catch (e) {
-            console.warn(`[CHEMBL] fetchMoleculePages ${filter} page ${pagesDone + 1}: ${e.message}`);
-            break;
-        }
+        catch (e) { console.warn(`[CHEMBL] fetchMoleculePages ${filter} page ${pagesDone + 1}: ${e.message}`); break; }
         const mols = data?.molecules ?? [];
         for (const m of mols) {
             const norm = normalizeMolecule(m);
@@ -106,15 +105,12 @@ async function fetchMoleculePages(filter) {
         offset += INCREMENTAL_LIMIT;
         const total = data?.page_meta?.total_count ?? records.length;
         const decision = shouldFetchNextPage({
-            recordsFetched: records.length,
-            pagesDone,
+            recordsFetched: records.length, pagesDone,
             hasMoreSignal: offset < total && mols.length > 0,
         });
         if (decision.kind !== 'continue') { stopKind = decision.kind; break; }
     }
-    if (stopKind !== 'stop_exhausted') {
-        console.warn(`[CHEMBL] fetchMoleculePages ${filter} ${stopKind} after ${pagesDone} pages / ${records.length} records`);
-    }
+    if (stopKind !== 'stop_exhausted') console.warn(`[CHEMBL] fetchMoleculePages ${filter} ${stopKind} after ${pagesDone} pages / ${records.length} records`);
     return { records, stopKind };
 }
 
@@ -150,6 +146,32 @@ export async function findByInchiKey(inchiKey) {
         const data = await fetchJson(url);
         return data?.molecules?.[0] ?? null;
     } catch (e) { console.warn(`[CHEMBL] InChIKey ${inchiKey}: ${e.message}`); return null; }
+}
+
+/**
+ * V0.5.7 — Batch InChIKey lookup. Returns Map<inchikey, molecule>.
+ * Keys not present in the map had no ChEMBL match. Uses Django ORM
+ * `__in=` filter; chunks input to keep URL length safe.
+ */
+export async function findByInchiKeyBatch(inchikeys, chunkSize = INCHIKEY_BATCH_SIZE) {
+    const result = new Map();
+    if (!Array.isArray(inchikeys) || inchikeys.length === 0) return result;
+    for (let i = 0; i < inchikeys.length; i += chunkSize) {
+        const chunk = inchikeys.slice(i, i + chunkSize);
+        const filter = `molecule_structures__standard_inchi_key__in=${chunk.join(',')}`;
+        const url = `${CHEMBL_BASE}/molecule.json?${filter}&limit=${chunkSize}`;
+        try {
+            const data = await fetchJson(url);
+            for (const m of (data?.molecules ?? [])) {
+                const k = m.molecule_structures?.standard_inchi_key;
+                if (k) result.set(k, m);
+            }
+        } catch (e) {
+            console.warn(`[CHEMBL] findByInchiKeyBatch chunk ${i}-${i + chunk.length}: ${e.message}`);
+        }
+        if (i + chunkSize < inchikeys.length) await new Promise(r => setTimeout(r, BATCH_DELAY_MS));
+    }
+    return result;
 }
 
 export async function fetchTargetByChemblId(chemblTargetId) {
