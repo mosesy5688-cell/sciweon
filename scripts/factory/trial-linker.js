@@ -24,6 +24,7 @@ import { searchByIntervention, normalize as normalizeTrial } from '../ingestion/
 import { TRIAL_SCHEMA } from '../../src/lib/schemas/trial.js';
 import { gate } from './lib/validation-gate.js';
 import { classifyBatch } from './lib/failure-classifier.js';
+import { pickTrialSearchName } from './lib/trial-search-name.js';
 
 const LIMIT = parseInt(process.argv.find(a => a.startsWith('--limit='))?.split('=')[1] || '50');
 const INPUT = process.argv.find(a => a.startsWith('--input='))?.split('=')[1]
@@ -37,13 +38,6 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function loadCompounds(file) {
     const content = await fs.readFile(file, 'utf-8');
     return content.split('\n').filter(Boolean).map(l => JSON.parse(l));
-}
-
-function getSearchName(compound) {
-    // Priority: IUPAC name → first synonym → CID number
-    if (compound.iupac_name && compound.iupac_name.length < 200) return compound.iupac_name;
-    if (compound.synonyms && compound.synonyms.length > 0) return compound.synonyms[0];
-    return `CID:${compound.pubchem_cid}`;
 }
 
 async function main() {
@@ -62,13 +56,15 @@ async function main() {
     const allTrials = new Map(); // NCT ID → Trial entity (deduplicate across compounds)
     const trialLinks = []; // {compound_id, nct_id, intervention_name}
     const negativeEvidenceRaw = []; // failed trials with reasons
+    const sourceCounts = {}; // {rxnorm_name: N, synonym: N, iupac_fallback: N, cid_fallback: N}
 
     let processedCompounds = 0;
     let totalTrialsFound = 0;
     let totalNegative = 0;
 
     for (const compound of compounds) {
-        const searchName = getSearchName(compound);
+        const { name: searchName, source: searchSource } = pickTrialSearchName(compound);
+        sourceCounts[searchSource] = (sourceCounts[searchSource] ?? 0) + 1;
         const trials = await searchByIntervention(searchName, 100);
 
         for (const raw of trials) {
@@ -130,6 +126,12 @@ async function main() {
     console.log(`  Unique trials found:      ${totalTrialsFound}`);
     console.log(`  Compound-trial links:     ${trialLinks.length}`);
     console.log(`  Negative outcomes:        ${totalNegative} (${totalTrialsFound > 0 ? (100 * totalNegative / totalTrialsFound).toFixed(1) : 0}%) ⭐ V0.4 Negative Evidence raw data`);
+    if (Object.keys(sourceCounts).length > 0) {
+        console.log(`\n  Search-name source distribution (V0.5.6 high-leverage check):`);
+        for (const [src, n] of Object.entries(sourceCounts).sort((a, b) => b[1] - a[1])) {
+            console.log(`    ${src.padEnd(16)} ${n}`);
+        }
+    }
     console.log(`\n  Outputs:`);
     console.log(`    ${trialsFile}`);
     console.log(`    ${linksFile}`);
