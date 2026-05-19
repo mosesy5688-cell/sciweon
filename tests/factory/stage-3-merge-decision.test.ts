@@ -86,4 +86,28 @@ describe('decideMergeAction', () => {
             prevBufferNonEmpty: false,
         })).toEqual({ kind: 'empty_buffer_abort' });
     });
+
+    it('pointer_missing_run_id: foreign-writer latest.json without run_id (manual R2 rollback) — abort', () => {
+        // 2026-05-19 F3 regression: user did manual R2 PutObject rollback
+        // writing a latest.json body that lacked the run_id field. Original
+        // decideMergeAction fell through to merge → crash → silent 5000-record
+        // upload. New branch hard-aborts on this schema.
+        expect(decideMergeAction({
+            prevPointer: { latest_snapshot_date: '2026-05-17' },
+            runId: 'r1',
+            firstRunDone: true,
+            prevBufferNonEmpty: false,
+        })).toEqual({ kind: 'pointer_missing_run_id' });
+    });
+
+    it('pointer_missing_run_id: malformed pointer aborts even if buffer would have been non-empty', () => {
+        // Branch must win over merge regardless of buffer state — a partial
+        // pointer schema is untrustworthy and operator must rewrite it.
+        expect(decideMergeAction({
+            prevPointer: { latest_snapshot_date: '2026-05-17' },
+            runId: 'r1',
+            firstRunDone: false,
+            prevBufferNonEmpty: true,
+        })).toEqual({ kind: 'pointer_missing_run_id' });
+    });
 });

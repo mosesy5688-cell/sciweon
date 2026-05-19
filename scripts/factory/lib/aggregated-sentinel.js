@@ -69,6 +69,7 @@ export async function writeFirstRunSentinel(runId) {
  * Decision matrix:
  *   no sentinel + no pointer             → first_run_skip       (legitimate bootstrap)
  *   sentinel    + no pointer             → sentinel_present_pointer_missing (operator surgery — hard abort)
+ *   pointer present but run_id missing   → pointer_missing_run_id (foreign-writer schema — hard abort)
  *   pointer.run_id === runId             → same_run_skip        (workflow_dispatch re-run, safe skip)
  *   pointer valid but prev buffer empty  → empty_buffer_abort   (partial upload crash — hard abort)
  *   pointer valid + prev buffer non-empty → merge               (happy path)
@@ -80,6 +81,7 @@ export async function writeFirstRunSentinel(runId) {
 export function decideMergeAction({ prevPointer, runId, firstRunDone, prevBufferNonEmpty }) {
     if (!firstRunDone && !prevPointer) return { kind: 'first_run_skip' };
     if (firstRunDone && !prevPointer) return { kind: 'sentinel_present_pointer_missing' };
+    if (prevPointer && !prevPointer.run_id) return { kind: 'pointer_missing_run_id' };
     if (prevPointer?.run_id === runId) return { kind: 'same_run_skip' };
     if (prevPointer?.run_id && !prevBufferNonEmpty) return { kind: 'empty_buffer_abort' };
     return { kind: 'merge' };

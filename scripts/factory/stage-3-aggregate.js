@@ -24,6 +24,10 @@
  *   1  some adapters failed (degraded - uploaded what completed)
  *   2  enriched download failed (no input)
  *   3  R2 upload failed
+ *   4  first_run sentinel set but latest.json pointer missing (operator surgery)
+ *   5  previous bundle empty / partial-upload crash suspected
+ *   6  latest.json pointer schema malformed (missing run_id field)
+ *   7  cumulative merge unexpected failure
  */
 
 import { spawn } from 'child_process';
@@ -140,6 +144,10 @@ async function main() {
                 console.error('[STAGE-3] FATAL: first_run_complete sentinel set but latest.json pointer missing — refusing merge (would clobber cumulative data). Operator must restore latest.json or remove sentinel before re-running.');
                 process.exit(4);
                 break;
+            case 'pointer_missing_run_id':
+                console.error('[STAGE-3] FATAL: latest.json pointer is missing run_id field — refusing merge (foreign writer / manual R2 PutObject suspected). Operator must rewrite processed/aggregated/latest.json with run_id field before re-running.');
+                process.exit(6);
+                break;
             case 'same_run_skip':
                 console.log(`[STAGE-3] Pointer already references current run_id=${runId} (re-run) — skipping merge.`);
                 break;
@@ -161,11 +169,13 @@ async function main() {
             }
         }
     } catch (err) {
-        // Merge download / parse failure (network, R2 hiccup) — fall back to
-        // per-cycle. Hard-abort cases (sentinel mismatch / empty buffer) use
-        // process.exit() above and do not reach this catch.
-        console.error(`[STAGE-3] Cumulative merge failed (non-fatal): ${err.message}`);
-        console.error('[STAGE-3] Falling back to per-cycle aggregated upload — historical compounds may disappear from API view until next successful merge.');
+        // Per [[feedback_cross_cycle_silent_data_loss]] — a swallowed merge
+        // failure that downgrades to per-cycle upload is the exact silent-loss
+        // anti-pattern that produced the 2026-05-19 F3 5000-record regression.
+        // Hard-abort instead so stage-4 never runs against downgraded data.
+        console.error(`[STAGE-3] FATAL: Cumulative merge failed: ${err.message}`);
+        console.error('[STAGE-3] Refusing to fall back to per-cycle upload — that would clobber historical compounds. Stage halted; investigate R2 connectivity / pointer schema / previous bundle integrity before re-running.');
+        process.exit(7);
     }
 
     // V0.5.3 Tier 1.5 search index — rebuild SQLite FTS5 over cumulative
