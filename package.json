@@ -24,7 +24,8 @@
     "stage:2": "node scripts/factory/stage-2-process.js",
     "stage:3": "node scripts/factory/stage-3-aggregate.js",
     "stage:4": "node scripts/factory/stage-4-upload.js",
-    "harvest:dailymed": "node scripts/factory/dailymed-harvest.js"
+    "harvest:dailymed": "node scripts/factory/dailymed-harvest.js",
+    "r2:lifecycle:apply": "node scripts/factory/r2-lifecycle-setup.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.700.0",
