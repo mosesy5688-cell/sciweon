@@ -151,8 +151,11 @@ async function main() {
             continue;
         }
 
-        const result = gate(paper, PAPER_SCHEMA, `paper:${paper.id}`);
-        if (!result.passed) continue;
+        // gate() throws in REJECT mode on primary-source violations and
+        // returns {passed: true, ...} otherwise (incl. derived-only warnings
+        // per V0.5.7 H2b-5 tier separation). The legacy `if (!result.passed)
+        // continue` guard was unreachable dead code and removed.
+        gate(paper, PAPER_SCHEMA, `paper:${paper.id}`);
 
         papers.push(paper);
         paperByOpenalexId.set(paper.openalex_id, paper);
