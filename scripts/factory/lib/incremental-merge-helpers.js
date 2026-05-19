@@ -9,7 +9,7 @@ import {
     ListObjectsV2Command, DeleteObjectCommand,
 } from '@aws-sdk/client-s3';
 import { streamToBuffer } from './incremental-cursors.js';
-import { classifyPreviousAggregatedError } from './aggregated-error-classify.js';
+import { classifyPreviousAggregatedError, classifyPointerShape } from './aggregated-error-classify.js';
 
 const STAGING_PREFIX  = 'staging/incremental';
 const AGGREGATED_PREFIX = 'processed/aggregated';
@@ -64,6 +64,16 @@ export async function loadPreviousAggregated(client, bucket) {
             return new Map();
         }
         throw new Error(`loadPreviousAggregated: ${c.message}`);
+    }
+
+    // V0.5.7.1 hotfix: stage-3-aggregate also writes this key with a
+    // different schema (run_id field, not pointer). Fan-in bootstraps
+    // cleanly when it sees a non-fan-in pointer shape rather than
+    // throwing — the pointer simply isn't ours.
+    const shape = classifyPointerShape(ptr);
+    if (shape.kind === 'foreign_schema' || shape.kind === 'malformed_pointer') {
+        console.warn(`[MERGE] ${shape.message}`);
+        return new Map();
     }
 
     let map;

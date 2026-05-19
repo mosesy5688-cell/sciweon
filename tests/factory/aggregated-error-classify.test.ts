@@ -13,7 +13,10 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { classifyPreviousAggregatedError } from '../../scripts/factory/lib/aggregated-error-classify.js';
+import {
+    classifyPreviousAggregatedError,
+    classifyPointerShape,
+} from '../../scripts/factory/lib/aggregated-error-classify.js';
 
 describe('classifyPreviousAggregatedError', () => {
     it('pointer 404 by err.name = NoSuchKey → first_run', () => {
@@ -70,5 +73,38 @@ describe('classifyPreviousAggregatedError', () => {
         const c = classifyPreviousAggregatedError('raw string error', 'data');
         expect(c.kind).toBe('transient_or_corrupted');
         expect(c.message).toContain('raw string error');
+    });
+});
+
+describe('classifyPointerShape (V0.5.7.1 hotfix)', () => {
+    it('fan_in_compatible: pointer field is non-empty string', () => {
+        const r = classifyPointerShape({ pointer: 'r1', timestamp: 't' });
+        expect(r.kind).toBe('fan_in_compatible');
+        expect(r.pointer).toBe('r1');
+    });
+
+    it('foreign_schema: stage-3 shape {run_id, stage} -> foreign + diagnostic message', () => {
+        const r = classifyPointerShape({ run_id: 'r1', stage: 'aggregated', completed_at: 't', files: 9 });
+        expect(r.kind).toBe('foreign_schema');
+        expect(r.message).toContain('run_id');
+        expect(r.message).toContain('stage');
+        expect(r.message).toContain('stage-3-aggregate');
+    });
+
+    it('foreign_schema: empty object -> keys present: []', () => {
+        const r = classifyPointerShape({});
+        expect(r.kind).toBe('foreign_schema');
+        expect(r.message).toContain('keys present: []');
+    });
+
+    it('malformed_pointer: null / undefined / non-object input', () => {
+        expect(classifyPointerShape(null).kind).toBe('malformed_pointer');
+        expect(classifyPointerShape(undefined).kind).toBe('malformed_pointer');
+        expect(classifyPointerShape('not an object').kind).toBe('malformed_pointer');
+    });
+
+    it('foreign_schema: pointer field present but empty string is unusable', () => {
+        const r = classifyPointerShape({ pointer: '' });
+        expect(r.kind).toBe('foreign_schema');
     });
 });
