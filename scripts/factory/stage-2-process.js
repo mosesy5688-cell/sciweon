@@ -15,7 +15,7 @@
  *   processed/enriched/latest.json
  *
  * Exit codes:
- *   0  all 6 scripts succeeded
+ *   0  all enrichers succeeded (each produced non-zero records)
  *   1  some enrichers failed (degraded - uploaded what completed)
  *   2  baseline download failed (no input)
  *   3  R2 upload failed
@@ -25,6 +25,8 @@ import { spawn } from 'child_process';
 import path from 'path';
 import { downloadStage, uploadStage, deriveRunId } from './lib/r2-stage-bridge.js';
 import { downloadAdapterCumulative } from './lib/adapter-bridge.js';
+import { countJsonlRecords } from './lib/snapshot-history-gate.js';
+import { decideYieldAction } from './lib/stage-2-yield.js';
 
 const SCRIPT_DIR = 'scripts/factory';
 
@@ -39,17 +41,42 @@ function runScript(name) {
     });
 }
 
-async function runSequential(label, tasks) {
+async function runSequential(label, tasks, yieldFile) {
     console.log(`\n[STAGE-2] === ${label} (sequential, ${tasks.length} steps) ===`);
     const summaries = [];
+    let prev = yieldFile ? (await countJsonlRecords(yieldFile).catch(() => 0)) : null;
+    if (yieldFile) console.log(`[STAGE-2] ${label} baseline ${yieldFile}: ${prev} records`);
+
     for (const t of tasks) {
         try {
             await t.fn();
-            summaries.push({ task: t.name, ok: true, error: null });
+
+            let yieldInfo = '';
+            let recordsAfter = prev;
+            if (yieldFile) {
+                const now = await countJsonlRecords(yieldFile).catch(() => 0);
+                const delta = now - prev;
+                yieldInfo = ` · ${now} records (${delta >= 0 ? '+' : ''}${delta})`;
+                const decision = decideYieldAction({
+                    currentRecords: now,
+                    taskName: t.name,
+                    yieldFile,
+                });
+                if (decision.kind === 'zero_records_abort') {
+                    throw new Error(decision.message);
+                }
+                prev = now;
+                recordsAfter = now;
+            }
+
+            console.log(`[STAGE-2] ${label}/${t.name} OK${yieldInfo}`);
+            summaries.push({ task: t.name, ok: true, error: null, records: recordsAfter });
         } catch (err) {
             // V0.5.x policy (2026-05-15): any sub-script failure halts the stage
             // IMMEDIATELY. Do NOT continue and do NOT let `uploadStage` run on
             // partial data — bad data must never pollute production R2.
+            // V0.5.6 (2026-05-19): also treats 0-records yield as failure
+            // ([[feedback_cross_cycle_silent_data_loss]] Pattern A 3rd closure).
             console.error(`[STAGE-2] ${label}/${t.name} failed: ${err.message}`);
             summaries.push({ task: t.name, ok: false, error: err.message });
             throw new Error(`[STAGE-2] ${label}/${t.name} failed — stage aborted before R2 upload to prevent pollution. Original error: ${err.message}`);
@@ -97,14 +124,14 @@ async function main() {
         { name: 'adapter-cross-linker', fn: () => runScript('adapter-cross-linker.js') },
         { name: 'fda', fn: () => runScript('fda-enricher.js') },
         { name: 'compound-faers', fn: () => runScript('compound-faers-enricher.js') },
-    ]);
+    ], './output/linked/compounds-enriched.jsonl');
     const idResolverOk = compoundResults.find(r => r.task === 'compound-id-resolver')?.ok ?? false;
 
     // V0.5.x: bioactivity enrichers also serialised — both modify bioactivities.jsonl.
     const bioactivityResults = await runSequential('Bioactivity Enrichers', [
         { name: 'target-resolver', fn: () => runScript('target-resolver.js') },
         { name: 'bioactivity-cross-validator', fn: () => runScript('bioactivity-cross-validator.js') },
-    ]);
+    ], './output/linked/bioactivities.jsonl');
 
     console.log('\n[STAGE-2] === Upload enriched bundle to R2 ===');
     try {
@@ -120,9 +147,9 @@ async function main() {
     const elapsed = Math.round((Date.now() - startTime) / 1000);
     console.log(`\n[STAGE-2] === Summary ===`);
     console.log(`  Elapsed:        ${elapsed}s (${(elapsed / 60).toFixed(1)} min)`);
-    console.log(`  Compound enrichers OK: ${compoundResults.filter(r => r.ok).length}/6`);
+    console.log(`  Compound enrichers OK: ${compoundResults.filter(r => r.ok).length}/${compoundResults.length}`);
     console.log(`  ID resolver:    ${idResolverOk ? 'OK' : 'FAIL'}`);
-    console.log(`  Bioactivity OK: ${bioactivityResults.filter(r => r.ok).length}/2`);
+    console.log(`  Bioactivity OK: ${bioactivityResults.filter(r => r.ok).length}/${bioactivityResults.length}`);
     console.log(`  R2 run prefix:  processed/enriched/${runId}/`);
 
     if (failureCount > 0) {
