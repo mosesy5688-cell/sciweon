@@ -14,6 +14,12 @@
 
 import { deriveIsActive, scoreBioactivityConfidence } from '../../factory/lib/bioactivity-scorer.js';
 import { normalizeUnit, normalizeActivityType, ASSAY_TYPE_MAP } from './chembl-helpers.js';
+import {
+    resolveSinceYear,
+} from '../../factory/lib/chembl-since-token.js';
+import {
+    shouldFetchNextPage, nextSinceTokenAfterLoop,
+} from '../../factory/lib/pagination-control.js';
 
 const CHEMBL_BASE = 'https://www.ebi.ac.uk/chembl/api/data';
 const REQUEST_TIMEOUT_MS = 20000;
@@ -30,11 +36,6 @@ async function fetchJson(url) {
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${url}`);
     return res.json();
-}
-
-function bootstrapSince() {
-    const d = new Date(); d.setDate(d.getDate() - 7);
-    return d.toISOString().slice(0, 10);
 }
 
 function normalizeMolecule(mol) {
@@ -62,27 +63,82 @@ function normalizeMolecule(mol) {
     };
 }
 
+async function countByFilter(filter) {
+    try {
+        const data = await fetchJson(`${CHEMBL_BASE}/molecule.json?${filter}&limit=1`);
+        return data?.page_meta?.total_count ?? 0;
+    } catch (e) {
+        console.warn(`[CHEMBL] countByFilter ${filter}: ${e.message}`);
+        return 0;
+    }
+}
+
 export async function checkForUpdates(sinceToken) {
-    const since = sinceToken ?? bootstrapSince();
-    const url = `${CHEMBL_BASE}/molecule.json?molecule_date__gte=${since}&limit=1`;
-    const data = await fetchJson(url);
-    const count = data?.page_meta?.total_count ?? 0;
-    return {
-        hasUpdates: count > 0,
-        count,
-        nextSinceToken: new Date().toISOString().slice(0, 10),
-    };
+    const year = resolveSinceYear(sinceToken);
+    const thisYearStr = String(new Date().getUTCFullYear());
+    const [approvalsCount, withdrawalsCount] = await Promise.all([
+        countByFilter(`first_approval__gte=${year}`),
+        countByFilter(`withdrawn_year__gte=${year}`),
+    ]);
+    const count = approvalsCount + withdrawalsCount;
+    return { hasUpdates: count > 0, count, nextSinceToken: thisYearStr };
+}
+
+async function fetchMoleculePages(filter) {
+    const records = [];
+    let offset = 0;
+    let pagesDone = 0;
+    let stopKind = 'stop_exhausted';
+    while (true) {
+        const url = `${CHEMBL_BASE}/molecule.json?${filter}&limit=${INCREMENTAL_LIMIT}&offset=${offset}`;
+        let data;
+        try { data = await fetchJson(url); }
+        catch (e) {
+            console.warn(`[CHEMBL] fetchMoleculePages ${filter} page ${pagesDone + 1}: ${e.message}`);
+            break;
+        }
+        const mols = data?.molecules ?? [];
+        for (const m of mols) {
+            const norm = normalizeMolecule(m);
+            if (norm) records.push(norm);
+        }
+        pagesDone++;
+        offset += INCREMENTAL_LIMIT;
+        const total = data?.page_meta?.total_count ?? records.length;
+        const decision = shouldFetchNextPage({
+            recordsFetched: records.length,
+            pagesDone,
+            hasMoreSignal: offset < total && mols.length > 0,
+        });
+        if (decision.kind !== 'continue') { stopKind = decision.kind; break; }
+    }
+    if (stopKind !== 'stop_exhausted') {
+        console.warn(`[CHEMBL] fetchMoleculePages ${filter} ${stopKind} after ${pagesDone} pages / ${records.length} records`);
+    }
+    return { records, stopKind };
 }
 
 export async function fetchIncremental(sinceToken) {
-    const since = sinceToken ?? bootstrapSince();
-    const url = `${CHEMBL_BASE}/molecule.json?molecule_date__gte=${since}&limit=${INCREMENTAL_LIMIT}&order_by=molecule_date`;
-    const data = await fetchJson(url);
-    const molecules = data?.molecules ?? [];
-    const records = molecules.map(normalizeMolecule).filter(Boolean);
+    const year = resolveSinceYear(sinceToken);
+    const today = String(new Date().getUTCFullYear());
+    const filters = [
+        `first_approval__gte=${year}`,
+        `withdrawn_year__gte=${year}`,
+    ];
+    const seen = new Map();
+    let aggregateStopKind = 'stop_exhausted';
+    for (const filter of filters) {
+        const { records: pageRecords, stopKind } = await fetchMoleculePages(filter);
+        for (const r of pageRecords) {
+            if (r?.chembl_id && !seen.has(r.chembl_id)) seen.set(r.chembl_id, r);
+        }
+        if (stopKind !== 'stop_exhausted') aggregateStopKind = stopKind;
+    }
     return {
-        records,
-        nextSinceToken: new Date().toISOString().slice(0, 10),
+        records: [...seen.values()],
+        nextSinceToken: nextSinceTokenAfterLoop({
+            stopKind: aggregateStopKind, sinceToken: String(year), today,
+        }),
     };
 }
 
