@@ -32,6 +32,7 @@ import { searchCompounds } from '../lib/compound-search';
 import { EVIDENCE_TYPES, isKnownEvidenceType, type EvidenceType } from '../lib/event-type-taxonomy';
 import { MCP_TOOLS } from '../lib/mcp-tools';
 import { resolveEntity } from '../lib/entity-resolver';
+import { aggregateRepurposingEvidence } from '../lib/repurposing-aggregator';
 
 const SERVER_INFO = {
     name: 'sciweon',
@@ -137,6 +138,23 @@ async function handleToolNegativeEvidence(args: Record<string, unknown>, env: En
     };
 }
 
+async function handleToolRepurposingEvidence(args: Record<string, unknown>, env: Env, req: Request): Promise<unknown> {
+    const cidArg = args?.cid;
+    if (typeof cidArg !== 'string' || cidArg.length === 0) {
+        throw new ToolError(-32602, 'Invalid params: cid is required and must be a string');
+    }
+    const parsed = parseCompoundId(cidArg);
+    if ('error' in parsed) {
+        throw new ToolError(-32602, `Invalid compound ID: ${parsed.error}`);
+    }
+    if (!env.SCIWEON_R2) {
+        throw new ToolError(-32603, 'Data layer not configured (R2 binding missing)');
+    }
+    const baseUrl = (() => { try { return new URL(req.url).origin; } catch { return 'https://sciweon.com'; } })();
+    const response = await aggregateRepurposingEvidence(env.SCIWEON_R2, parsed.canonical, baseUrl);
+    return { content: [{ type: 'text', text: JSON.stringify(response, null, 2) }] };
+}
+
 async function handleToolResolveEntity(args: Record<string, unknown>, env: Env): Promise<unknown> {
     const idArg = args?.identifier;
     if (typeof idArg !== 'string' || idArg.length === 0) {
@@ -165,6 +183,8 @@ async function handleToolsCall(params: Record<string, unknown>, env: Env, req: R
             return handleToolNegativeEvidence(args, env, req);
         case 'sciweon_resolve_entity':
             return handleToolResolveEntity(args, env);
+        case 'sciweon_get_repurposing_evidence':
+            return handleToolRepurposingEvidence(args, env, req);
         default:
             throw new ToolError(-32601, `Unknown tool: ${toolName}`);
     }

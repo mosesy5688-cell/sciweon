@@ -28,6 +28,7 @@ import { handleBioactivities } from './worker/api/bioactivities';
 import { handleTrials } from './worker/api/trials';
 import { handlePapers } from './worker/api/papers';
 import { handleXrefs } from './worker/api/xrefs';
+import { handleRepurposingEvidence } from './worker/api/repurposing-evidence';
 
 export interface Env {
     ASSETS: Fetcher;
@@ -41,6 +42,14 @@ export default {
         if (url.pathname.startsWith('/api/v1/compound/') && url.pathname.endsWith('/negative-evidence')) {
             try {
                 return await handleNegativeEvidence(req, env, ctx);
+            } catch (err) {
+                return json500(err);
+            }
+        }
+
+        if (url.pathname.startsWith('/api/v1/compound/') && url.pathname.endsWith('/repurposing-evidence')) {
+            try {
+                return await handleRepurposingEvidence(req, env, ctx);
             } catch (err) {
                 return json500(err);
             }

@@ -67,4 +67,18 @@ export const MCP_TOOLS = [
             required: ['identifier'],
         },
     },
+    {
+        name: 'sciweon_get_repurposing_evidence',
+        description: 'Get the complete drug-repurposing assessment for a compound by PubChem CID. Fuses three evidence layers in one call: positive (progressed trials + active bioactivities), negative (NegEvidence v2 typed taxonomy signals), and retracted (papers with is_retracted=true). Returns layer summaries with counts + examples, plus a verdict (strong / mixed / weak / none) and a human-readable recommendation. Use this when an agent needs a single repurposing decision rather than stitching 4 endpoints client-side. Read-only.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                cid: {
+                    type: 'string',
+                    description: 'PubChem CID. Accepts canonical "sciweon::compound::CID:2244", short "CID:2244", or bare "2244". Examples: 2244 aspirin, 4091 metformin.',
+                },
+            },
+            required: ['cid'],
+        },
+    },
 ];
