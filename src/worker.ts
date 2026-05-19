@@ -27,6 +27,7 @@ import { handleCompound } from './worker/api/compound';
 import { handleBioactivities } from './worker/api/bioactivities';
 import { handleTrials } from './worker/api/trials';
 import { handlePapers } from './worker/api/papers';
+import { handleXrefs } from './worker/api/xrefs';
 
 export interface Env {
     ASSETS: Fetcher;
@@ -80,6 +81,14 @@ export default {
         if (url.pathname === '/api/mcp' || url.pathname === '/api/v1/mcp') {
             try {
                 return await handleMcp(req, env, ctx);
+            } catch (err) {
+                return json500(err);
+            }
+        }
+
+        if (url.pathname === '/api/v1/xrefs') {
+            try {
+                return await handleXrefs(req, env, ctx);
             } catch (err) {
                 return json500(err);
             }

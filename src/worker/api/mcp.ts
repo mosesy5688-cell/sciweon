@@ -30,55 +30,15 @@ import { parseCompoundId } from '../lib/id-parse';
 import { loadNegEvidenceForCompound } from '../lib/neg-evidence-loader';
 import { searchCompounds } from '../lib/compound-search';
 import { EVIDENCE_TYPES, isKnownEvidenceType, type EvidenceType } from '../lib/event-type-taxonomy';
+import { MCP_TOOLS } from '../lib/mcp-tools';
+import { resolveEntity } from '../lib/entity-resolver';
 
 const SERVER_INFO = {
     name: 'sciweon',
-    version: '0.5.4',
+    version: '0.5.8',
 };
 
 const PROTOCOL_VERSION = '2025-03-26';
-
-const TOOLS = [
-    {
-        name: 'sciweon_search',
-        description: 'Search the Sciweon compound database by name, synonym, molecular formula, ChEMBL ID, or PubChem CID. Returns a ranked list of matching compounds with key metadata. Use this to identify the correct compound (and its CID) before calling sciweon_get_negative_evidence. Results include pubchem_cid, chembl_id, drug_status.max_phase, and confidence_overall. Matching is case-insensitive substring; exact matches score highest.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                query: {
-                    type: 'string',
-                    description: 'Search term — compound name, synonym, molecular formula (e.g. "C9H8O4"), ChEMBL ID (e.g. "CHEMBL25"), or PubChem CID (e.g. "2244"). Examples: "aspirin", "metformin", "ibuprofen".',
-                },
-                limit: {
-                    type: 'integer',
-                    description: 'Maximum number of results to return (1-25, default 10).',
-                    default: 10,
-                },
-            },
-            required: ['query'],
-        },
-    },
-    {
-        name: 'sciweon_get_negative_evidence',
-        description: 'Get the negative evidence profile for a drug compound by PubChem CID. Returns 0+ signals across the canonical event_type taxonomy (see event_types enum), grouped by severity (critical / major / minor / unknown), with provenance and confidence per signal. Pass event_types to narrow the response server-side. The result includes a synthesized verdict + agent_recommendation; agents may ignore the synthesis and read signals[] directly. Read-only.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                cid: {
-                    type: 'string',
-                    description: 'PubChem CID. Accepts canonical "sciweon::compound::CID:2244", short "CID:2244", or bare "2244". Examples: 2244 aspirin, 4091 metformin, 3672 ibuprofen.',
-                },
-                event_types: {
-                    type: 'array',
-                    description: 'Optional filter — only return signals whose evidence_type is in this list. Omit or pass [] to retrieve all types.',
-                    items: { type: 'string', enum: [...EVIDENCE_TYPES] },
-                    maxItems: 7,
-                },
-            },
-            required: ['cid'],
-        },
-    },
-];
 
 const JSONRPC_HEADERS = {
     'Content-Type': 'application/json',
@@ -116,7 +76,7 @@ async function handleInitialize(_params: Record<string, unknown>): Promise<unkno
 }
 
 async function handleToolsList(): Promise<unknown> {
-    return { tools: TOOLS };
+    return { tools: MCP_TOOLS };
 }
 
 async function handleToolSearch(args: Record<string, unknown>, env: Env): Promise<unknown> {
@@ -177,6 +137,21 @@ async function handleToolNegativeEvidence(args: Record<string, unknown>, env: En
     };
 }
 
+async function handleToolResolveEntity(args: Record<string, unknown>, env: Env): Promise<unknown> {
+    const idArg = args?.identifier;
+    if (typeof idArg !== 'string' || idArg.length === 0) {
+        throw new ToolError(-32602, 'Invalid params: identifier is required and must be a string');
+    }
+    if (!env.SCIWEON_R2) {
+        throw new ToolError(-32603, 'Data layer not configured (R2 binding missing)');
+    }
+    const resolved = await resolveEntity(env.SCIWEON_R2, idArg);
+    const payload = resolved
+        ? { resolved: true, canonical_id: resolved.canonical, cid: resolved.cid, matched_on: resolved.matched_on }
+        : { resolved: false, query: idArg };
+    return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
+}
+
 async function handleToolsCall(params: Record<string, unknown>, env: Env, req: Request): Promise<unknown> {
     const toolName = params?.name;
     const args = (params?.arguments && typeof params.arguments === 'object') ? params.arguments as Record<string, unknown> : {};
@@ -188,6 +163,8 @@ async function handleToolsCall(params: Record<string, unknown>, env: Env, req: R
             return handleToolSearch(args, env);
         case 'sciweon_get_negative_evidence':
             return handleToolNegativeEvidence(args, env, req);
+        case 'sciweon_resolve_entity':
+            return handleToolResolveEntity(args, env);
         default:
             throw new ToolError(-32601, `Unknown tool: ${toolName}`);
     }
@@ -247,4 +224,4 @@ export async function handleMcp(req: Request, env: Env, _ctx: ExecutionContext):
     }
 }
 
-export { TOOLS, SERVER_INFO, PROTOCOL_VERSION };
+export { MCP_TOOLS as TOOLS, SERVER_INFO, PROTOCOL_VERSION };
