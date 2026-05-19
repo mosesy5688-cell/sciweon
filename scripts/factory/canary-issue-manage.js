@@ -22,9 +22,12 @@ import path from 'path';
 import { execSync } from 'child_process';
 import { decideCanaryAction, DEFAULT_THRESHOLD } from './lib/canary-decision.js';
 
-const REPORT_PATH = './output/canary-report.json';
-const STATE_LOCAL = './output/linked/canary-state.json';
-const ISSUE_LABEL = 'source-canary';
+// V0.5.8 Wave I-6: env-var overrides let factory-cron-health workflow reuse
+// this same orchestrator with a different report file / state file / Issue
+// label. Defaults preserved for backward compat with I-5 source-canary.yml.
+const REPORT_PATH = process.env.CANARY_REPORT_PATH || './output/canary-report.json';
+const STATE_LOCAL = process.env.CANARY_STATE_LOCAL || './output/linked/canary-state.json';
+const ISSUE_LABEL = process.env.CANARY_ISSUE_LABEL || 'source-canary';
 
 function ghQuiet(cmd, extraEnv = {}) {
     return execSync(cmd, { stdio: ['ignore', 'pipe', 'inherit'], encoding: 'utf-8', env: { ...process.env, ...extraEnv } });

@@ -146,3 +146,53 @@ jobs:
           ARGS="--run-id=$RUN_ID"
           if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
           node scripts/factory/incremental-merge-all.js $ARGS
+
+  health-summary:
+    name: Adapter Cron Health Summary
+    needs: [adapters, merge-adapters]
+    if: always()              # run even if some adapters or fan-in failed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write           # gh issue create / close
+      actions: read           # gh run view (read own run's jobs)
+    env:
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      GH_TOKEN: ${{ github.token }}
+      RUN_ID: ${{ github.run_id }}
+      CANARY_REPORT_PATH: './output/adapter-cron-report.json'
+      CANARY_STATE_LOCAL: './output/linked/adapter-cron-state.json'
+      CANARY_ISSUE_LABEL: 'factory-cron-health'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Download previous cron-health state from R2 (optional)
+        run: |
+          node -e "import('./scripts/factory/lib/r2-cache-bridge.js').then(m => m.downloadCache('adapter-cron-state.json')).catch(e => console.warn('cache download (non-fatal):', e.message))"
+      - name: Collect adapter cron outcomes
+        run: node scripts/factory/adapter-cron-health-collect.js
+      - name: Apply decisions + manage Issues
+        run: node scripts/factory/canary-issue-manage.js
+      - name: Upload state to R2
+        if: always()
+        run: |
+          node -e "import('./scripts/factory/lib/r2-cache-bridge.js').then(m => m.uploadCache('adapter-cron-state.json')).catch(e => console.warn('cache upload (non-fatal):', e.message))"
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: adapter-cron-health-report
+          path: |
+            output/adapter-cron-report.json
+            output/linked/adapter-cron-state.json
+          retention-days: 30
+          if-no-files-found: warn
