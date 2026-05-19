@@ -14,7 +14,14 @@
  * Returns normalized NCIt concepts with preferred name + synonyms.
  */
 
-const EVS_BASE = 'https://evsrestapi.nci.nih.gov/evsrestapi/api/v1';
+import { detectHtmlResponse } from '../../factory/lib/json-response-guard.js';
+import {
+    shouldFetchNextPage, nextSinceTokenAfterLoop,
+} from '../../factory/lib/pagination-control.js';
+
+// V0.5.7 H2b-3: old host `evsrestapi.nci.nih.gov` retired by NCI; returned
+// HTML 200 retirement notice. New base verified via live probe.
+const EVS_BASE = 'https://api-evsrest.nci.nih.gov/api/v1';
 const TERMINOLOGY = 'ncit';
 const ROOT_CODE = 'C1254'; // Pharmacologic Substance
 const PAGE_SIZE = 200;
@@ -41,7 +48,14 @@ async function fetchJson(url) {
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${url}`);
-    return res.json();
+    const ct = res.headers.get('content-type') ?? '';
+    const body = await res.text();
+    const guard = detectHtmlResponse(ct, body);
+    if (guard.kind !== 'ok') {
+        throw new Error(`[NCI-THESAURUS] non-JSON response (${guard.kind}) at ${url}`);
+    }
+    try { return JSON.parse(body); }
+    catch (e) { throw new Error(`[NCI-THESAURUS] JSON parse failed at ${url}: ${e.message}`); }
 }
 
 export function normalize(raw) {
@@ -76,8 +90,8 @@ export async function checkForUpdates(sinceToken) {
     const today = todayIso();
     const hasUpdates = daysSince(sinceToken) >= fallbackFullRefreshDays;
     try {
-        const url = `${EVS_BASE}/concept/${TERMINOLOGY}/${ROOT_CODE}/subtree/roots`;
-        await fetchJson(url);
+        // Live-confirmed JSON endpoint — used as a liveness probe.
+        await fetchJson(`${EVS_BASE}/concept/${TERMINOLOGY}/${ROOT_CODE}`);
         return { hasUpdates, count: null, nextSinceToken: today };
     } catch (e) {
         console.warn(`[NCI-THESAURUS] checkForUpdates: ${e.message}`);
@@ -85,37 +99,48 @@ export async function checkForUpdates(sinceToken) {
     }
 }
 
-export async function fetchIncremental(_sinceToken) {
-    const nextSinceToken = todayIso();
+export async function fetchIncremental(sinceToken) {
+    const todayStr = todayIso();
     const records = [];
     let fromRecord = 0;
+    let pagesDone = 0;
+    let stopKind = 'stop_exhausted';
 
-    console.log('[NCI-THESAURUS] Fetching Pharmacologic Substance subtree');
+    console.log('[NCI-THESAURUS] Fetching Pharmacologic Substance subset members');
 
     while (true) {
+        const url = `${EVS_BASE}/subset/${TERMINOLOGY}/${ROOT_CODE}/members`
+            + `?include=synonyms,definitions&fromRecord=${fromRecord}&pageSize=${PAGE_SIZE}`;
         let data;
-        try {
-            const url = `${EVS_BASE}/concept/${TERMINOLOGY}?subset=${ROOT_CODE}`
-                + `&include=synonyms,definitions&fromRecord=${fromRecord}&pageSize=${PAGE_SIZE}`;
-            data = await fetchJson(url);
-        } catch (e) {
+        try { data = await fetchJson(url); }
+        catch (e) {
             console.warn(`[NCI-THESAURUS] page fromRecord=${fromRecord}: ${e.message}`);
             break;
         }
-
         const items = Array.isArray(data) ? data : (data.concepts ?? []);
-        if (items.length === 0) break;
-
         for (const raw of items) {
             const rec = normalize(raw);
             if (rec) records.push(rec);
         }
-
+        pagesDone++;
         fromRecord += items.length;
-        if (items.length < PAGE_SIZE) break;
+        const decision = shouldFetchNextPage({
+            recordsFetched: records.length,
+            pagesDone,
+            hasMoreSignal: items.length === PAGE_SIZE,
+        });
+        if (decision.kind !== 'continue') { stopKind = decision.kind; break; }
         await sleep(DELAY_MS);
     }
 
+    if (stopKind !== 'stop_exhausted') {
+        console.warn(`[NCI-THESAURUS] fetchIncremental ${stopKind} after ${pagesDone} pages / ${records.length} concepts`);
+    }
     console.log(`[NCI-THESAURUS] Done: ${records.length} concepts fetched`);
-    return { records, nextSinceToken };
+    return {
+        records,
+        nextSinceToken: nextSinceTokenAfterLoop({
+            stopKind, sinceToken: sinceToken ?? null, today: todayStr,
+        }),
+    };
 }
