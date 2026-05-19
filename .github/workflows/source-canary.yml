@@ -1,0 +1,76 @@
+name: Source Canary
+
+# V0.5.8 Wave I-5 — daily V2 adapter live canary. Probes each adapter's
+# checkForUpdates upstream API, persists per-adapter state (consecutive
+# failures) in R2, and auto-creates / closes GitHub Issues when crossing
+# the threshold. Orthogonal to source-health.yml (which checks data
+# freshness in the published snapshot).
+
+on:
+  schedule:
+    - cron: '0 8 * * *'        # daily 08:00 UTC (2h before factory-1 at 10:05)
+  workflow_dispatch:
+    inputs:
+      threshold:
+        description: 'Consecutive failures before opening an Issue (default 2)'
+        type: string
+        default: '2'
+
+concurrency:
+  group: source-canary
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write                # required for gh issue create / close
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      CANARY_THRESHOLD: ${{ inputs.threshold || '2' }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Download previous canary state from R2 (optional)
+        run: |
+          node -e "import('./scripts/factory/lib/r2-cache-bridge.js').then(m => m.downloadCache('canary-state.json')).catch(e => { console.warn('cache download failed (non-fatal):', e.message); })"
+
+      - name: Run V2 adapter canary
+        run: npm run canary
+
+      - name: Apply decisions + manage Issues
+        run: node scripts/factory/canary-issue-manage.js
+
+      - name: Upload canary state to R2
+        if: always()
+        run: |
+          node -e "import('./scripts/factory/lib/r2-cache-bridge.js').then(m => m.uploadCache('canary-state.json')).catch(e => { console.warn('cache upload failed (non-fatal):', e.message); })"
+
+      - name: Upload report as workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-canary-report
+          path: |
+            output/canary-report.json
+            output/linked/canary-state.json
+          retention-days: 30
+          if-no-files-found: warn
