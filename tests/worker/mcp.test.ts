@@ -119,18 +119,21 @@ describe('handleMcp — initialize', () => {
 });
 
 describe('handleMcp — tools/list', () => {
-    it('returns 2 tools including sciweon_search in V0.5.4', async () => {
+    it('returns 3 tools including sciweon_resolve_entity in V0.5.8', async () => {
         const req = mcpRequest({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
         const res = await handleMcp(req, makeEnv(), fakeCtx());
         const body = await res.json() as any;
-        expect(body.result.tools).toHaveLength(2);
+        expect(body.result.tools).toHaveLength(3);
         const names = (body.result.tools as any[]).map((t: any) => t.name);
         expect(names).toContain('sciweon_search');
         expect(names).toContain('sciweon_get_negative_evidence');
+        expect(names).toContain('sciweon_resolve_entity');
         const neg = (body.result.tools as any[]).find((t: any) => t.name === 'sciweon_get_negative_evidence');
         expect(neg.inputSchema.required).toContain('cid');
         const search = (body.result.tools as any[]).find((t: any) => t.name === 'sciweon_search');
         expect(search.inputSchema.required).toContain('query');
+        const resolve = (body.result.tools as any[]).find((t: any) => t.name === 'sciweon_resolve_entity');
+        expect(resolve.inputSchema.required).toContain('identifier');
     });
 });
 
