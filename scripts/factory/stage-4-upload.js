@@ -24,6 +24,12 @@ import { spawn } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
 import { downloadStage, verifyNonEmpty } from './lib/r2-stage-bridge.js';
+import {
+    loadPreviousSnapshotManifest,
+    countJsonlRecords,
+    decideGateAction,
+    getConfiguredThreshold,
+} from './lib/snapshot-history-gate.js';
 
 const SCRIPT_DIR = 'scripts/factory';
 const AGGREGATED_FILES = [
@@ -75,6 +81,42 @@ async function main() {
             console.error('[STAGE-4] Refusing to publish empty snapshot');
             process.exit(1);
         }
+    }
+
+    // V0.5.5 — historical-comparison gate. Defense-in-depth for
+    // [[feedback_cross_cycle_silent_data_loss]] even when stage-3 sentinel
+    // (H1-2) slips through. Compare current compounds-enriched record count
+    // vs previous snapshot manifest; abort publish if drop > threshold.
+    // 2026-05-18 production regression (-83%) sailed past `verifyNonEmpty`
+    // because 5000 records × 1.9KB = ~9MB >> 100-byte threshold. This gate
+    // enforces a historical (not content-presence) check.
+    console.log('\n[STAGE-4] === Historical-comparison gate ===');
+    try {
+        const thresholdPct = getConfiguredThreshold();
+        const currentRecords = await countJsonlRecords(REQUIRED_NONEMPTY[0]);
+        const previousManifest = await loadPreviousSnapshotManifest();
+        const previousRecords = previousManifest?.files?.find(
+            f => f.filename === 'compounds-enriched.jsonl.gz'
+        )?.records ?? null;
+        const action = decideGateAction({ currentRecords, previousRecords, thresholdPct });
+        switch (action.kind) {
+            case 'skip_no_previous':
+                console.log(`  [GATE] ${action.reason} — gate skipped (first-ever publish)`);
+                break;
+            case 'pass':
+                console.log(`  [GATE] PASS — current ${action.currentRecords} vs previous ${action.previousRecords} (drop ${action.dropPct}%, threshold ${thresholdPct}%)`);
+                break;
+            case 'abort_regression':
+                console.error(`  [GATE] FAIL — current ${action.currentRecords} vs previous ${action.previousRecords} (drop ${action.dropPct}% > threshold ${thresholdPct}%)`);
+                console.error('[STAGE-4] Refusing to publish suspected regression — manual review required.');
+                console.error('[STAGE-4] If this drop is legitimate (e.g. data source cleanup), set SCIWEON_RECORD_DROP_THRESHOLD_PCT=<higher> and re-run.');
+                process.exit(5);
+                break;
+        }
+    } catch (err) {
+        console.error(`[STAGE-4] Historical gate failed to evaluate: ${err.message}`);
+        console.error('[STAGE-4] Refusing to publish — gate must succeed (operator verify previous snapshot integrity).');
+        process.exit(5);
     }
 
     console.log('\n[STAGE-4] === snapshot-builder ===');
