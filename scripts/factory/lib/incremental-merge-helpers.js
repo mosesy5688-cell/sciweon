@@ -9,6 +9,7 @@ import {
     ListObjectsV2Command, DeleteObjectCommand,
 } from '@aws-sdk/client-s3';
 import { streamToBuffer } from './incremental-cursors.js';
+import { classifyPreviousAggregatedError } from './aggregated-error-classify.js';
 
 const STAGING_PREFIX  = 'staging/incremental';
 const AGGREGATED_PREFIX = 'processed/aggregated';
@@ -45,27 +46,44 @@ export async function loadStagingDelta(client, bucket, source, runId) {
 }
 
 // Load previous cumulative from latest.json pointer. Returns Map<id, entity>.
+// V0.5.6: distinguishes legitimate first-run (404 on pointer) from every
+// other error mode. Orphaned pointer / transient S3 / gzip / JSON corruption
+// now THROW instead of silently returning empty Map — [[feedback_cross_cycle_silent_data_loss]]
+// Pattern A incremental-merge closure.
 export async function loadPreviousAggregated(client, bucket) {
+    let ptr;
     try {
         const ptrRes = await client.send(new GetObjectCommand({
             Bucket: bucket, Key: `${AGGREGATED_PREFIX}/latest.json`,
         }));
-        const ptr = JSON.parse((await streamToBuffer(ptrRes.Body)).toString('utf-8'));
+        ptr = JSON.parse((await streamToBuffer(ptrRes.Body)).toString('utf-8'));
+    } catch (err) {
+        const c = classifyPreviousAggregatedError(err, 'pointer');
+        if (c.kind === 'first_run') {
+            console.log(`[MERGE] ${c.message}`);
+            return new Map();
+        }
+        throw new Error(`loadPreviousAggregated: ${c.message}`);
+    }
+
+    let map;
+    try {
         const dataRes = await client.send(new GetObjectCommand({
             Bucket: bucket, Key: `${AGGREGATED_PREFIX}/${ptr.pointer}/all-records.jsonl.gz`,
         }));
         const raw = gunzipSync(await streamToBuffer(dataRes.Body)).toString('utf-8');
-        const map = new Map();
+        map = new Map();
         for (const line of raw.split('\n').filter(Boolean)) {
             const r = JSON.parse(line);
             if (r.id) map.set(r.id, r);
         }
-        console.log(`[MERGE] Previous cumulative loaded: ${map.size} entities (pointer=${ptr.pointer})`);
-        return map;
-    } catch {
-        console.log('[MERGE] No previous cumulative — starting fresh');
-        return new Map();
+    } catch (err) {
+        const c = classifyPreviousAggregatedError(err, 'data');
+        throw new Error(`loadPreviousAggregated: ${c.message} (pointer=${ptr.pointer})`);
     }
+
+    console.log(`[MERGE] Previous cumulative loaded: ${map.size} entities (pointer=${ptr.pointer})`);
+    return map;
 }
 
 // Upload merged aggregated + meta, then advance latest.json pointer.
