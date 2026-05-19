@@ -29,6 +29,7 @@ import type { Env } from '../../worker';
 import { parseCompoundId } from '../lib/id-parse';
 import { loadNegEvidenceForCompound } from '../lib/neg-evidence-loader';
 import { searchCompounds } from '../lib/compound-search';
+import { EVIDENCE_TYPES, isKnownEvidenceType, type EvidenceType } from '../lib/event-type-taxonomy';
 
 const SERVER_INFO = {
     name: 'sciweon',
@@ -59,13 +60,19 @@ const TOOLS = [
     },
     {
         name: 'sciweon_get_negative_evidence',
-        description: 'Get the complete negative evidence profile for a drug compound by PubChem CID. Returns 0+ signals across categories (trial_failure, inactive_bioassay, drug_withdrawal, black_box_warning, faers_adr_signal, serious_adverse_event_per_trial, paper_retraction), grouped by severity (critical / major / minor / unknown), with provenance and confidence per signal. Use this when an Agent needs to assess safety/efficacy risks for a candidate drug compound. The result includes a synthesized verdict and agent_recommendation; Agents may ignore the synthesis and read raw signals[] directly. Read-only, no side effects.',
+        description: 'Get the negative evidence profile for a drug compound by PubChem CID. Returns 0+ signals across the canonical event_type taxonomy (see event_types enum), grouped by severity (critical / major / minor / unknown), with provenance and confidence per signal. Pass event_types to narrow the response server-side. The result includes a synthesized verdict + agent_recommendation; agents may ignore the synthesis and read signals[] directly. Read-only.',
         inputSchema: {
             type: 'object',
             properties: {
                 cid: {
                     type: 'string',
-                    description: 'PubChem CID. Accepts canonical form "sciweon::compound::CID:2244", short form "CID:2244", or bare numeric "2244". Examples: 2244 (aspirin), 4091 (metformin), 3672 (ibuprofen).',
+                    description: 'PubChem CID. Accepts canonical "sciweon::compound::CID:2244", short "CID:2244", or bare "2244". Examples: 2244 aspirin, 4091 metformin, 3672 ibuprofen.',
+                },
+                event_types: {
+                    type: 'array',
+                    description: 'Optional filter — only return signals whose evidence_type is in this list. Omit or pass [] to retrieve all types.',
+                    items: { type: 'string', enum: [...EVIDENCE_TYPES] },
+                    maxItems: 7,
                 },
             },
             required: ['cid'],
@@ -146,10 +153,20 @@ async function handleToolNegativeEvidence(args: Record<string, unknown>, env: En
     if (!env.SCIWEON_R2) {
         throw new ToolError(-32603, 'Data layer not configured (R2 binding missing)');
     }
+    // V0.5.8 Phase 1: optional event_types filter. Reject unknown tokens at the
+    // MCP boundary so Agent gets a clear error rather than silent drop.
+    let eventTypeFilter: Set<EvidenceType> | null = null;
+    if (Array.isArray(args.event_types) && args.event_types.length > 0) {
+        eventTypeFilter = new Set<EvidenceType>();
+        for (const t of args.event_types) {
+            if (!isKnownEvidenceType(t)) throw new ToolError(-32602, `Invalid event_types token: ${JSON.stringify(t)} — must be one of ${EVIDENCE_TYPES.join(', ')}`);
+            eventTypeFilter.add(t);
+        }
+    }
     const baseUrl = (() => {
         try { return new URL(req.url).origin; } catch { return 'https://sciweon.com'; }
     })();
-    const response = await loadNegEvidenceForCompound(env.SCIWEON_R2, parsed.canonical, baseUrl);
+    const response = await loadNegEvidenceForCompound(env.SCIWEON_R2, parsed.canonical, baseUrl, eventTypeFilter);
     return {
         content: [
             {

@@ -15,6 +15,7 @@
 import type { Env } from '../../worker';
 import { parseCompoundId } from '../lib/id-parse';
 import { loadNegEvidenceForCompound } from '../lib/neg-evidence-loader';
+import { parseEventTypeFilter } from '../lib/event-type-taxonomy';
 
 const PATH_RE = /^\/api\/v1\/compound\/([^/]+)\/negative-evidence$/;
 
@@ -42,8 +43,11 @@ export async function handleNegativeEvidence(req: Request, env: Env, _ctx: Execu
     }
 
     const baseUrl = `${url.protocol}//${url.host}`;
+    // V0.5.8 Phase 1: optional `event_type` filter (comma-separated).
+    // Null = no filter; empty Set = client passed only unknown tokens → match nothing.
+    const eventTypeFilter = parseEventTypeFilter(url.searchParams.get('event_type'));
     try {
-        const response = await loadNegEvidenceForCompound(env.SCIWEON_R2, parsed.canonical, baseUrl);
+        const response = await loadNegEvidenceForCompound(env.SCIWEON_R2, parsed.canonical, baseUrl, eventTypeFilter);
         return Response.json(response, {
             status: 200,
             headers: {

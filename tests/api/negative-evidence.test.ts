@@ -192,4 +192,39 @@ describe('handleNegativeEvidence', () => {
         const res = await call('2244', makeEnv(bucket));
         expect(res.headers.get('cache-control')).toContain('max-age');
     });
+
+    // V0.5.8 Wave C1-1 Phase 1 — event_type filter
+    it('?event_type=trial_failure returns only trial_failure signals', async () => {
+        const req = new Request('https://sciweon.com/api/v1/compound/2244/negative-evidence?event_type=trial_failure');
+        const res = await handleNegativeEvidence(req, makeEnv(bucket), fakeCtx());
+        expect(res.status).toBe(200);
+        const body = await res.json() as any;
+        expect(body.negative_signals_count).toBe(1);
+        expect(body.signals[0].evidence_type).toBe('trial_failure');
+    });
+
+    it('?event_type=trial_failure,black_box_warning returns both signal types', async () => {
+        const req = new Request('https://sciweon.com/api/v1/compound/2244/negative-evidence?event_type=trial_failure,black_box_warning');
+        const res = await handleNegativeEvidence(req, makeEnv(bucket), fakeCtx());
+        expect(res.status).toBe(200);
+        const body = await res.json() as any;
+        expect(body.negative_signals_count).toBe(2);
+        const types = new Set(body.signals.map((s: any) => s.evidence_type));
+        expect(types.has('trial_failure')).toBe(true);
+        expect(types.has('black_box_warning')).toBe(true);
+    });
+
+    it('?event_type=foo (all-unknown) returns zero signals', async () => {
+        const req = new Request('https://sciweon.com/api/v1/compound/2244/negative-evidence?event_type=not_a_real_type');
+        const res = await handleNegativeEvidence(req, makeEnv(bucket), fakeCtx());
+        expect(res.status).toBe(200);
+        const body = await res.json() as any;
+        expect(body.negative_signals_count).toBe(0);
+    });
+
+    it('response carries unknown_event_types: [] when all evidence_types are canonical', async () => {
+        const res = await call('2244', makeEnv(bucket));
+        const body = await res.json() as any;
+        expect(body.unknown_event_types).toEqual([]);
+    });
 });
