@@ -1,0 +1,47 @@
+name: R2 Lifecycle Apply
+
+# Wave I-3 follow-up: workflow_dispatch wrapper around
+# `npm run r2:lifecycle:apply` so the operator can apply lifecycle TTL
+# rules to the R2 bucket without exporting R2 credentials locally.
+# Idempotent — re-running overwrites with the same config.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (print config, do not apply)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+      - name: Apply R2 lifecycle rules
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            npm run r2:lifecycle:apply -- --dry
+          else
+            npm run r2:lifecycle:apply
+          fi
