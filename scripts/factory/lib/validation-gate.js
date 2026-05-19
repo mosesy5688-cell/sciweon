@@ -23,6 +23,8 @@
  * violation is now a real integrity gap that must surface immediately.
  */
 
+import { classifyViolations } from './schema-tier.js';
+
 export const MODE_WARN = 'warn';
 export const MODE_REJECT = 'reject';
 
@@ -98,13 +100,22 @@ export function gate(entity, schema, context = 'entity') {
         return { passed: true, entity, warnings: errors };
     }
 
-    // REJECT mode: fail-fast. Bad data must NEVER pollute production R2.
-    // Throwing here halts the producer (harvester / linker / aggregator),
-    // returns a non-zero exit code, and prevents the downstream stage from
-    // triggering. Callers cannot silently `continue` past a violation.
-    const detail = errors.slice(0, 10).map(e => `  - ${e.path}: ${e.error}`).join('\n');
-    const truncated = errors.length > 10 ? `\n  ... (${errors.length - 10} more)` : '';
+    // REJECT mode (V0.5.7 H2b-5): partition violations by tier. Primary-source
+    // failures (identifiers, raw upstream fields, provenance) still halt the
+    // chain — bad primary data must NEVER pollute production R2. Derived-field
+    // failures (confidence, mentioned_*, stats, is_negative_outcome) are
+    // Sciweon-computed and become warnings: an internal scoring drift should
+    // not abort an entire stage when the upstream data is intact.
+    const { primary, derived } = classifyViolations(errors);
+    if (primary.length === 0) {
+        console.warn(`[VALIDATION] ${context}: ${derived.length} derived-field warnings (REJECT mode, accepting)`);
+        for (const e of derived.slice(0, 5)) console.warn(`  - [derived] ${e.path}: ${e.error}`);
+        return { passed: true, entity, warnings: derived };
+    }
+    const detail = primary.slice(0, 10).map(e => `  - ${e.path}: ${e.error}`).join('\n');
+    const truncated = primary.length > 10 ? `\n  ... (${primary.length - 10} more)` : '';
+    const derivedNote = derived.length > 0 ? `\n  (+ ${derived.length} derived-field warnings suppressed)` : '';
     throw new Error(
-        `[VALIDATION] ${context}: ${errors.length} violations — chain halted (REJECT mode)\n${detail}${truncated}`
+        `[VALIDATION] ${context}: ${primary.length} primary violations — chain halted (REJECT mode)\n${detail}${truncated}${derivedNote}`
     );
 }
