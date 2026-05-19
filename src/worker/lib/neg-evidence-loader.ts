@@ -17,6 +17,7 @@
  */
 
 import { fetchR2GunzippedText, fetchR2JsonText } from './r2-fetch';
+import { type EvidenceType, isKnownEvidenceType } from './event-type-taxonomy';
 
 const LATEST_POINTER_KEY = 'snapshots/latest.json';
 
@@ -26,7 +27,10 @@ interface SnapshotPointer {
 
 interface NegEvidenceRecord {
     id: string;
-    evidence_type: string;
+    // V0.5.8 Phase 1: evidence_type is the canonical typed taxonomy (7 values).
+    // Allow `string` to cover legacy / forward-compat records — unknown values
+    // are tracked separately in response.unknown_event_types for operator visibility.
+    evidence_type: EvidenceType | string;
     subject?: {
         compound_id?: string;
         target_id?: string;
@@ -85,6 +89,10 @@ export interface NegEvidenceResponse {
     negative_signals_count: number;
     signals_by_severity: Record<'critical' | 'major' | 'minor' | 'unknown', number>;
     signals_by_evidence_type: Record<string, number>;
+    // V0.5.8 Phase 1: evidence_type values present in this response that are
+    // NOT in EVIDENCE_TYPES. Empty array when all clean. Surfaces producer-side
+    // typos / new types waiting to be added to the canonical taxonomy.
+    unknown_event_types: string[];
     signals: Array<{
         id: string;
         url: string;
@@ -109,6 +117,7 @@ function buildResponse(compoundId: string, records: NegEvidenceRecord[], snapsho
     const compoundUrl = `${baseUrl}/api/v1/entity/${encodeURIComponent(compoundId)}`;
     const bySeverity = { critical: 0, major: 0, minor: 0, unknown: 0 };
     const byType: Record<string, number> = {};
+    const unknownTypes = new Set<string>();
     const signals: NegEvidenceResponse['signals'] = [];
     let highestRank = 0;
     let highest: NegEvidenceResponse['verdict']['highest_severity'] = 'none';
@@ -117,6 +126,9 @@ function buildResponse(compoundId: string, records: NegEvidenceRecord[], snapsho
         const sev = (rec.severity ?? 'unknown') as keyof typeof SEVERITY_RANK;
         bySeverity[sev] = (bySeverity[sev] ?? 0) + 1;
         byType[rec.evidence_type] = (byType[rec.evidence_type] ?? 0) + 1;
+        if (!isKnownEvidenceType(rec.evidence_type)) {
+            unknownTypes.add(rec.evidence_type);
+        }
         const rank = SEVERITY_RANK[sev] ?? 1;
         if (rank > highestRank) {
             highestRank = rank;
@@ -148,6 +160,7 @@ function buildResponse(compoundId: string, records: NegEvidenceRecord[], snapsho
         negative_signals_count: signals.length,
         signals_by_severity: bySeverity,
         signals_by_evidence_type: byType,
+        unknown_event_types: [...unknownTypes].sort(),
         signals,
         verdict: { summary, highest_severity: highest, agent_recommendation: recommendation },
     };
@@ -165,9 +178,18 @@ export async function loadNegEvidenceForCompound(
     bucket: R2Bucket,
     compoundId: string,
     baseUrl: string,
+    eventTypeFilter?: Set<EvidenceType> | null,
 ): Promise<NegEvidenceResponse> {
     const date = await readLatestPointer(bucket);
     const all = await loadNegEvidenceJsonl(bucket, date);
-    const matched = all.filter(r => r.subject?.compound_id === compoundId);
+    let matched = all.filter(r => r.subject?.compound_id === compoundId);
+    // V0.5.8 Phase 1: optional server-side event_type filter. null = no filter
+    // requested. Empty Set = filter requested with all-unknown tokens → match
+    // nothing (caller introspects via empty signals array).
+    if (eventTypeFilter) {
+        matched = matched.filter(r =>
+            isKnownEvidenceType(r.evidence_type) && eventTypeFilter.has(r.evidence_type),
+        );
+    }
     return buildResponse(compoundId, matched, date, baseUrl);
 }
