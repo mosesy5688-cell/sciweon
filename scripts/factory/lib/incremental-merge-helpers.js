@@ -13,6 +13,11 @@ import { classifyPreviousAggregatedError, classifyPointerShape } from './aggrega
 
 const STAGING_PREFIX  = 'staging/incremental';
 const AGGREGATED_PREFIX = 'processed/aggregated';
+// V0.6 split-pointer fix: fan-in owns its own pointer key, separate from
+// stage-3's processed/aggregated/latest.json. Before this fix both producers
+// wrote to latest.json with different schemas — last writer wins, breaking
+// the other consumer. Now each producer has its own key, no cross-pollution.
+const FANIN_LATEST_KEY = `${AGGREGATED_PREFIX}/fanin-latest.json`;
 
 // Returns number of staging files for this runId (>0 means real data exists).
 export async function detectZeroDeltas(client, bucket, runId) {
@@ -54,7 +59,7 @@ export async function loadPreviousAggregated(client, bucket) {
     let ptr;
     try {
         const ptrRes = await client.send(new GetObjectCommand({
-            Bucket: bucket, Key: `${AGGREGATED_PREFIX}/latest.json`,
+            Bucket: bucket, Key: FANIN_LATEST_KEY,
         }));
         ptr = JSON.parse((await streamToBuffer(ptrRes.Body)).toString('utf-8'));
     } catch (err) {
@@ -66,10 +71,9 @@ export async function loadPreviousAggregated(client, bucket) {
         throw new Error(`loadPreviousAggregated: ${c.message}`);
     }
 
-    // V0.5.7.1 hotfix: stage-3-aggregate also writes this key with a
-    // different schema (run_id field, not pointer). Fan-in bootstraps
-    // cleanly when it sees a non-fan-in pointer shape rather than
-    // throwing — the pointer simply isn't ours.
+    // V0.6 post-split-fix: stage-3 no longer writes to FANIN_LATEST_KEY,
+    // so foreign_schema should never be reached here. classifyPointerShape
+    // stays as defense-in-depth in case operator hand-writes the wrong shape.
     const shape = classifyPointerShape(ptr);
     if (shape.kind === 'foreign_schema' || shape.kind === 'malformed_pointer') {
         console.warn(`[MERGE] ${shape.message}`);
@@ -114,7 +118,7 @@ export async function uploadAggregated(client, bucket, runId, records, meta) {
     }));
     await client.send(new PutObjectCommand({
         Bucket: bucket,
-        Key: `${AGGREGATED_PREFIX}/latest.json`,
+        Key: FANIN_LATEST_KEY,
         Body: JSON.stringify({ pointer: runId, timestamp: new Date().toISOString() }),
         ContentType: 'application/json',
     }));
