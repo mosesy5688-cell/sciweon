@@ -68,6 +68,17 @@ jobs:
           fi
       - name: Run PubChem harvest
         run: node scripts/factory/stage-1-harvest.js
+      - name: Setup Python for RDKit
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install RDKit
+        run: pip install 'rdkit==2024.9.1'
+      - name: Precompute QED + AromaticRings + Structural Alerts
+        run: |
+          python scripts/factory/descriptor-precompute.py --self-test
+          python scripts/factory/descriptor-precompute.py --dir ./output/compounds
       - name: Upload harvest log
         if: always()
         uses: actions/upload-artifact@v4
