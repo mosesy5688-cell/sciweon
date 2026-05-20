@@ -77,18 +77,9 @@ export const COMPOUND_SCHEMA = {
             // Lipinski Rule of Five — computed from above 4 fields
             // Drug-likeness quick check. AI Agent screening uses this heavily.
             lipinski_violations: { type: 'integer', required: false, min: 0, max: 4 },
-            // C1-4: RDKit-derived descriptors precomputed in stage-1 post-step
-            // by scripts/factory/descriptor-precompute.py. All required:false
-            // so pre-C1-4 records and SMILES-unparseable records pass validation.
             qed: { type: 'number', required: false, min: 0, max: 1 },
             aromatic_rings: { type: 'integer', required: false, min: 0, max: 50 },
-            structural_alerts: {
-                type: 'array', required: false,
-                itemShape: {
-                    name: { type: 'string', required: true, maxLength: 100 },
-                    catalog: { type: 'string', required: true, enum: ['PAINS_A', 'PAINS_B', 'PAINS_C', 'Brenk'] },
-                },
-            },
+            structural_alerts: { type: 'array', required: false, itemShape: { name: { type: 'string', required: true, maxLength: 100 }, catalog: { type: 'string', required: true, enum: ['PAINS_A', 'PAINS_B', 'PAINS_C', 'Brenk'] } } },
         },
     },
 
