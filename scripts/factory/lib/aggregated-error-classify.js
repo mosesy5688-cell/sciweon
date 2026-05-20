@@ -38,17 +38,18 @@ export function classifyPreviousAggregatedError(err, stage) {
 /**
  * V0.5.7.1 — pointer-shape decision.
  *
- * processed/aggregated/latest.json is written by two producers:
+ * Historical context: processed/aggregated/latest.json was originally
+ * written by TWO producers with different schemas:
  *   - r2-stage-bridge.uploadStage (stage-3-aggregate)      -> {run_id, ...}
  *   - incremental-merge-helpers.uploadAggregated (fan-in)  -> {pointer, ...}
  *
- * Fan-in's loadPreviousAggregated only knows how to consume the latter.
- * If it reads a pointer written by stage-3, the missing `.pointer` field
- * would otherwise route through the data-404 path and surface as
- * `orphaned_pointer` (technically wrong — the pointer was never ours).
+ * Last writer won; the other consumer broke (stage-3 hard-aborted on
+ * `pointer_missing_run_id`, surfaced 2026-05-20 PR #89).
  *
- * This decision separates that case so fan-in can bootstrap cleanly
- * (return empty Map) while still throwing on real orphan / corruption.
+ * V0.6 fix: fan-in moved to its own key `processed/aggregated/fanin-latest.json`.
+ * stage-3 now solely owns `processed/aggregated/latest.json`.
+ * classifyPointerShape stays as defense-in-depth in case operator hand-writes
+ * the wrong shape into either key (PR #75-style read-side tolerance).
  */
 export function classifyPointerShape(ptr) {
     if (!ptr || typeof ptr !== 'object') {
