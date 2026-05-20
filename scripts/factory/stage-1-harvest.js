@@ -59,6 +59,22 @@ function runScript(name, args = [], extraEnv = {}) {
     });
 }
 
+function runPythonScript(name, args = []) {
+    return new Promise((resolve, reject) => {
+        const scriptPath = path.join(SCRIPT_DIR, name);
+        const py = process.env.PYTHON || 'python';
+        const child = spawn(py, [scriptPath, ...args], {
+            stdio: 'inherit',
+            env: process.env,
+        });
+        child.on('close', (code) => {
+            if (code === 0) resolve();
+            else reject(new Error(`python ${name} exit code ${code}`));
+        });
+        child.on('error', err => reject(err));
+    });
+}
+
 async function readHarvestManifest(startCid, endCid) {
     const file = path.join('./output/compounds', `harvest-manifest-${startCid}-${endCid}.json`);
     try {
@@ -105,6 +121,23 @@ async function main() {
     }
 
     const manifest = await readHarvestManifest(startCid, endCid);
+
+    // C1-4 fix (PR #90): descriptor-precompute runs BEFORE cross-source-linker,
+    // not after stage-1-harvest as the original workflow step did. cross-source-linker
+    // is passthrough — it mutates compounds in-place and writes the same objects to
+    // the baseline file. If descriptors are in rawFile, they flow through to baseline
+    // and uploadStage carries them to R2. Running descriptor AFTER uploadStage (the
+    // original V0.5.8 placement) put them in the rawFile too late — the baseline
+    // had already been uploaded without them.
+    console.log('\n[STAGE-1] === descriptor-precompute (QED + AromaticRings + StructuralAlerts) ===');
+    try {
+        await runPythonScript('descriptor-precompute.py', [`--dir=./output/compounds`]);
+    } catch (err) {
+        console.error(`[STAGE-1] descriptor-precompute failed: ${err.message}`);
+        // Hard fail — per [[feedback_cross_cycle_silent_data_loss]], silent skip is forbidden.
+        // If Python/RDKit broke, refuse to continue (would silently drop descriptors).
+        process.exit(7);
+    }
 
     console.log('\n[STAGE-1] === cross-source-linker (raw -> linked baseline) ===');
     try {

@@ -66,8 +66,6 @@ jobs:
           else
             npm install
           fi
-      - name: Run PubChem harvest
-        run: node scripts/factory/stage-1-harvest.js
       - name: Setup Python for RDKit
         uses: actions/setup-python@v5
         with:
@@ -75,10 +73,10 @@ jobs:
           cache: pip
       - name: Install Python deps (RDKit etc.)
         run: pip install -r requirements.txt
-      - name: Precompute QED + AromaticRings + Structural Alerts
-        run: |
-          python scripts/factory/descriptor-precompute.py --self-test
-          python scripts/factory/descriptor-precompute.py --dir ./output/compounds
+      - name: Descriptor self-test (fixture-drift gate)
+        run: python scripts/factory/descriptor-precompute.py --self-test
+      - name: Run PubChem harvest (includes descriptor-precompute batch before cross-source-linker)
+        run: node scripts/factory/stage-1-harvest.js
       - name: Upload harvest log
         if: always()
         uses: actions/upload-artifact@v4
