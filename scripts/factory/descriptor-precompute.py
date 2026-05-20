@@ -40,15 +40,22 @@ CATALOGS = [
 ]
 
 
-def build_filter_catalog():
-    """One FilterCatalog covering PAINS_A/B/C + Brenk."""
-    params = FilterCatalogParams()
-    for _name, cat in CATALOGS:
-        params.AddCatalog(cat)
-    return FilterCatalog(params)
+def build_filter_catalogs():
+    """Return list of (catalog_name, FilterCatalog) — one entry per source set.
+    Separate catalogs (not merged) so structural_alerts can attribute each
+    hit to its real source (PAINS_A/B/C or Brenk). A merged FilterCatalog
+    loses provenance because the .GetMatches return value doesn't expose
+    which sub-catalog produced each match.
+    """
+    out = []
+    for cat_name, cat_id in CATALOGS:
+        params = FilterCatalogParams()
+        params.AddCatalog(cat_id)
+        out.append((cat_name, FilterCatalog(params)))
+    return out
 
 
-def compute_descriptors(smiles: str, catalog: FilterCatalog):
+def compute_descriptors(smiles: str, catalogs):
     """Return (qed_value, aromatic_ring_count, [{name, catalog}, ...]) or None on parse failure."""
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
@@ -57,42 +64,44 @@ def compute_descriptors(smiles: str, catalog: FilterCatalog):
     arom_rings = sum(1 for ring in mol.GetRingInfo().AtomRings()
                      if all(mol.GetAtomWithIdx(idx).GetIsAromatic() for idx in ring))
     alerts = []
-    for match in catalog.GetMatches(mol):
-        desc = match.GetDescription()
-        # Description format varies; the catalog name lives in match.GetProp('Scope') in newer RDKit.
-        try:
-            scope = match.GetProp("Scope")
-        except Exception:
-            scope = ""
-        cat_name = next((n for n, c in CATALOGS if c.name == scope or n.lower() in scope.lower()), "Brenk")
-        alerts.append({"name": desc[:100], "catalog": cat_name})
+    for cat_name, catalog in catalogs:
+        for match in catalog.GetMatches(mol):
+            alerts.append({"name": match.GetDescription()[:100], "catalog": cat_name})
     return qed_val, int(arom_rings), alerts
 
 
+# Locked-in known-value fixtures from RDKit 2025.9.6 (also matches 2024.9.1 outputs).
+# Format: (label, smiles, qed_target, qed_tol, aromatic_rings, expected_alerts).
+# expected_alerts is set of (name, catalog) tuples for set-comparison drift detection.
 FIXTURES = [
-    # (label, smiles, qed_target, qed_tol, aromatic_rings, expected_alerts_empty)
-    ("aspirin",   "CC(=O)Oc1ccccc1C(=O)O",          0.55, 0.05, 1, True),
-    ("metformin", "CN(C)C(=N)NC(=N)N",              0.21, 0.05, 0, True),
-    ("ibuprofen", "CC(C)Cc1ccc(cc1)C(C)C(=O)O",     0.83, 0.05, 1, True),
+    ("aspirin",   "CC(=O)Oc1ccccc1C(=O)O",      0.55, 0.05, 1,
+     frozenset({("phenol_ester", "Brenk")})),
+    ("metformin", "CN(C)C(=N)NC(=N)N",          0.21, 0.05, 0,
+     frozenset({("imine_1", "Brenk"), ("imine_2", "Brenk")})),
+    ("ibuprofen", "CC(C)Cc1ccc(cc1)C(C)C(=O)O", 0.83, 0.05, 1,
+     frozenset()),
 ]
 
 
 def self_test():
-    catalog = build_filter_catalog()
+    catalogs = build_filter_catalogs()
     failed = []
-    for label, smi, qed_target, qed_tol, arom_target, alerts_empty in FIXTURES:
-        result = compute_descriptors(smi, catalog)
+    for label, smi, qed_target, qed_tol, arom_target, expected_alerts in FIXTURES:
+        result = compute_descriptors(smi, catalogs)
         if result is None:
             failed.append(f"{label}: SMILES parse failed")
             continue
         qed_val, arom, alerts = result
+        observed_alerts = frozenset((a["name"], a["catalog"]) for a in alerts)
         if abs(qed_val - qed_target) > qed_tol:
             failed.append(f"{label}: qed {qed_val} not within {qed_tol} of {qed_target}")
         if arom != arom_target:
             failed.append(f"{label}: aromatic_rings {arom} != expected {arom_target}")
-        if alerts_empty and len(alerts) > 0:
-            failed.append(f"{label}: expected no alerts, got {[a['name'] for a in alerts]}")
-        print(f"[DESCRIPTOR] self-test {label}: qed={qed_val} aromatic_rings={arom} alerts={len(alerts)}")
+        if observed_alerts != expected_alerts:
+            missing = expected_alerts - observed_alerts
+            extra = observed_alerts - expected_alerts
+            failed.append(f"{label}: alerts mismatch — missing={sorted(missing)} extra={sorted(extra)}")
+        print(f"[DESCRIPTOR] self-test {label}: qed={qed_val} aromatic_rings={arom} alerts={sorted(observed_alerts)}")
     if failed:
         print("[DESCRIPTOR] FATAL: self-test drift detected:", file=sys.stderr)
         for line in failed:
@@ -101,7 +110,7 @@ def self_test():
     print(f"[DESCRIPTOR] self-test PASS ({len(FIXTURES)} fixtures)")
 
 
-def process_file(path: str, catalog: FilterCatalog):
+def process_file(path: str, catalogs):
     """Mutate one jsonl in-place atomically (write .tmp + rename). Returns (parsed, skipped, alerts_total)."""
     tmp_path = path + ".tmp"
     parsed = skipped = alerts_total = 0
@@ -117,7 +126,7 @@ def process_file(path: str, catalog: FilterCatalog):
                 continue
             smi = rec.get("smiles_canonical") or rec.get("smiles") or ""
             if smi:
-                result = compute_descriptors(smi, catalog)
+                result = compute_descriptors(smi, catalogs)
                 if result is not None:
                     qed_val, arom, alerts = result
                     props = rec.setdefault("properties", {})
@@ -145,7 +154,7 @@ def main():
         self_test()
         return
 
-    catalog = build_filter_catalog()
+    catalogs = build_filter_catalogs()
     pattern = os.path.join(args.dir, "compounds-cid-*.jsonl")
     files = sorted(glob.glob(pattern))
     if not files:
@@ -154,7 +163,7 @@ def main():
     start = time.time()
     total_parsed = total_skipped = total_alerts = 0
     for path in files:
-        p, s, a = process_file(path, catalog)
+        p, s, a = process_file(path, catalogs)
         total_parsed += p
         total_skipped += s
         total_alerts += a
