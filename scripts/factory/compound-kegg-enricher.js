@@ -78,13 +78,20 @@ async function main() {
     const compounds = await loadJsonl(file);
     console.log(`[KEGG-ENRICHER] Loaded ${compounds.length} compounds`);
 
+    // C2-10: gate KEGG queries to compounds with chembl_id or unii. Without
+    // either ID, a compound is overwhelmingly likely to be a basic chemical
+    // that KEGG (drug-only DB) won't have — querying anyway wastes ~50min
+    // wall time per cron at 25K scale. Mirrors faers-enricher.js:43 pattern.
+    const withDrugIds = compounds.filter(c => c.chembl_id || c.external_ids?.unii);
+    console.log(`[KEGG-ENRICHER] Drug-ID-bearing compounds (chembl_id || unii): ${withDrugIds.length} of ${compounds.length} (${(100 * withDrugIds.length / compounds.length).toFixed(1)}%)`);
+
     let processed = 0;
     let hit = 0;
     let withTargets = 0;
     let withPathways = 0;
     let withDiseases = 0;
 
-    for (const c of compounds) {
+    for (const c of withDrugIds) {
         const name = pickSearchName(c);
         if (!name) { processed++; continue; }
         const hits = await searchDrugByName(name);
@@ -105,16 +112,17 @@ async function main() {
             }
         }
         processed++;
-        if (processed % 50 === 0 || processed === compounds.length) {
-            console.log(`[KEGG-ENRICHER] ${processed}/${compounds.length} | matched: ${hit} | targets: ${withTargets} | pathways: ${withPathways} | diseases: ${withDiseases}`);
+        if (processed % 50 === 0 || processed === withDrugIds.length) {
+            console.log(`[KEGG-ENRICHER] ${processed}/${withDrugIds.length} | matched: ${hit} | targets: ${withTargets} | pathways: ${withPathways} | diseases: ${withDiseases}`);
         }
     }
 
     await writeJsonl(file, compounds);
 
     console.log(`\n[KEGG-ENRICHER] Complete`);
+    console.log(`  Gated out (no drug ID): ${compounds.length - withDrugIds.length}`);
     console.log(`  Compounds processed:    ${processed}`);
-    console.log(`  KEGG drug matched:      ${hit} (${(100 * hit / processed).toFixed(1)}%)`);
+    console.log(`  KEGG drug matched:      ${hit} (${(100 * hit / withDrugIds.length).toFixed(1)}%)`);
     console.log(`  With target genes:      ${withTargets}`);
     console.log(`  With pathways:          ${withPathways}`);
     console.log(`  With disease indications: ${withDiseases}`);
