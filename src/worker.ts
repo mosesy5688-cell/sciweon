@@ -12,6 +12,8 @@
  *   GET /api/v1/compound/:id/bioactivities      → bioactivity records
  *   GET /api/v1/compound/:id/trials             → clinical trials
  *   GET /api/v1/compound/:id/papers             → papers mentioning compound
+ *   GET /api/v1/target/:uniprot{,/drugs,/trials,/negative-evidence}
+ *                                               → C2-3 inverse pivot (V0.6)
  *   POST /api/mcp                               → MCP JSON-RPC 2.0 (V0.5.4)
  *
  * Error contract (per SCIWEON_DATA_ARCHITECTURE §3.0):
@@ -29,6 +31,7 @@ import { handleTrials } from './worker/api/trials';
 import { handlePapers } from './worker/api/papers';
 import { handleXrefs } from './worker/api/xrefs';
 import { handleRepurposingEvidence } from './worker/api/repurposing-evidence';
+import { handleTarget } from './worker/api/target';
 
 export interface Env {
     ASSETS: Fetcher;
@@ -86,6 +89,14 @@ export default {
         if (/^\/api\/v1\/compound\/[^/]+$/.test(url.pathname)) {
             try {
                 return await handleCompound(req, env, ctx);
+            } catch (err) {
+                return json500(err);
+            }
+        }
+
+        if (/^\/api\/v1\/target\/[^/]+(?:\/(?:drugs|trials|negative-evidence))?$/.test(url.pathname)) {
+            try {
+                return await handleTarget(req, env, ctx);
             } catch (err) {
                 return json500(err);
             }
