@@ -20,13 +20,15 @@
 import type { Env } from '../../worker';
 import { parseUniprotId, loadTargetIndex, getTargetEntry, type TargetEntry } from '../lib/target-loader';
 
-const SUFFIXES = ['drugs', 'trials', 'negative-evidence'] as const;
-type Suffix = typeof SUFFIXES[number] | null;
+export type TargetSection = 'drugs' | 'trials' | 'negative_evidence';
 
 const PATH_RE = /^\/api\/v1\/target\/([^/]+)(?:\/(drugs|trials|negative-evidence))?$/;
 
-function suffixView(entry: TargetEntry, suffix: Suffix) {
-    const summary = {
+// Build the response payload, expanding only the sections requested. Empty
+// set => summary + counts only. Shared by REST handler + MCP tool wrapper
+// so the response shape stays single-source.
+export function pickTargetView(entry: TargetEntry, sections: Set<TargetSection>) {
+    const out: Record<string, unknown> = {
         uniprot_accession: entry.uniprot_accession,
         protein_name: entry.protein_name,
         gene_symbol: entry.gene_symbol,
@@ -39,16 +41,20 @@ function suffixView(entry: TargetEntry, suffix: Suffix) {
             negative_evidence: entry.negative_evidence_ids.length,
         },
     };
-    if (suffix === 'drugs') {
-        return { ...summary, compound_ids: entry.compound_ids, bioactivity_ids: entry.bioactivity_ids };
+    if (sections.has('drugs')) {
+        out.compound_ids = entry.compound_ids;
+        out.bioactivity_ids = entry.bioactivity_ids;
     }
-    if (suffix === 'trials') {
-        return { ...summary, trial_ids: entry.trial_ids };
-    }
-    if (suffix === 'negative-evidence') {
-        return { ...summary, negative_evidence_ids: entry.negative_evidence_ids };
-    }
-    return summary;
+    if (sections.has('trials')) out.trial_ids = entry.trial_ids;
+    if (sections.has('negative_evidence')) out.negative_evidence_ids = entry.negative_evidence_ids;
+    return out;
+}
+
+function suffixToSections(suffix: string | undefined): Set<TargetSection> {
+    if (suffix === 'drugs') return new Set(['drugs']);
+    if (suffix === 'trials') return new Set(['trials']);
+    if (suffix === 'negative-evidence') return new Set(['negative_evidence']);
+    return new Set();
 }
 
 export async function handleTarget(req: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
@@ -62,7 +68,7 @@ export async function handleTarget(req: Request, env: Env, _ctx: ExecutionContex
         return Response.json({ error: 'Invalid endpoint path' }, { status: 404 });
     }
     const [, idRaw, suffixRaw] = match;
-    const suffix: Suffix = (suffixRaw as Suffix) ?? null;
+    const sections = suffixToSections(suffixRaw);
 
     const parsed = parseUniprotId(idRaw);
     if (!parsed.ok) {
@@ -108,7 +114,7 @@ export async function handleTarget(req: Request, env: Env, _ctx: ExecutionContex
     }
 
     return Response.json(
-        { snapshot_date: index.snapshotDate, target: suffixView(entry, suffix) },
+        { snapshot_date: index.snapshotDate, target: pickTargetView(entry, sections) },
         {
             status: 200,
             headers: {

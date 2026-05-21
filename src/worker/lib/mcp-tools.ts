@@ -81,4 +81,24 @@ export const MCP_TOOLS = [
             required: ['cid'],
         },
     },
+    {
+        name: 'sciweon_get_target_drugs',
+        description: 'Look up compounds, clinical trials, and negative-evidence signals associated with a biological target by UniProt accession (e.g. P00533 = EGFR). The only target-keyed tool in the Sciweon MCP surface — every other tool is compound-keyed. Returns target metadata (protein_name, gene_symbol, ChEMBL target ID, organism) plus counts and (optionally) full ID arrays. Use the `include` arg to expand which sections to return; by default returns drugs only. To follow up on a specific compound use sciweon_get_negative_evidence / sciweon_get_repurposing_evidence. If the index is not yet built (immediately post-deploy) or the target has no bioactivities in the current snapshot, returns {resolved: false} rather than an error. Coverage: only bioactivities with a UniProt accession are indexed (~33.6% of the corpus, the cross-source-verified subset); ChEMBL-only targets are not indexed in v1. Read-only.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                target_id: {
+                    type: 'string',
+                    description: 'UniProt accession (case-insensitive). Examples: P00533 (EGFR), P10000 (β-microseminoprotein), Q8IV01 (SYG2). 6-char form [OPQ][0-9][A-Z0-9]{3}[0-9] or 10-char form for extended UniProt entries.',
+                },
+                include: {
+                    type: 'array',
+                    description: 'Which sections to expand. Default ["drugs"]. Pass ["drugs","trials","negative_evidence"] for the full picture in one call.',
+                    items: { type: 'string', enum: ['drugs', 'trials', 'negative_evidence'] },
+                    maxItems: 3,
+                },
+            },
+            required: ['target_id'],
+        },
+    },
 ];

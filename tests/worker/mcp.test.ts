@@ -119,16 +119,17 @@ describe('handleMcp — initialize', () => {
 });
 
 describe('handleMcp — tools/list', () => {
-    it('returns 4 tools including sciweon_get_repurposing_evidence in V0.5.8 C1-3', async () => {
+    it('returns the 5-tool V0.6 catalog (search, neg-evidence, resolve-entity, repurposing, target-drugs)', async () => {
         const req = mcpRequest({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
         const res = await handleMcp(req, makeEnv(), fakeCtx());
         const body = await res.json() as any;
-        expect(body.result.tools).toHaveLength(4);
+        expect(body.result.tools).toHaveLength(5);
         const names = (body.result.tools as any[]).map((t: any) => t.name);
         expect(names).toContain('sciweon_search');
         expect(names).toContain('sciweon_get_negative_evidence');
         expect(names).toContain('sciweon_resolve_entity');
         expect(names).toContain('sciweon_get_repurposing_evidence');
+        expect(names).toContain('sciweon_get_target_drugs');
         const neg = (body.result.tools as any[]).find((t: any) => t.name === 'sciweon_get_negative_evidence');
         expect(neg.inputSchema.required).toContain('cid');
         const search = (body.result.tools as any[]).find((t: any) => t.name === 'sciweon_search');
@@ -137,6 +138,7 @@ describe('handleMcp — tools/list', () => {
         expect(resolve.inputSchema.required).toContain('identifier');
         const repurp = (body.result.tools as any[]).find((t: any) => t.name === 'sciweon_get_repurposing_evidence');
         expect(repurp.inputSchema.required).toContain('cid');
+        expect((body.result.tools as any[]).find((t: any) => t.name === 'sciweon_get_target_drugs').inputSchema.required).toContain('target_id');
     });
 });
 
