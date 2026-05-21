@@ -34,18 +34,9 @@ import { makeR2Client } from './lib/bulk-shard-helpers.js';
 import { publishCompoundShards } from './lib/compound-shard-publisher.js';
 import { verifyShardIntegrity, updateLatestPointer } from './lib/compound-shard-pointer.js';
 
+import { AGGREGATED_FILES } from './lib/aggregated-files.js';
+
 const SCRIPT_DIR = 'scripts/factory';
-const AGGREGATED_FILES = [
-    'compounds-enriched.jsonl',
-    'bioactivities.jsonl',
-    'trials.jsonl',
-    'trial-links.jsonl',
-    'papers.jsonl',
-    'paper-links.jsonl',
-    'negative-evidence-raw.jsonl',
-    'neg-evidence.jsonl',
-    'sciweon-search-index.json',
-];
 
 const REQUIRED_NONEMPTY = [
     'output/linked/compounds-enriched.jsonl',
