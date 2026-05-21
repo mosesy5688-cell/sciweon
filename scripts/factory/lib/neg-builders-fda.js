@@ -15,6 +15,12 @@
  *   else     -> unknown
  */
 
+import {
+    TYPE_BLACK_BOX_WARNING,
+    TYPE_DRUG_WITHDRAWAL,
+    TYPE_FAERS_ADR_SIGNAL,
+} from '../../../src/lib/schemas/neg-evidence-types.js';
+
 export function* buildFdaSignals(compounds) {
     const now = new Date().toISOString();
     for (const c of compounds) {
@@ -25,7 +31,7 @@ export function* buildFdaSignals(compounds) {
         if (fdaSig?.has_boxed_warning && fdaSig.boxed_warning_text) {
             yield {
                 id: `sciweon::neg::boxed::${c.id.replace('sciweon::compound::', '')}`,
-                evidence_type: 'black_box_warning',
+                evidence_type: TYPE_BLACK_BOX_WARNING,
                 subject: { compound_id: c.id },
                 failure: {
                     reason_category: 'fda_mandated_boxed_warning',
@@ -60,7 +66,7 @@ export function* buildFdaSignals(compounds) {
         if (drugStatus?.withdrawn === true) {
             yield {
                 id: `sciweon::neg::withdrawn::${c.id.replace('sciweon::compound::', '')}`,
-                evidence_type: 'drug_withdrawal',
+                evidence_type: TYPE_DRUG_WITHDRAWAL,
                 subject: { compound_id: c.id },
                 failure: {
                     reason_category: 'withdrawn_from_market',
@@ -102,7 +108,7 @@ export function* buildFdaSignals(compounds) {
             const safeTerm = t.term.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 40);
             yield {
                 id: `sciweon::neg::faers::${c.id.replace('sciweon::compound::', '')}::${safeTerm}`,
-                evidence_type: 'faers_adr_signal',
+                evidence_type: TYPE_FAERS_ADR_SIGNAL,
                 subject: { compound_id: c.id },
                 failure: {
                     reason_category: 'meddra_pt_adr',
