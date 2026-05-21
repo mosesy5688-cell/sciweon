@@ -14,10 +14,13 @@
  * exact same acceptance pattern.
  */
 
-import { fetchR2JsonText } from './r2-fetch';
+import { fetchR2JsonText, fetchR2GunzippedText } from './r2-fetch';
 
 const LATEST_POINTER_KEY = 'snapshots/latest.json';
-const TARGET_INDEX_FILENAME = 'target-index.json';
+// snapshot-builder.js gzips every published file; uploader stores the .gz
+// blob at the .gz key. Pre-#100 the loader fetched the un-gzipped name,
+// which always 404'd in production even when stage-3 produced the file.
+const TARGET_INDEX_FILENAME = 'target-index.json.gz';
 
 const UNIPROT_RE = /^([OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9](?:[A-Z][A-Z0-9]{2}[0-9]){1,2})$/;
 
@@ -82,7 +85,7 @@ async function readLatestPointer(bucket: R2Bucket): Promise<string> {
 
 export async function loadTargetIndex(bucket: R2Bucket): Promise<TargetIndex> {
     const date = await readLatestPointer(bucket);
-    const text = await fetchR2JsonText(bucket, `snapshots/${date}/${TARGET_INDEX_FILENAME}`);
+    const text = await fetchR2GunzippedText(bucket, `snapshots/${date}/${TARGET_INDEX_FILENAME}`);
     const raw = JSON.parse(text) as RawIndex;
     return {
         version: raw.version ?? 'unknown',
