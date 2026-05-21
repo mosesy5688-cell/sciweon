@@ -48,7 +48,11 @@ export async function handleXrefs(req: Request, env: Env, _ctx: ExecutionContext
             headers: { 'cache-control': 'public, max-age=60' },
         });
     }
-    const tier1 = await loadTier1(env.SCIWEON_R2, resolved.cid);
+    // Phase 1 (I-7a): single-CID xrefs query is O(1) after manifest cached in
+    // the worker isolate. Batch queries (e.g. ?ids=CID:1,CID:2,...) do per-CID
+    // Range fetch. 100 CIDs ≈ 50ms parallel / 200ms serial. Optimized in
+    // Phase 2 (I-8) via single SQLite WHERE IN (...) query. (Gemini #4)
+    const tier1 = await loadTier1(env, resolved.cid);
     if (!tier1) {
         // Resolved but data file is gone — surface as 404 with explicit reason.
         return Response.json(

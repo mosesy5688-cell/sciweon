@@ -33,6 +33,10 @@ import { handleRepurposingEvidence } from './worker/api/repurposing-evidence';
 export interface Env {
     ASSETS: Fetcher;
     SCIWEON_R2?: R2Bucket;
+    // I-7a Phase 1 optional: enables AES-CTR shard decryption if set.
+    // Phase 1 ships without encryption (shard-crypto.js stub returns null);
+    // worker decoder uses no-op passthrough when this is unset (Gemini #2).
+    SHARD_AES_KEY?: string;
 }
 
 export default {
