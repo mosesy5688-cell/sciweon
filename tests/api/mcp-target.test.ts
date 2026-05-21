@@ -40,6 +40,10 @@ function fakeCtx(): ExecutionContext {
 }
 
 function utf8(s: string) { return new TextEncoder().encode(s); }
+function gzipBytes(text: string): Uint8Array {
+    const { gzipSync } = require('zlib');
+    return new Uint8Array(gzipSync(Buffer.from(text, 'utf-8')));
+}
 
 const SNAPSHOT_DATE = '2026-05-21';
 
@@ -60,7 +64,7 @@ function makeStore(targets: Record<string, any>): Record<string, MockObject> {
     const idx = JSON.stringify({ version: '0.6.0', built_at: '2026-05-21T12:00:00Z', targets });
     return {
         'snapshots/latest.json': { bytes: utf8(pointer), etag: 'etag-ptr' },
-        [`snapshots/${SNAPSHOT_DATE}/target-index.json`]: { bytes: utf8(idx), etag: 'etag-idx' },
+        [`snapshots/${SNAPSHOT_DATE}/target-index.json.gz`]: { bytes: gzipBytes(idx), etag: 'etag-idx' },
     };
 }
 
