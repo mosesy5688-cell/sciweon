@@ -42,6 +42,7 @@ export const LOINC_SECTIONS = {
     '34068-7': 'dosage',
     '34070-3': 'contraindications',
     '34073-7': 'drug_interactions',
+    '34084-4': 'adverse_reactions',
     '43679-0': 'mechanism_of_action',
     '43682-4': 'pharmacokinetics',
     '43685-7': 'warnings_precautions',
