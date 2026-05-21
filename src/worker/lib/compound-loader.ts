@@ -68,15 +68,18 @@ export type CompoundRecord = Record<string, unknown>;
 export async function loadTier1(env: Env, cid: number): Promise<CompoundRecord | null> {
     if (!env.SCIWEON_R2) return null;
     try {
-        const sharded = await loadTier1Sharded(env, cid);
-        if (sharded !== null) return sharded;
-        // Sharded returned null (record not in manifest). Could be legacy-only
-        // snapshot still — fall through to legacy.
+        // Sharded path ran to completion. Null means CID not in manifest —
+        // authoritative absence, return null directly (caller will 404).
+        // Wave I-7a Phase 1 perf fix: do NOT fall back to legacy gunzip on
+        // CID-absent case. Legacy at 45K+ cumulative crashes Worker (the 503
+        // cliff that triggered this whole work). Only fall back when sharded
+        // path itself THROWS (manifest missing during deploy transition).
+        return await loadTier1Sharded(env, cid);
     } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.warn(`[compound-loader] Shard path failed (${msg}), falling back to legacy gunzip`);
+        return loadTier1Legacy(env.SCIWEON_R2, cid);
     }
-    return loadTier1Legacy(env.SCIWEON_R2, cid);
 }
 
 async function loadTier1Sharded(env: Env, cid: number): Promise<CompoundRecord | null> {
@@ -96,7 +99,7 @@ async function loadTier1Sharded(env: Env, cid: number): Promise<CompoundRecord |
     const key = shardKeyFor(snapshotDate, bucket, entry.shard);
     const bytes = await fetchR2RangeBytes(r2, key, entry.offset, entry.size);
     const decrypted = decryptPayload(bytes, key, entry.offset, env);
-    const text = await decompressPayload(decrypted);
+    const text = decompressPayload(decrypted);
     return JSON.parse(text);
 }
 
