@@ -59,6 +59,11 @@ interface RawManifest {
 const ISOLATE_CACHE = new Map<string, ManifestIndexes>();
 const MAX_CACHE_ENTRIES = 4; // typically only 1-2 snapshots referenced per isolate lifetime
 
+// Cloudflare Cache API key prefix — shared across all edge isolates (vs
+// ISOLATE_CACHE which is per-isolate only). Manifest is immutable per
+// snapshot date so 24h TTL is safe.
+const CACHE_API_TTL_SECONDS = 24 * 60 * 60;
+
 function pruneCache() {
     while (ISOLATE_CACHE.size > MAX_CACHE_ENTRIES) {
         const k = ISOLATE_CACHE.keys().next().value;
@@ -73,11 +78,32 @@ export async function loadManifest(
     snapshotDate: string,
 ): Promise<ManifestIndexes> {
     const cacheKey = `manifest:${snapshotDate}:${bucketIndex}`;
+
+    // Tier 1: per-isolate Map cache (fastest, ~ns lookup)
     const cached = ISOLATE_CACHE.get(cacheKey);
     if (cached) return cached;
 
-    const key = manifestKeyFor(snapshotDate, bucketIndex);
-    const text = await fetchR2JsonText(bucket, key);
+    // Tier 2: Cloudflare Cache API (shared across isolates on same colo,
+    // 24h TTL since manifest is immutable per snapshot date)
+    const cacheApiUrl = `https://manifest-cache.sciweon.internal/${snapshotDate}/${bucketIndex}`;
+    const cacheApiReq = new Request(cacheApiUrl);
+    const cacheApiHit = await caches.default.match(cacheApiReq);
+    let text: string;
+    if (cacheApiHit) {
+        text = await cacheApiHit.text();
+    } else {
+        // Tier 3: R2 GET (slowest, ~50-500ms for 50K-entry manifest)
+        const key = manifestKeyFor(snapshotDate, bucketIndex);
+        text = await fetchR2JsonText(bucket, key);
+        // Populate Cache API for next request from any isolate
+        const cacheResp = new Response(text, {
+            headers: {
+                'content-type': 'application/json',
+                'cache-control': `public, max-age=${CACHE_API_TTL_SECONDS}, immutable`,
+            },
+        });
+        await caches.default.put(cacheApiReq, cacheResp);
+    }
     const manifest = JSON.parse(text) as RawManifest;
 
     // Gemini review #1: hard cap to prevent Worker OOM at 200K-300K (vs nominal 1M)

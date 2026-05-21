@@ -44,26 +44,24 @@ export function decryptPayload(
 }
 
 /**
- * Decompress payload bytes. Phase 1: no zstd (raw JSONL stored as-is).
+ * Decompress payload bytes (zstd, per ShardWriter compression in factory).
  *
- * ShardWriter line 71 calls compress(bundleJson) BEFORE writeEntity. The
- * compression is per-entity zstd. But our publisher writes raw JSONL line
- * bytes directly via writer.writeEntity(rec.raw) where rec.raw is the
- * original line buffer. The ShardWriter's compress call wraps these,
- * producing zstd-compressed entity payloads.
+ * Wave I-7a Phase 1 perf fix: STATIC fzstd import (was dynamic).
+ * Dynamic `await import('fzstd')` cost ~1s per worker cold start because
+ * CF Workers re-loads the module per isolate spawn. Static import bundles
+ * fzstd at deploy time (~3KB code), zero per-request overhead.
  *
- * Phase 1 simplification: decompression handled by caller knowing payload
- * is zstd. We use fzstd (pure-JS, ~3KB) loaded dynamically. If decompress
- * fails (e.g. plaintext fallback), return bytes as text directly.
+ * If decompress throws (plaintext-stored Phase 1 edge case), return bytes
+ * as text directly — caller's JSON.parse will validate.
  */
-export async function decompressPayload(bytes: Uint8Array): Promise<string> {
-    // Try zstd first (Phase 1 default per ShardWriter compress() call)
+import { decompress as fzstdDecompress } from 'fzstd';
+
+export function decompressPayload(bytes: Uint8Array): string {
     try {
-        const fzstdMod = await import('fzstd');
-        const decompressed = fzstdMod.decompress(bytes);
+        const decompressed = fzstdDecompress(bytes);
         return new TextDecoder('utf-8').decode(decompressed);
     } catch {
-        // Fallback: treat as plaintext (Phase 1 edge case if compression was bypassed)
+        // Plaintext fallback (rare; ShardWriter line 71 always compresses)
         return new TextDecoder('utf-8').decode(bytes);
     }
 }
