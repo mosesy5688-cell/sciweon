@@ -138,8 +138,7 @@ describe('handleMcp — tools/list', () => {
         expect(resolve.inputSchema.required).toContain('identifier');
         const repurp = (body.result.tools as any[]).find((t: any) => t.name === 'sciweon_get_repurposing_evidence');
         expect(repurp.inputSchema.required).toContain('cid');
-        const target = (body.result.tools as any[]).find((t: any) => t.name === 'sciweon_get_target_drugs');
-        expect(target.inputSchema.required).toContain('target_id');
+        expect((body.result.tools as any[]).find((t: any) => t.name === 'sciweon_get_target_drugs').inputSchema.required).toContain('target_id');
     });
 });
 
