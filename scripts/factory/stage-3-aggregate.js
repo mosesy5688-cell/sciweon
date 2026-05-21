@@ -37,20 +37,9 @@ import { mergeLocalAggregatedWithPrevious, MERGE_FILES } from './lib/aggregated-
 import { buildIndex as buildSearchIndex, OUTPUT_FILE as SEARCH_INDEX_FILE } from './lib/search-index-builder.js';
 import { buildIndex as buildTargetIndex, OUTPUT_FILE as TARGET_INDEX_FILE } from './lib/target-index-builder.js';
 import { readFirstRunSentinel, writeFirstRunSentinel, decideMergeAction } from './lib/aggregated-sentinel.js';
+import { AGGREGATED_FILES } from './lib/aggregated-files.js';
 
 const SCRIPT_DIR = 'scripts/factory';
-const AGGREGATED_FILES = [
-    'compounds-enriched.jsonl',
-    'bioactivities.jsonl',
-    'trials.jsonl',
-    'trial-links.jsonl',
-    'papers.jsonl',
-    'paper-links.jsonl',
-    'negative-evidence-raw.jsonl',
-    'neg-evidence.jsonl',
-    'sciweon-search-index.json',
-    'target-index.json',
-];
 
 function runScript(name) {
     return new Promise((resolve, reject) => {
