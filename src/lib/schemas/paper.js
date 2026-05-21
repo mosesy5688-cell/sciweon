@@ -29,7 +29,12 @@ export const PAPER_SCHEMA = {
     title: { type: 'string', required: true, maxLength: 2000 },
     abstract: { type: 'string', required: false, maxLength: 20000 },
     publication_date: { type: 'string', required: false, format: 'iso8601_date' },
-    publication_year: { type: 'integer', required: false, min: 1800, max: 2100 },
+    // Min widened 1800 → 1500: F3 26206145429 hit OpenAlex W4254945359 with
+    // publication_year=1712 (real 18th-century chemistry literature, e.g. early
+    // Lavoisier-era papers). 17-18th century scientific writing is legitimate
+    // primary data (Newton Principia 1687, Boyle's Sceptical Chymist 1661 etc).
+    // Max stays at 2100 (future-dated papers reject — preprint dating bug guard).
+    publication_year: { type: 'integer', required: false, min: 1500, max: 2100 },
 
     // ─── Authors (PRIMARY ONLY — V0.1 contract) ───
     // name: raw_author_name from OpenAlex (paper's original byline string).
