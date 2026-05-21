@@ -196,18 +196,14 @@ async function main() {
         console.error('[STAGE-3] Will upload aggregated bundle without search index; previous cycle\'s index remains current in R2 until next successful build.');
     }
 
-    // C2-3 — target inverse-pivot index. Same non-fatal envelope as search-index:
-    // the /api/v1/target endpoints return 404 if this file is absent, but the
-    // rest of the bundle ships regardless.
-    console.log('\n[STAGE-3] === Build target inverse-pivot index (uniprot-keyed) ===');
+    // C2-3 target inverse-pivot index. Non-fatal: /api/v1/target/* 404s
+    // if absent, rest of bundle ships.
+    console.log('\n[STAGE-3] === Build target inverse-pivot index ===');
     try {
-        const stats = await buildTargetIndex({
-            outputPath: path.join('./output/linked', TARGET_INDEX_FILE),
-        });
-        console.log(`[STAGE-3] Target index: ${stats.targetCount} targets, ${stats.bioactivitiesIndexed} linked bioactivities, ${stats.trialEdges} trial edges, ${stats.negEvidenceEdges} neg edges, ${(stats.sizeBytes / 1024 / 1024).toFixed(2)} MB in ${stats.elapsedSec}s`);
+        const s = await buildTargetIndex({ outputPath: path.join('./output/linked', TARGET_INDEX_FILE) });
+        console.log(`[STAGE-3] Target index: ${s.targetCount} targets, ${s.bioactivitiesIndexed} bioacts, ${s.trialEdges} trial edges, ${s.negEvidenceEdges} neg edges, ${(s.sizeBytes / 1024 / 1024).toFixed(2)} MB in ${s.elapsedSec}s`);
     } catch (err) {
         console.error(`[STAGE-3] Target index build failed (non-fatal): ${err.message}`);
-        console.error('[STAGE-3] Will upload aggregated bundle without target index; /api/v1/target/* will 404 until next successful build.');
     }
 
     console.log('\n[STAGE-3] === Upload aggregated bundle to R2 ===');

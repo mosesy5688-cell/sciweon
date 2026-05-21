@@ -1,42 +1,22 @@
 /**
  * Target Index Builder — V0.6 (Wave C2-3, cycle 20).
  *
- * Sciweon's API today is compound-centric. This builder produces the
- * inverse index keyed by UniProt accession so the Worker can answer
- *   "which compounds, trials, negative-evidence signals concern target X?"
- * in O(1) without a snapshot-wide scan.
+ * Builds the uniprot-keyed inverse index so the Worker can answer
+ * "which compounds, trials, neg-evidence concern target X?" in O(1).
+ * Mirrors search-index-builder.js (stream → single JSON → stage-3 upload).
  *
- * Mirrors `search-index-builder.js` 100% — same stream pattern, same
- * single-JSON output, same lifecycle inside stage-3-aggregate.js.
+ * Coverage (per 2026-05-21 sampling, V0.4.3): 33.6% bioactivities carry
+ * target.uniprot_accession; 66.4% ChEMBL-only target_id are NOT indexed
+ * in v1. The uniprot subset is cross-source verified (ChEMBL+UniProt).
  *
- * Coverage (per 2026-05-21 sampling probe, V0.4.3 snapshot):
- *   - 33.6% of bioactivities carry `target.uniprot_accession`
- *   - 66.4% are ChEMBL-only `target_id` — NOT INDEXED in v1
- *   - The uniprot-bearing subset is cross-source verified (ChEMBL + UniProt
- *     agreement, per BIOACTIVITY_SCHEMA L48-50)
- *
- * Output: ./output/linked/target-index.json
- * Format:
- *   {
- *     "version": "0.6.0",
- *     "built_at": ISO,
- *     "targets": {
- *       "<uniprot>": {
- *         "uniprot_accession": string,
- *         "protein_name": string|null,
- *         "gene_symbol":  string|null,
- *         "chembl_target_id": string|null,
- *         "organism": { "taxon_id": number|null, "scientific_name": string|null },
- *         "compound_ids":           string[],
- *         "bioactivity_ids":        string[],
- *         "trial_ids":              string[],
- *         "negative_evidence_ids":  string[]
- *       }, ...
- *     }
- *   }
+ * Output: ./output/linked/target-index.json — single object with
+ *   { version, built_at, targets: { <uniprot>: {...entry...} } }
+ * Each entry: uniprot_accession / protein_name / gene_symbol /
+ * chembl_target_id / organism / compound_ids / bioactivity_ids /
+ * trial_ids / negative_evidence_ids.
  *
  * Determinism (Constitution V16.1 §7): all id arrays sorted via
- * String.prototype.localeCompare; uniprot keys serialized in sorted order.
+ * localeCompare; uniprot keys serialized in ascending order.
  */
 
 import fs from 'fs/promises';
@@ -82,12 +62,8 @@ function makeEntry(uniprot) {
     };
 }
 
-/**
- * First-sighting wins for target metadata. Two bioactivities may carry
- * slightly different protein_name strings (capitalization, organism
- * suffix); deterministic sort below ensures the same first-sighting wins
- * across runs.
- */
+// First-sighting wins for target metadata; deterministic sort below
+// ensures the same first-sighting wins across runs.
 function captureMeta(entry, target) {
     if (!entry.protein_name && target.protein_name) entry.protein_name = target.protein_name;
     if (!entry.gene_symbol && target.gene_symbol) entry.gene_symbol = target.gene_symbol;
@@ -100,10 +76,8 @@ function captureMeta(entry, target) {
     }
 }
 
-/**
- * Pass 1 — bioactivities.jsonl: bucket by uniprot, capture meta, build
- * compound→uniprot reverse map for the trial fan-out pass.
- */
+// Pass 1 — bioactivities.jsonl: bucket by uniprot, capture meta, build
+// compound→uniprot reverse map for fan-out passes.
 async function passBioactivities(inputDir, targets, compoundToUniprots) {
     const file = path.join(inputDir, 'bioactivities.jsonl');
     let processed = 0, indexed = 0;
@@ -135,11 +109,8 @@ async function passBioactivities(inputDir, targets, compoundToUniprots) {
     return { processed, indexed };
 }
 
-/**
- * Pass 2 — trials.jsonl: for each trial, look at interventions[].compound_id;
- * if the compound is in the reverse map, attach the trial.id to every
- * uniprot the compound is active on.
- */
+// Pass 2 — trials.jsonl: fan trial.id out across targets via
+// interventions[].compound_id reverse-lookup.
 async function passTrials(inputDir, targets, compoundToUniprots) {
     const file = path.join(inputDir, 'trials.jsonl');
     let processed = 0, fannedOut = 0;
@@ -165,9 +136,7 @@ async function passTrials(inputDir, targets, compoundToUniprots) {
     return { processed, fannedOut };
 }
 
-/**
- * Pass 3 — neg-evidence.jsonl: same fan-out via subject.compound_id.
- */
+// Pass 3 — neg-evidence.jsonl: same fan-out via subject.compound_id.
 async function passNegEvidence(inputDir, targets, compoundToUniprots) {
     const file = path.join(inputDir, 'neg-evidence.jsonl');
     let processed = 0, fannedOut = 0;
@@ -218,9 +187,8 @@ export async function buildIndex({ outputPath, inputDir = LINKED_DIR }) {
     const negStats = await passNegEvidence(inputDir, targets, compoundToUniprots);
     console.log(`[TARGET-INDEX]   neg-evidence:  ${negStats.processed} processed, ${negStats.fannedOut} (neg, target) edges`);
 
-    // Determinism: sort uniprot keys ascending, then build the output object
-    // with insertion order preserved (V8 honors insertion order for non-numeric
-    // string keys, so JSON.stringify emits them in this order).
+    // Determinism: V8 honors insertion order for non-numeric string keys,
+    // so sorted insert → JSON.stringify emits keys in ascending order.
     const sortedKeys = [...targets.keys()].sort((a, b) => a.localeCompare(b));
     const targetsOut = Object.create(null);
     for (const key of sortedKeys) {
