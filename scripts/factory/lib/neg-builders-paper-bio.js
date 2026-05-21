@@ -2,6 +2,11 @@
  * NegEvidence builders for paper-retraction + inactive-bioassay signals.
  */
 
+import {
+    TYPE_PAPER_RETRACTION,
+    TYPE_INACTIVE_BIOASSAY,
+} from '../../../src/lib/schemas/neg-evidence-types.js';
+
 export function* buildPaperRetraction(papers) {
     const now = new Date().toISOString();
     for (const p of papers) {
@@ -18,7 +23,7 @@ export function* buildPaperRetraction(papers) {
         }
         yield {
             id: `sciweon::neg::retraction::${p.doi ? p.doi.replace(/[^a-zA-Z0-9.]/g, '_') : p.openalex_id ?? p.pmid ?? 'unknown'}`,
-            evidence_type: 'paper_retraction',
+            evidence_type: TYPE_PAPER_RETRACTION,
             subject: { paper_id: p.id },
             failure: {
                 reason_category: p.retraction_nature ?? 'Retraction',
@@ -64,7 +69,7 @@ export function* buildBioassayInactive(bioactivities) {
         const isStandardMetric = ['concentration_threshold_v1', 'inhibition_threshold_v1'].includes(method);
         yield {
             id: `sciweon::neg::bioassay::${b.id.replace('sciweon::bioactivity::', '')}`,
-            evidence_type: 'inactive_bioassay',
+            evidence_type: TYPE_INACTIVE_BIOASSAY,
             subject: {
                 compound_id: b.compound_id,
                 target_id: b.target?.uniprot_accession

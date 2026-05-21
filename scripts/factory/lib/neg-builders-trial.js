@@ -15,6 +15,11 @@
  *   serious AE > 10          -> minor
  */
 
+import {
+    TYPE_TRIAL_FAILURE,
+    TYPE_SERIOUS_AE_PER_TRIAL,
+} from '../../../src/lib/schemas/neg-evidence-types.js';
+
 function severityForTrialFailure(category, confidence) {
     if (category === 'SAFETY') return 'critical';
     if (category === 'EFFICACY' || category === 'REGULATORY') return 'major';
@@ -38,7 +43,7 @@ export function* buildTrialNegEvidence(trials, negRaw) {
         const provSource = ts?.provenance?.sources?.[0]?.source === 'ctis' ? 'ctis_ema' : 'clinicaltrials_gov';
         yield {
             id: `sciweon::neg::trial::${n.nct_id}`,
-            evidence_type: 'trial_failure',
+            evidence_type: TYPE_TRIAL_FAILURE,
             subject: {
                 compound_id: n.compound_id ?? undefined,
                 trial_id: ts ? ts.id : `sciweon::trial::${n.nct_id}`,
@@ -83,7 +88,7 @@ export function* buildTrialNegEvidence(trials, negRaw) {
         if (cnt >= 1000) severity = 'critical';
         yield {
             id: `sciweon::neg::ae::${t.nct_id}`,
-            evidence_type: 'serious_adverse_event_per_trial',
+            evidence_type: TYPE_SERIOUS_AE_PER_TRIAL,
             subject: {
                 compound_id: compoundId ?? undefined,
                 trial_id: t.id,

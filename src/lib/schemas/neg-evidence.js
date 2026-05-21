@@ -20,21 +20,19 @@
  *   - faers_adr_signal      (from compound.fda_signals.faers_top_adr_terms)
  */
 
+import { NEG_EVIDENCE_TYPES } from './neg-evidence-types.js';
+
 export const NEG_EVIDENCE_SCHEMA = {
     // ─── Identity ───
     id: { type: 'string', required: true, pattern: /^sciweon::neg::/ },
 
+    // evidence_type canonical taxonomy lives in ./neg-evidence-types.js — the
+    // SSoT consumed by the schema, the worker filter (event-type-taxonomy.ts),
+    // and all factory builders. Adding a new type means appending to that
+    // module; this enum picks it up automatically on next load.
     evidence_type: {
         type: 'string', required: true,
-        enum: [
-            'trial_failure',
-            'serious_adverse_event_per_trial',
-            'paper_retraction',
-            'inactive_bioassay',
-            'black_box_warning',
-            'drug_withdrawal',
-            'faers_adr_signal',
-        ],
+        enum: [...NEG_EVIDENCE_TYPES],
     },
 
     // ─── Subject (what failed) ───

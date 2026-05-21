@@ -18,6 +18,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { NEG_EVIDENCE_SCHEMA } from '../../src/lib/schemas/neg-evidence.js';
+import { NEG_EVIDENCE_TYPES } from '../../src/lib/schemas/neg-evidence-types.js';
 import { gate } from './lib/validation-gate.js';
 import { buildTrialNegEvidence } from './lib/neg-builders-trial.js';
 import { buildBioassayInactive, buildPaperRetraction } from './lib/neg-builders-paper-bio.js';
@@ -49,32 +50,26 @@ async function main() {
     console.log(`[NEG-BUILDER] Inputs loaded: ${trials.length} trials, ${papers.length} papers, ${bioactivities.length} bioactivities, ${compounds.length} compounds, ${negRaw.length} raw neg evidence`);
 
     const records = [];
-    const stats = {
-        trial_failure: 0,
-        serious_adverse_event_per_trial: 0,
-        paper_retraction: 0,
-        inactive_bioassay: 0,
-        black_box_warning: 0,
-        drug_withdrawal: 0,
-        faers_adr_signal: 0,
+    // Derive stats dict from the SSoT taxonomy — any new type added there
+    // is counted automatically. Prevents the prior failure mode where adding
+    // a builder type without updating this dict silently produced `NaN++`.
+    const stats = Object.fromEntries(NEG_EVIDENCE_TYPES.map(t => [t, 0]));
+
+    const trackOrThrow = (r) => {
+        if (!(r.evidence_type in stats)) {
+            throw new Error(
+                `[NEG-BUILDER] Unknown evidence_type emitted by builder: ${JSON.stringify(r.evidence_type)} ` +
+                `(record id=${r.id}). Add it to src/lib/schemas/neg-evidence-types.js or fix the builder.`,
+            );
+        }
+        records.push(r);
+        stats[r.evidence_type]++;
     };
 
-    for (const r of buildTrialNegEvidence(trials, negRaw)) {
-        records.push(r);
-        stats[r.evidence_type]++;
-    }
-    for (const r of buildPaperRetraction(papers)) {
-        records.push(r);
-        stats[r.evidence_type]++;
-    }
-    for (const r of buildBioassayInactive(bioactivities)) {
-        records.push(r);
-        stats[r.evidence_type]++;
-    }
-    for (const r of buildFdaSignals(compounds)) {
-        records.push(r);
-        stats[r.evidence_type]++;
-    }
+    for (const r of buildTrialNegEvidence(trials, negRaw)) trackOrThrow(r);
+    for (const r of buildPaperRetraction(papers)) trackOrThrow(r);
+    for (const r of buildBioassayInactive(bioactivities)) trackOrThrow(r);
+    for (const r of buildFdaSignals(compounds)) trackOrThrow(r);
 
     let validCount = 0;
     let invalidCount = 0;

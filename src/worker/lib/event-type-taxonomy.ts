@@ -1,32 +1,25 @@
 /**
- * V0.5.8 Wave C1-1 Phase 1 — NegEvidence event_type taxonomy.
+ * NegEvidence event_type taxonomy — Worker-side view.
  *
- * The 7 canonical evidence types Sciweon currently records. Producers
- * (scripts/factory/neg-evidence-builder.js and friends) emit these
- * strings; consumers (Worker API, MCP tool) narrow to this union for
- * runtime validation + TypeScript exhaustiveness checking.
- *
- * Phase 2 (deferred) migrates the producer to import + enforce this
- * taxonomy at emission, eliminating the silent-typo failure mode.
+ * The canonical 7-type list lives in `src/lib/schemas/neg-evidence-types.js`
+ * (single source of truth shared with the factory builders and the
+ * producer-side schema). This module re-exports the list under the
+ * Worker-facing name `EVIDENCE_TYPES` and derives the `EvidenceType`
+ * literal-union type from the SSoT tuple. The producer-side enforcement
+ * (gate REJECT on unknown enum) means a typo can never reach R2; this
+ * file is the consumer-side narrowing.
  */
 
-export const EVIDENCE_TYPES = [
-    'trial_failure',
-    'inactive_bioassay',
-    'drug_withdrawal',
-    'black_box_warning',
-    'faers_adr_signal',
-    'serious_adverse_event_per_trial',
-    'paper_retraction',
-] as const;
+import {
+    NEG_EVIDENCE_TYPES,
+    isKnownEvidenceType,
+} from '../../lib/schemas/neg-evidence-types.js';
 
-export type EvidenceType = typeof EVIDENCE_TYPES[number];
+export const EVIDENCE_TYPES = NEG_EVIDENCE_TYPES;
 
-const EVIDENCE_TYPE_SET: Set<string> = new Set(EVIDENCE_TYPES);
+export type EvidenceType = typeof NEG_EVIDENCE_TYPES[number];
 
-export function isKnownEvidenceType(s: unknown): s is EvidenceType {
-    return typeof s === 'string' && EVIDENCE_TYPE_SET.has(s);
-}
+export { isKnownEvidenceType };
 
 /**
  * Parse a comma-separated client filter (e.g. ?event_type=trial_failure,paper_retraction)
@@ -42,7 +35,7 @@ export function parseEventTypeFilter(raw: string | null | undefined): Set<Eviden
     const tokens = raw.split(',').slice(0, 10).map(s => s.trim().toLowerCase());
     const out = new Set<EvidenceType>();
     for (const t of tokens) {
-        if (isKnownEvidenceType(t)) out.add(t);
+        if (isKnownEvidenceType(t)) out.add(t as EvidenceType);
     }
     return out;
 }
