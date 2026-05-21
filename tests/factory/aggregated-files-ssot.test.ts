@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { AGGREGATED_FILES } from '../../scripts/factory/lib/aggregated-files.js';
+import { AGGREGATED_FILES, SNAPSHOT_FILES } from '../../scripts/factory/lib/aggregated-files.js';
 
 describe('AGGREGATED_FILES SSoT', () => {
     it('is a non-empty frozen array of strings', () => {
@@ -38,5 +38,23 @@ describe('AGGREGATED_FILES SSoT', () => {
         ]) {
             expect(AGGREGATED_FILES).toContain(required);
         }
+    });
+});
+
+describe('SNAPSHOT_FILES SSoT', () => {
+    it('is a frozen superset of AGGREGATED_FILES', () => {
+        expect(Object.isFrozen(SNAPSHOT_FILES)).toBe(true);
+        for (const f of AGGREGATED_FILES) {
+            expect(SNAPSHOT_FILES).toContain(f);
+        }
+    });
+
+    it('includes drug-labels.jsonl (DailyMed standalone harvest, not in aggregated bundle)', () => {
+        expect(SNAPSHOT_FILES).toContain('drug-labels.jsonl');
+        expect(AGGREGATED_FILES).not.toContain('drug-labels.jsonl');
+    });
+
+    it('includes target-index.json — regression guard for the post-#98 silent drop', () => {
+        expect(SNAPSHOT_FILES).toContain('target-index.json');
     });
 });

@@ -25,3 +25,21 @@ export const AGGREGATED_FILES = Object.freeze([
     'sciweon-search-index.json',
     'target-index.json',
 ]);
+
+/**
+ * SNAPSHOT_FILES — the files snapshot-builder.js bundles into
+ * snapshots/<date>/. Superset of AGGREGATED_FILES: includes
+ * `drug-labels.jsonl` which is harvested independently by
+ * dailymed-harvest.js and does not flow through the stage-3/stage-4
+ * aggregated bundle.
+ *
+ * Derived from AGGREGATED_FILES so any addition to the aggregated bundle
+ * automatically lands in the published snapshot. PR #98 fixed the
+ * stage-3/stage-4 drift; this export prevents the same drift between
+ * stage-4 transit and snapshot-builder publication (which was the actual
+ * upload site that silently dropped target-index.json post-#98).
+ */
+export const SNAPSHOT_FILES = Object.freeze([
+    ...AGGREGATED_FILES,
+    'drug-labels.jsonl',
+]);
