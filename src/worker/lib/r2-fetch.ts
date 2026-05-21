@@ -83,3 +83,39 @@ export async function fetchR2JsonText(bucket: R2Bucket, key: string): Promise<st
     const { bytes } = await fetchR2Object(bucket, key);
     return new TextDecoder('utf-8').decode(bytes);
 }
+
+/**
+ * Range-fetch raw bytes from an R2 object. Wave I-7a Phase 1 — workers
+ * read a single record from a 10 MB shard via byte-range, avoiding the
+ * full-bundle gunzip+scan that caused the 45K compound 1102 cliff.
+ *
+ * Cached per isolate keyed by (key, offset, length). Cache eviction is
+ * LRU at 16 entries (shared MAX_CACHE_ENTRIES). The (offset, length)
+ * granularity means popular records share a cache slot even when accessed
+ * from cold isolates that haven't yet fetched the full shard.
+ */
+export async function fetchR2RangeBytes(
+    bucket: R2Bucket,
+    key: string,
+    offset: number,
+    length: number,
+): Promise<Uint8Array> {
+    const cacheKey = `range:${key}@${offset}+${length}`;
+    const cached = CACHE.get(cacheKey);
+    if (cached) return cached.bytes;
+
+    const obj = await bucket.get(key, { range: { offset, length } });
+    if (!obj) {
+        throw new Error(`R2 range fetch failed: ${key} [${offset}, +${length})`);
+    }
+    const bytes = new Uint8Array(await obj.arrayBuffer());
+    if (bytes.length !== length) {
+        throw new Error(
+            `Short range read on ${key}@${offset}+${length}: got ${bytes.length} bytes. Refusing to cache.`
+        );
+    }
+    const result: R2FetchResult = { bytes, etag: obj.etag };
+    CACHE.set(cacheKey, result);
+    pruneCache();
+    return bytes;
+}

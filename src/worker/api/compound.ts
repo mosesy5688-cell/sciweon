@@ -47,7 +47,7 @@ export async function handleCompound(
 
     const { cid, canonical } = parsed;
 
-    const tier1 = await loadTier1(env.SCIWEON_R2, cid);
+    const tier1 = await loadTier1(env, cid);
     if (tier1) {
         return Response.json(
             { id: canonical, compound: { ...tier1, _tier: 'T1' } },
