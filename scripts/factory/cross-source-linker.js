@@ -20,12 +20,16 @@ import { scoreEntity } from './lib/confidence-scorer.js';
 import { COMPOUND_SCHEMA } from '../../src/lib/schemas/compound.js';
 import { BIOACTIVITY_SCHEMA } from '../../src/lib/schemas/bioactivity.js';
 import { gate } from './lib/validation-gate.js';
+import { pMap } from './lib/p-map.js';
 
 const LIMIT = parseInt(process.argv.find(a => a.startsWith('--limit='))?.split('=')[1] || '100');
 const INPUT_FILE = process.argv.find(a => a.startsWith('--input='))?.split('=')[1]
     || './output/compounds/compounds-cid-1-5000.jsonl';
 const OUTPUT_DIR = './output/linked';
 const REQUEST_DELAY_MS = 250;
+// ChEMBL public free REST tolerates ~5 req/sec sustained (chembl-adapter.js:11).
+// 4 workers × 250 ms per-task sleep = ~4 req/s peak, comfortably under the limit.
+const CHEMBL_CONCURRENCY = 4;
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -77,53 +81,71 @@ async function main() {
     await fs.mkdir(OUTPUT_DIR, { recursive: true });
 
     const compounds = await loadCompounds(INPUT_FILE, LIMIT);
-    console.log(`[LINKER] Loaded ${compounds.length} compounds`);
+    console.log(`[LINKER] Loaded ${compounds.length} compounds | concurrency=${CHEMBL_CONCURRENCY}`);
 
-    let linked = 0, unmatched = 0, totalActivities = 0;
-    const enriched = [];
-    const allActivities = [];
+    let completed = 0;
 
-    for (let i = 0; i < compounds.length; i++) {
-        const c = compounds[i];
+    // Each task fully self-contains: ChEMBL lookup + activity fetch + per-compound
+    // stats computation + per-compound gate. Activities are filtered locally
+    // (not against the global accumulator) so concurrency does not change the
+    // bioactivity_count_active/inactive numbers vs the serial version.
+    const taskResults = await pMap(compounds, CHEMBL_CONCURRENCY, async (c, idx) => {
         const beforeConfidence = c.confidence.overall;
-
         const chembl = await findByInchiKey(c.inchi_key);
+        const localActivities = [];
+        let matched = false;
+        let rawActivityCount = 0;
+
         if (chembl) {
             mergeChemblIntoCompound(c, chembl);
-            linked++;
+            matched = true;
 
-            // Fetch activities
             const activities = await fetchActivities(chembl.molecule_chembl_id, 100);
+            rawActivityCount = activities.length;
             for (const raw of activities) {
                 const norm = normalizeActivity(raw, c.id);
                 if (norm) {
                     const result = gate(norm, BIOACTIVITY_SCHEMA, `bioact:${norm.id}`);
-                    if (result.passed) allActivities.push(norm);
+                    if (result.passed) localActivities.push(norm);
                 }
             }
-            totalActivities += activities.length;
 
-            // Update bioactivity stats
-            c.stats.bioactivity_count_active = allActivities.filter(a => a.compound_id === c.id && a.is_active === true).length;
-            c.stats.bioactivity_count_inactive = allActivities.filter(a => a.compound_id === c.id && a.is_active === false).length;
+            c.stats.bioactivity_count_active = localActivities.filter(a => a.is_active === true).length;
+            c.stats.bioactivity_count_inactive = localActivities.filter(a => a.is_active === false).length;
 
             const afterConfidence = c.confidence.overall;
-            if (i < 5 || afterConfidence > 95) {
+            if (idx < 5 || afterConfidence > 95) {
                 console.log(`[LINKER] ${c.id} → ${chembl.molecule_chembl_id} | confidence ${beforeConfidence} → ${afterConfidence}`);
             }
-        } else {
-            unmatched++;
         }
 
-        // Validate compound
         const result = gate(c, COMPOUND_SCHEMA, c.id);
-        if (result.passed) enriched.push(c);
+        const passed = result.passed;
 
-        if ((i + 1) % 25 === 0) {
-            console.log(`[LINKER] Progress: ${i + 1}/${compounds.length} | linked: ${linked} | activities: ${totalActivities}`);
+        completed++;
+        if (completed % 25 === 0) {
+            console.log(`[LINKER] Progress: ${completed}/${compounds.length}`);
         }
         await sleep(REQUEST_DELAY_MS);
+
+        return { compound: c, matched, activities: localActivities, rawActivityCount, passed };
+    });
+
+    let linked = 0, unmatched = 0, totalActivities = 0;
+    const enriched = [];
+    const allActivities = [];
+    for (const r of taskResults) {
+        if (r.matched) linked++; else unmatched++;
+        totalActivities += r.rawActivityCount;
+        if (r.passed) enriched.push(r.compound);
+        for (const a of r.activities) allActivities.push(a);
     }
+
+    // Determinism: sort outputs by canonical id so writes are byte-identical
+    // across runs on identical input (Constitution V16.1 §7). Task-completion
+    // order from pMap is non-deterministic; the sort restores it.
+    enriched.sort((a, b) => a.id.localeCompare(b.id));
+    allActivities.sort((a, b) => a.id.localeCompare(b.id));
 
     const enrichedFile = path.join(OUTPUT_DIR, `compounds-enriched.jsonl`);
     const activitiesFile = path.join(OUTPUT_DIR, `bioactivities.jsonl`);
