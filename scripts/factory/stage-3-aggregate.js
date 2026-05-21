@@ -35,6 +35,7 @@ import path from 'path';
 import { downloadStage, uploadStage, deriveRunId, readStagePointer, downloadStageByRunId } from './lib/r2-stage-bridge.js';
 import { mergeLocalAggregatedWithPrevious, MERGE_FILES } from './lib/aggregated-merger.js';
 import { buildIndex as buildSearchIndex, OUTPUT_FILE as SEARCH_INDEX_FILE } from './lib/search-index-builder.js';
+import { buildIndex as buildTargetIndex, OUTPUT_FILE as TARGET_INDEX_FILE } from './lib/target-index-builder.js';
 import { readFirstRunSentinel, writeFirstRunSentinel, decideMergeAction } from './lib/aggregated-sentinel.js';
 
 const SCRIPT_DIR = 'scripts/factory';
@@ -48,6 +49,7 @@ const AGGREGATED_FILES = [
     'negative-evidence-raw.jsonl',
     'neg-evidence.jsonl',
     'sciweon-search-index.json',
+    'target-index.json',
 ];
 
 function runScript(name) {
@@ -192,6 +194,16 @@ async function main() {
     } catch (err) {
         console.error(`[STAGE-3] Search index build failed (non-fatal): ${err.message}`);
         console.error('[STAGE-3] Will upload aggregated bundle without search index; previous cycle\'s index remains current in R2 until next successful build.');
+    }
+
+    // C2-3 target inverse-pivot index. Non-fatal: /api/v1/target/* 404s
+    // if absent, rest of bundle ships.
+    console.log('\n[STAGE-3] === Build target inverse-pivot index ===');
+    try {
+        const s = await buildTargetIndex({ outputPath: path.join('./output/linked', TARGET_INDEX_FILE) });
+        console.log(`[STAGE-3] Target index: ${s.targetCount} targets, ${s.bioactivitiesIndexed} bioacts, ${s.trialEdges} trial edges, ${s.negEvidenceEdges} neg edges, ${(s.sizeBytes / 1024 / 1024).toFixed(2)} MB in ${s.elapsedSec}s`);
+    } catch (err) {
+        console.error(`[STAGE-3] Target index build failed (non-fatal): ${err.message}`);
     }
 
     console.log('\n[STAGE-3] === Upload aggregated bundle to R2 ===');

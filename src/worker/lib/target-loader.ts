@@ -1,0 +1,97 @@
+/**
+ * Target index loader — reads the C2-3 inverse-pivot index from R2.
+ *
+ * Snapshot location (per scripts/factory/stage-3-aggregate.js + uploader):
+ *   snapshots/latest.json         → { latest_snapshot_date: "YYYY-MM-DD" }
+ *   snapshots/<date>/target-index.json
+ *
+ * Caching: snapshots are immutable once published. `fetchR2Object` caches by
+ * (key, etag) per isolate; first call per day downloads + parses, subsequent
+ * calls within the same isolate are a Map lookup.
+ *
+ * UniProt validation regex mirrors BIOACTIVITY_SCHEMA.target.uniprot_accession
+ * (src/lib/schemas/bioactivity.js:34) — the producer and consumer share the
+ * exact same acceptance pattern.
+ */
+
+import { fetchR2JsonText } from './r2-fetch';
+
+const LATEST_POINTER_KEY = 'snapshots/latest.json';
+const TARGET_INDEX_FILENAME = 'target-index.json';
+
+const UNIPROT_RE = /^([OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9](?:[A-Z][A-Z0-9]{2}[0-9]){1,2})$/;
+
+export interface ParsedUniprotId {
+    ok: true;
+    canonical: string;
+}
+
+export interface ParsedUniprotError {
+    ok: false;
+    error: string;
+}
+
+export function parseUniprotId(raw: string): ParsedUniprotId | ParsedUniprotError {
+    if (typeof raw !== 'string' || raw.length === 0) {
+        return { ok: false, error: 'UniProt accession is required' };
+    }
+    let id = raw;
+    try { id = decodeURIComponent(raw); } catch {
+        return { ok: false, error: 'UniProt accession is not valid percent-encoded text' };
+    }
+    const upper = id.toUpperCase();
+    if (!UNIPROT_RE.test(upper)) {
+        return { ok: false, error: `Invalid UniProt accession format: "${id.slice(0, 40)}"` };
+    }
+    return { ok: true, canonical: upper };
+}
+
+export interface TargetEntry {
+    uniprot_accession: string;
+    protein_name: string | null;
+    gene_symbol: string | null;
+    chembl_target_id: string | null;
+    organism: { taxon_id: number | null; scientific_name: string | null };
+    compound_ids: string[];
+    bioactivity_ids: string[];
+    trial_ids: string[];
+    negative_evidence_ids: string[];
+}
+
+interface RawIndex {
+    version?: string;
+    built_at?: string;
+    targets?: Record<string, TargetEntry>;
+}
+
+export interface TargetIndex {
+    version: string;
+    built_at: string;
+    snapshotDate: string;
+    targets: Record<string, TargetEntry>;
+}
+
+async function readLatestPointer(bucket: R2Bucket): Promise<string> {
+    const text = await fetchR2JsonText(bucket, LATEST_POINTER_KEY);
+    const parsed = JSON.parse(text) as { latest_snapshot_date?: string };
+    if (!parsed.latest_snapshot_date) {
+        throw new Error('snapshots/latest.json missing latest_snapshot_date');
+    }
+    return parsed.latest_snapshot_date;
+}
+
+export async function loadTargetIndex(bucket: R2Bucket): Promise<TargetIndex> {
+    const date = await readLatestPointer(bucket);
+    const text = await fetchR2JsonText(bucket, `snapshots/${date}/${TARGET_INDEX_FILENAME}`);
+    const raw = JSON.parse(text) as RawIndex;
+    return {
+        version: raw.version ?? 'unknown',
+        built_at: raw.built_at ?? '',
+        snapshotDate: date,
+        targets: raw.targets ?? {},
+    };
+}
+
+export function getTargetEntry(index: TargetIndex, uniprot: string): TargetEntry | null {
+    return index.targets[uniprot] ?? null;
+}
