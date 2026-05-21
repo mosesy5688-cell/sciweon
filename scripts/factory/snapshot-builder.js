@@ -28,22 +28,10 @@ import fs from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
 import { gzipSync } from 'zlib';
+import { SNAPSHOT_FILES } from './lib/aggregated-files.js';
 
 const SOURCE_DIR = './output/linked';
 const SNAPSHOT_ROOT = './snapshots';
-
-const SNAPSHOT_FILES = [
-    'compounds-enriched.jsonl',
-    'bioactivities.jsonl',
-    'trials.jsonl',
-    'trial-links.jsonl',
-    'papers.jsonl',
-    'paper-links.jsonl',
-    'negative-evidence-raw.jsonl',
-    'neg-evidence.jsonl',
-    'drug-labels.jsonl',
-    'sciweon-search-index.json',
-];
 
 // V0.5.x: refuse to publish a snapshot without these files. Prevents the
 // empty-snapshot regression where snapshot-uploader pushed a manifest with
