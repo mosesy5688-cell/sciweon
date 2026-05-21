@@ -28,7 +28,7 @@ import { createReadStream } from 'fs';
 import readline from 'readline';
 import path from 'path';
 import { createHash } from 'crypto';
-import { PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { ShardWriter } from './shard-writer.js';
 
 // Per Constitution V16.1 §5.2: 8-10 MB physical limit per shard (Edge-Safe).
@@ -178,41 +178,10 @@ async function uploadToR2(client, bucket, snapshotDate, shardFiles, entries) {
 }
 
 /**
- * Constitution §9: probe N random shards via R2 Range to confirm bytes match
- * manifest sha256. Throws on mismatch. Caller is expected to call this 90s
- * after upload (drain wait) before swapping the latest pointer.
- */
-export async function verifyShardIntegrity(client, bucket, snapshotDate, manifest, sampleCount = 3) {
-    const shards = manifest.shard_hashes;
-    if (shards.length === 0) {
-        throw new Error('[PUBLISHER] No shards in manifest — refusing to verify');
-    }
-    const targets = [];
-    const picked = new Set();
-    const n = Math.min(sampleCount, shards.length);
-    while (targets.length < n) {
-        const idx = Math.floor(Math.random() * shards.length);
-        if (picked.has(idx)) continue;
-        picked.add(idx);
-        targets.push(shards[idx]);
-    }
-    for (const t of targets) {
-        const key = shardKey(snapshotDate, manifest.bucket, t.shard);
-        const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
-        const chunks = [];
-        for await (const chunk of res.Body) chunks.push(chunk);
-        const observed = sha256(Buffer.concat(chunks));
-        if (observed !== t.sha256) {
-            throw new Error(`[PUBLISHER] Integrity probe FAILED for ${key}: expected ${t.sha256}, got ${observed}`);
-        }
-        console.log(`[PUBLISHER] Probe OK: ${key} sha256=${observed.slice(0, 16)}...`);
-    }
-}
-
-/**
- * Public entry point — orchestrates the whole pipeline: read jsonl → pack
- * shards → upload → build manifest. Caller (stage-4-upload.js) handles
- * the 90s drain wait + integrity probes + atomic latest.json pointer swap.
+ * Public entry point — orchestrates: read jsonl → pack shards → upload.
+ * Caller (stage-4-upload.js) handles 90s drain wait + integrity probes
+ * (compound-shard-pointer.js#verifyShardIntegrity) + atomic latest.json
+ * pointer swap (compound-shard-pointer.js#updateLatestPointer).
  */
 export async function publishCompoundShards({ client, bucket, jsonlPath, snapshotDate, outputDir }) {
     const startTime = Date.now();
@@ -245,33 +214,3 @@ export async function publishCompoundShards({ client, bucket, jsonlPath, snapsho
     };
 }
 
-/**
- * Update snapshots/latest.json to include compounds_manifest_key. Backward-
- * compatible: preserves existing latest_snapshot_date + manifest_key fields.
- */
-export async function updateLatestPointer(client, bucket, { snapshotDate, compoundsManifestKey, existingManifestKey }) {
-    // Read current latest.json if present (preserve other fields like older
-    // pipelines may have written).
-    let current = {};
-    try {
-        const res = await client.send(new GetObjectCommand({
-            Bucket: bucket, Key: 'snapshots/latest.json',
-        }));
-        const chunks = [];
-        for await (const c of res.Body) chunks.push(c);
-        current = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
-    } catch { /* first run — start from {} */ }
-
-    const updated = {
-        ...current,
-        latest_snapshot_date: snapshotDate,
-        manifest_key: existingManifestKey ?? current.manifest_key ?? `snapshots/${snapshotDate}/manifest.json`,
-        compounds_manifest_key: compoundsManifestKey,
-    };
-    await client.send(new PutObjectCommand({
-        Bucket: bucket, Key: 'snapshots/latest.json',
-        Body: JSON.stringify(updated),
-        ContentType: 'application/json',
-    }));
-    return updated;
-}

@@ -31,11 +31,8 @@ import {
     getConfiguredThreshold,
 } from './lib/snapshot-history-gate.js';
 import { makeR2Client } from './lib/bulk-shard-helpers.js';
-import {
-    publishCompoundShards,
-    verifyShardIntegrity,
-    updateLatestPointer,
-} from './lib/compound-shard-publisher.js';
+import { publishCompoundShards } from './lib/compound-shard-publisher.js';
+import { verifyShardIntegrity, updateLatestPointer } from './lib/compound-shard-pointer.js';
 
 const SCRIPT_DIR = 'scripts/factory';
 const AGGREGATED_FILES = [
