@@ -6,7 +6,11 @@
 import { parseSplSections, extractXmlFromZip, LOINC_SECTIONS } from '../../factory/lib/spl-parser.js';
 
 export const DAILYMED_BASE    = 'https://dailymed.nlm.nih.gov/dailymed/services/v2';
-export const DAILYMED_ARCHIVE = 'https://dailymed.nlm.nih.gov/dailymed/archives';
+// Cycle 21 PR #7: archive ZIP path moved from /dailymed/archives/{setid}.zip
+// (now 302 → /dailymed/index.cfm — HTML homepage, breaks every ZIP parse) to
+// /dailymed/getFile.cfm?setid=…&type=zip&name=…. Verified live 2026-05-22.
+// [[feedback_local_verify_external_api]]
+export const DAILYMED_GETFILE = 'https://dailymed.nlm.nih.gov/dailymed/getFile.cfm';
 export const LIST_PAGE_SIZE = 100;
 const REQUEST_TIMEOUT_MS  = 30000;
 const ARCHIVE_TIMEOUT_MS  = 60000;
@@ -92,9 +96,24 @@ export async function fetchLabelMeta(setid) {
     return data.data ?? null;
 }
 
+// Cycle 21 PR #7 — detect ZIP magic (PK\x03\x04) so a future endpoint
+// drift surfaces as an explicit error instead of EOCD parser noise.
+// HTML/empty responses (the symptom of the /archives/{setid}.zip 302) get
+// caught here with the URL in the message, making the next break debuggable
+// in one line. [[feedback_cross_cycle_silent_data_loss]] adjacent defense.
+function assertZipMagic(buf, url) {
+    if (buf.length < 4 || buf[0] !== 0x50 || buf[1] !== 0x4b || buf[2] !== 0x03 || buf[3] !== 0x04) {
+        const head = buf.slice(0, 32).toString('utf-8').replace(/[\x00-\x1f]/g, '?');
+        throw new Error(`ZIP magic mismatch (got first 32 bytes: "${head}…") from ${url}`);
+    }
+}
+
 export async function fetchSections(setid) {
     try {
-        const zipBuf = await fetchBinary(`${DAILYMED_ARCHIVE}/${encodeURIComponent(setid)}.zip`);
+        const encoded = encodeURIComponent(setid);
+        const url = `${DAILYMED_GETFILE}?setid=${encoded}&type=zip&name=${encoded}`;
+        const zipBuf = await fetchBinary(url);
+        assertZipMagic(zipBuf, url);
         const xml = await extractXmlFromZip(zipBuf);
         if (!xml) {
             console.warn(`[DAILYMED] ${setid}: ZIP contained no XML — metadata-only`);

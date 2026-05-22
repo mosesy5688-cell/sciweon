@@ -162,3 +162,15 @@ describe('dailymed fetchIncremental — meta from list item (no fetchLabelMeta)'
         expect(records[0].setid).toBe('bbbb-bbbb');
     });
 });
+
+// Cycle 21 PR #7 — DailyMed archive ZIP endpoint URL changed
+// (/dailymed/archives/{setid}.zip 302s to homepage now). Lock the
+// current working URL pattern so a future drift fails CI not prod.
+describe('dailymed archive URL + ZIP magic guard', () => {
+    it('exports the getFile.cfm constant (not the broken /archives path)', async () => {
+        const m = await import('../../scripts/ingestion/adapters/dailymed-fetcher.js');
+        expect(m.DAILYMED_GETFILE).toContain('getFile.cfm');
+        expect(m.DAILYMED_GETFILE).not.toContain('/archives');
+    });
+});
+
