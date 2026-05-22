@@ -100,7 +100,14 @@ export async function fetchIncremental(sinceToken) {
             console.warn(`[WHO-ATC] page offset=${offset}: ${e.message}`);
             break;
         }
-        const items = data.atc_classifications ?? data.atc_class ?? [];
+        // ChEMBL REST /atc_class.json returns records under `atc` — neither
+        // `atc_classifications` nor `atc_class` exist in the actual response.
+        // Verified live at https://www.ebi.ac.uk/chembl/api/data/atc_class.json
+        // — response shape: { atc: [...], page_meta: {...} }. Previous keys
+        // were assumption-not-verification; bootstrap silently produced 0
+        // records on every cron, blocking ATC enrichment.
+        // [[feedback_local_verify_external_api]]
+        const items = data.atc ?? data.atc_classifications ?? data.atc_class ?? [];
         if (total === null) {
             total = data.page_meta?.total_count ?? 0;
             console.log(`[WHO-ATC] Total ATC classes: ${total}`);
