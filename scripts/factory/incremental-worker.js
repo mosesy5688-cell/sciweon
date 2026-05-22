@@ -77,16 +77,25 @@ async function runWorker(source, client, bucket, runId, dryRun) {
     console.log(`[WORKER:${source}] hasUpdates=${check.hasUpdates} count=${check.count ?? '?'}`);
 
     if (!check.hasUpdates) {
+        // Pattern A2 (cycle 21): probe-path early-exit must HOLD the cursor.
+        // DailyMed/WHO-ATC return nextSinceToken=today regardless — trusting
+        // it permanently locks the cursor. See incremental-cursor-decision.js.
+        const decision = decideCursorAdvance({
+            recordsLength: 0,
+            currentSinceToken: sinceToken,
+            nextSinceToken: check.nextSinceToken,
+            source,
+            hasUpdates: false,
+        });
         if (!dryRun) {
             await writeIncrementalCursor(client, bucket, source, {
                 ...(cursor ?? {}),
-                sinceToken: check.nextSinceToken ?? sinceToken,
-                status: 'success',
+                ...decision.cursorUpdate,
                 last_run_at: new Date().toISOString(),
-                record_count: 0,
+                supportsIncremental: adapter.supportsIncremental ?? true,
             });
         }
-        console.log(`[WORKER:${source}] No updates — early exit`);
+        console.log(`[WORKER:${source}] No updates — cursor held at ${sinceToken} (status=no_updates)`);
         return;
     }
 
@@ -107,10 +116,16 @@ async function runWorker(source, client, bucket, runId, dryRun) {
     }
 
     if (!dryRun) {
+        const now = new Date().toISOString();
+        // last_success_at: only stamped when records actually fetched + staged.
+        // Health-monitor uses this to detect stalled sources (cursor written
+        // every run, but last_success_at frozen for >threshold = drift signal).
+        const successFields = decision.kind === 'advance' ? { last_success_at: now } : {};
         await writeIncrementalCursor(client, bucket, source, {
             ...(cursor ?? {}),
             ...decision.cursorUpdate,
-            last_run_at: new Date().toISOString(),
+            ...successFields,
+            last_run_at: now,
             supportsIncremental: adapter.supportsIncremental ?? true,
         });
         if (decision.kind === 'advance') {

@@ -91,4 +91,103 @@ describe('transformGhaJobsToReport', () => {
         expect(transformGhaJobsToReport(null, 'r7').adapter_count).toBe(0);
         expect(transformGhaJobsToReport(undefined, 'r7').adapter_count).toBe(0);
     });
+
+    // Cycle 21 — stalled-cursor cross-check. GHA-success alone is not
+    // enough: cursor poisoning (pre-fix) let DailyMed/WHO-ATC "succeed"
+    // every cron with zero fetches. This layer surfaces the regression
+    // class via Issues if it ever recurs.
+    describe('stalled-cursor detection', () => {
+        const NOW = '2026-05-22T12:00:00Z';
+        const okJob = (src: string) => ({
+            name: `Adapter [${src}]`, conclusion: 'success',
+            startedAt: '2026-05-22T10:00:00Z', completedAt: '2026-05-22T10:00:10Z',
+        });
+
+        it('adapter with fresh last_success_at -> passes', () => {
+            const cursors = new Map([['dailymed', {
+                last_success_at: '2026-05-20T00:00:00Z', // 2 days ago
+                status: 'success',
+            }]]);
+            const r = transformGhaJobsToReport([okJob('dailymed')], 'r-s1', NOW, {
+                cursors, stalledThresholdDays: 14,
+            });
+            expect(r.adapters[0].passed).toBe(true);
+            expect(r.adapters[0].stalled).toBeUndefined();
+        });
+
+        it('adapter with stale last_success_at -> marked stalled + failed', () => {
+            const cursors = new Map([['dailymed', {
+                last_success_at: '2026-04-01T00:00:00Z', // ~51 days ago
+                status: 'no_updates',
+            }]]);
+            const r = transformGhaJobsToReport([okJob('dailymed')], 'r-s2', NOW, {
+                cursors, stalledThresholdDays: 14,
+            });
+            expect(r.adapters[0].passed).toBe(false);
+            expect(r.adapters[0].stalled).toBe(true);
+            expect(r.adapters[0].error).toContain('stalled');
+            expect(r.adapters[0].error).toContain('51');
+            expect(r.passed).toBe(0);
+            expect(r.failed).toBe(1);
+        });
+
+        it('adapter that never succeeded -> stalled (cursor exists, no last_success_at)', () => {
+            const cursors = new Map([['who-atc', {
+                last_updated: '2026-04-01T00:00:00Z',
+                status: 'no_updates',
+            }]]);
+            const r = transformGhaJobsToReport([okJob('who-atc')], 'r-s3', NOW, {
+                cursors, stalledThresholdDays: 14,
+            });
+            expect(r.adapters[0].stalled).toBe(true);
+            expect(r.adapters[0].error).toContain('never succeeded');
+        });
+
+        it('GHA-failed adapter is not re-tagged stalled (error already surfaced)', () => {
+            const jobs = [{
+                name: 'Adapter [dailymed]', conclusion: 'failure',
+                startedAt: '2026-05-22T10:00:00Z', completedAt: '2026-05-22T10:00:05Z',
+            }];
+            const cursors = new Map([['dailymed', {
+                last_success_at: '2026-04-01T00:00:00Z',
+                status: 'failed',
+            }]]);
+            const r = transformGhaJobsToReport(jobs, 'r-s4', NOW, {
+                cursors, stalledThresholdDays: 14,
+            });
+            expect(r.adapters[0].passed).toBe(false);
+            expect(r.adapters[0].stalled).toBeUndefined();
+            expect(r.adapters[0].error).toContain('failure');
+        });
+
+        it('no cursor for source -> not flagged (e.g. first-ever run before any worker fired)', () => {
+            const r = transformGhaJobsToReport([okJob('chembl')], 'r-s5', NOW, {
+                cursors: new Map(), stalledThresholdDays: 14,
+            });
+            expect(r.adapters[0].passed).toBe(true);
+            expect(r.adapters[0].stalled).toBeUndefined();
+        });
+
+        it('back-compat: opts omitted entirely -> matches pre-cycle-21 behaviour', () => {
+            const r = transformGhaJobsToReport([okJob('chembl')], 'r-s6');
+            expect(r.adapters[0].passed).toBe(true);
+            expect(r.adapters[0].stalled).toBeUndefined();
+        });
+
+        it('threshold boundary: exactly at threshold = not stalled, just over = stalled', () => {
+            const cursors = (ts: string) => new Map([['dailymed', {
+                last_success_at: ts, status: 'success',
+            }]]);
+            // 14 days exactly
+            const exact = transformGhaJobsToReport([okJob('dailymed')], 'r-s7', NOW, {
+                cursors: cursors('2026-05-08T12:00:00Z'), stalledThresholdDays: 14,
+            });
+            expect(exact.adapters[0].stalled).toBeUndefined();
+            // 14.1 days
+            const over = transformGhaJobsToReport([okJob('dailymed')], 'r-s7', NOW, {
+                cursors: cursors('2026-05-08T09:36:00Z'), stalledThresholdDays: 14,
+            });
+            expect(over.adapters[0].stalled).toBe(true);
+        });
+    });
 });
