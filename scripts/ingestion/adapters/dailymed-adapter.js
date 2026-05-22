@@ -90,23 +90,45 @@ export async function fetchIncremental(sinceToken, limit = Infinity) {
     let total = null;
     let fetched = 0;
     let skipped = 0;
+    let earlyStopped = false;
 
     console.log(`[DAILYMED] fetchIncremental since=${startDate}${limit < Infinity ? ` limit=${limit}` : ''}`);
 
-    while (fetched < limit) {
+    // Cycle 21 PR #8: client-side date cutoff with early-stop. DailyMed v2's
+    // server-side `startdate` filter is broken (returns full 156505-label
+    // corpus regardless of value, verified 2026-05-22). The list endpoint
+    // sorts items by published_date desc, so we iterate newest→oldest and
+    // STOP at the first item with published_date < sinceToken — everything
+    // after is older too. Without this guard, daily cron times out the GHA
+    // 6h job trying to ingest the entire corpus. Historical / full-corpus
+    // backfill belongs in a separate bulk-harvest workflow (PLANNED row in
+    // SCIWEON_BULK_ACQUISITION_TRACKER.md).
+    outer: while (fetched < limit && !earlyStopped) {
         const { total: pageTotal, items } = await listSplPage(startDate, page);
         await sleep(DELAY_MS);
 
         if (total === null) {
             total = pageTotal;
-            console.log(`[DAILYMED] ${total} prescription labels updated since ${startDate}`);
+            console.log(`[DAILYMED] ${total} total prescription labels in corpus (server startdate filter ignored; client-side cutoff @ ${startDate})`);
         }
         if (items.length === 0) break;
 
         for (const item of items) {
-            if (fetched >= limit) break;
+            if (fetched >= limit) break outer;
             const setid = item.setid;
             if (!setid) { skipped++; continue; }
+
+            const itemDate = normalizeDailyMedDate(item.published_date);
+            // Lexicographic ISO date compare works because both sides are
+            // YYYY-MM-DD strings after normalize. If itemDate fails to
+            // normalize (unrecognized format), don't early-stop — fall
+            // through and let downstream skip/include decide. Conservative
+            // because client cutoff is the ONLY date filter we trust.
+            if (itemDate && /^\d{4}-\d{2}-\d{2}$/.test(itemDate) && itemDate < startDate) {
+                console.log(`[DAILYMED] Early stop at page ${page}: item published_date=${itemDate} < startDate=${startDate}`);
+                earlyStopped = true;
+                break outer;
+            }
 
             try {
                 // Cycle 21 PR #6: bypass GET /spls/{setid}.json — returns
@@ -152,6 +174,6 @@ export async function fetchIncremental(sinceToken, limit = Infinity) {
         page++;
     }
 
-    console.log(`[DAILYMED] Done: ${records.length} labels fetched, ${skipped} skipped`);
+    console.log(`[DAILYMED] Done: ${records.length} labels fetched, ${skipped} skipped${earlyStopped ? ' (early-stopped at sinceToken cutoff)' : ''}`);
     return { records, nextSinceToken: todayIso() };
 }
