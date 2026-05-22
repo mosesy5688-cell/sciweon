@@ -1,7 +1,18 @@
 /**
- * Downloads the adapter cumulative (processed/aggregated/ in R2) to
- * output/linked/adapter-cumulative.jsonl for use by stage-2 enrichers.
- * Returns true on success, false if no cumulative exists yet (first run).
+ * Downloads the adapter cumulative (fan-in output at processed/aggregated/
+ * in R2) to output/linked/adapter-cumulative.jsonl for use by stage-2
+ * enrichers (adapter-cross-linker for WHO-ATC + DailyMed enrichment +
+ * drug-labels.jsonl emission). Returns true on success, false if no
+ * cumulative exists yet (first run).
+ *
+ * Pointer key: `fanin-latest.json` (NOT `latest.json`). PR #89 split the
+ * fan-in pointer to its own key so it would not trample stage-3's
+ * `latest.json`. The producer (incremental-merge-helpers.js
+ * FANIN_LATEST_KEY) was updated, but this consumer was left reading the
+ * old key — every cron since PR #89 silently 404'd on
+ * `<stage-3 run_id>/all-records.jsonl.gz` and returned false, no-op'ing
+ * adapter-cross-linker and dropping ATC/DailyMed enrichment + drug-labels
+ * publication. Cycle 21 hotfix points at the correct pointer.
  */
 
 import fs from 'fs/promises';
@@ -10,6 +21,7 @@ import { gunzipSync } from 'zlib';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 
 const PREFIX     = 'processed/aggregated';
+const FANIN_LATEST_KEY = `${PREFIX}/fanin-latest.json`;
 const LINKED_DIR = './output/linked';
 const OUT_FILE   = 'adapter-cumulative.jsonl';
 
@@ -36,7 +48,7 @@ export async function downloadAdapterCumulative() {
     const bucket = process.env.R2_BUCKET;
     try {
         const ptrRes = await client.send(new GetObjectCommand({
-            Bucket: bucket, Key: `${PREFIX}/latest.json`,
+            Bucket: bucket, Key: FANIN_LATEST_KEY,
         }));
         const ptr = JSON.parse((await streamToBuffer(ptrRes.Body)).toString());
         const key = `${PREFIX}/${ptr.pointer}/all-records.jsonl.gz`;
