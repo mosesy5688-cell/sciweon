@@ -14,8 +14,8 @@
 import { scoreDataPoint } from '../../factory/lib/confidence-scorer.js';
 import {
     sleep, todayIso, bootstrapSince,
-    normalizeDailyMedDate, isAcceptedLabelType, buildNullSections,
-    fetchJson, fetchSections, listSplPage, fetchLabelMeta,
+    normalizeDailyMedDate, buildNullSections,
+    fetchJson, fetchSections, listSplPage,
     DAILYMED_BASE, DELAY_MS, LIST_PAGE_SIZE,
 } from './dailymed-fetcher.js';
 
@@ -109,10 +109,26 @@ export async function fetchIncremental(sinceToken, limit = Infinity) {
             if (!setid) { skipped++; continue; }
 
             try {
-                const meta = await fetchLabelMeta(setid);
-                await sleep(DELAY_MS);
-                if (!meta) { skipped++; continue; }
-                if (!isAcceptedLabelType(meta.label_type)) { skipped++; continue; }
+                // Cycle 21 PR #6: bypass GET /spls/{setid}.json — returns
+                // HTTP 415 for all setids as of 2026-05-22 (server-side
+                // content-negotiation regression). Construct meta from the
+                // list item fields directly. listSplPage already filters by
+                // labeltype=HUMAN PRESCRIPTION DRUG, so we can hardcode
+                // label_type (the per-item gate became redundant). rxcui /
+                // application_numbers / dosage_forms are Stage-B work —
+                // extract from the SPL XML inside the archive ZIP (cycle 22),
+                // which fetchSections already downloads. C2-7 only needs
+                // sections.adverse_reactions text, which IS preserved here.
+                const meta = {
+                    setid,
+                    spl_version: item.spl_version ?? null,
+                    title: item.title ?? '',
+                    label_type: 'HUMAN PRESCRIPTION DRUG',
+                    rxcui: [],
+                    application_numbers: [],
+                    dosage_forms: [],
+                    published_date: item.published_date ?? null,
+                };
 
                 const sections = await fetchSections(setid);
                 await sleep(DELAY_MS);

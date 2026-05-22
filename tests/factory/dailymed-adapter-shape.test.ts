@@ -26,10 +26,11 @@ vi.mock('../../scripts/ingestion/adapters/dailymed-fetcher.js', async (importOri
         listSplPage: vi.fn(),
         fetchLabelMeta: vi.fn(),
         fetchSections: vi.fn(),
+        sleep: vi.fn(async () => {}),
     };
 });
 
-import { checkForUpdates } from '../../scripts/ingestion/adapters/dailymed-adapter.js';
+import { checkForUpdates, fetchIncremental } from '../../scripts/ingestion/adapters/dailymed-adapter.js';
 import * as fetcher from '../../scripts/ingestion/adapters/dailymed-fetcher.js';
 
 const LIVE_RESPONSE_2026_05_22 = {
@@ -80,5 +81,84 @@ describe('dailymed checkForUpdates — live API shape lock', () => {
         });
         const r = await checkForUpdates('2026-05-15');
         expect(r.count).toBe(0); // confirms we're not reading legacy `total`
+    });
+});
+
+// Cycle 21 PR #6 — bypass /spls/{setid}.json (HTTP 415 server regression).
+// Adapter now constructs meta from list-page item directly + relies on the
+// labeltype=HUMAN PRESCRIPTION DRUG filter that listSplPage applies.
+describe('dailymed fetchIncremental — meta from list item (no fetchLabelMeta)', () => {
+    beforeEach(() => { vi.clearAllMocks(); });
+    afterEach(() => { vi.restoreAllMocks(); });
+
+    const LIST_ITEMS = [
+        { spl_version: 1, published_date: 'May 21, 2026', title: 'VERAPAMIL HCl TABLET', setid: 'aaaa-aaaa' },
+        { spl_version: 2, published_date: 'May 20, 2026', title: 'ASPIRIN TABLET',        setid: 'bbbb-bbbb' },
+    ];
+
+    it('builds meta from list item fields without calling fetchLabelMeta', async () => {
+        vi.mocked(fetcher.listSplPage).mockResolvedValue({ total: 2, items: LIST_ITEMS });
+        vi.mocked(fetcher.fetchSections).mockResolvedValue({
+            adverse_reactions: 'Sample adverse reactions text.',
+        } as any);
+
+        const { records } = await fetchIncremental('2026-05-15');
+
+        expect(vi.mocked(fetcher.fetchLabelMeta)).not.toHaveBeenCalled();
+        expect(records).toHaveLength(2);
+        expect(records[0].setid).toBe('aaaa-aaaa');
+        expect(records[0].title).toBe('VERAPAMIL HCl TABLET');
+        expect(records[0].spl_version).toBe('1');
+        // normalizeDailyMedDate handles MM/DD/YYYY + ISO, passes textual
+        // "May 21, 2026" through untouched (pre-existing behavior, not a
+        // regression introduced by this PR — see dailymed-fetcher.js).
+        expect(records[0].published_date).toBe('May 21, 2026');
+        // label_type hardcoded — list endpoint pre-filters to HUMAN PRESCRIPTION
+        expect(records[0].label_type).toBe('HUMAN PRESCRIPTION DRUG');
+        // Stage-A: rxcui/application_numbers/dosage_forms intentionally empty
+        // (Stage-B will extract from SPL XML in cycle 22)
+        expect(records[0].rxcui).toEqual([]);
+        expect(records[0].application_numbers).toEqual([]);
+        expect(records[0].dosage_forms).toEqual([]);
+        // sections still come from ZIP — C2-7's adverse_reactions text preserved
+        expect(records[0].sections.adverse_reactions).toBe('Sample adverse reactions text.');
+        expect(records[0].sections_extracted).toBe(true);
+    });
+
+    it('still emits a record when fetchSections returns null (sections_extracted=false)', async () => {
+        vi.mocked(fetcher.listSplPage).mockResolvedValue({ total: 1, items: [LIST_ITEMS[0]] });
+        vi.mocked(fetcher.fetchSections).mockResolvedValue(null);
+
+        const { records } = await fetchIncremental('2026-05-15');
+
+        expect(records).toHaveLength(1);
+        expect(records[0].sections_extracted).toBe(false);
+        // buildNullSections fills with nulls — preserves shape for downstream
+        expect(records[0].sections).toBeTruthy();
+    });
+
+    it('skips items lacking setid (defensive)', async () => {
+        vi.mocked(fetcher.listSplPage).mockResolvedValue({
+            total: 2,
+            items: [{ ...LIST_ITEMS[0], setid: null }, LIST_ITEMS[1]],
+        });
+        vi.mocked(fetcher.fetchSections).mockResolvedValue(null);
+
+        const { records } = await fetchIncremental('2026-05-15');
+
+        expect(records).toHaveLength(1);
+        expect(records[0].setid).toBe('bbbb-bbbb');
+    });
+
+    it('a single fetchSections failure is non-fatal — other records still emit', async () => {
+        vi.mocked(fetcher.listSplPage).mockResolvedValue({ total: 2, items: LIST_ITEMS });
+        vi.mocked(fetcher.fetchSections)
+            .mockRejectedValueOnce(new Error('Network blip'))
+            .mockResolvedValueOnce(null);
+
+        const { records } = await fetchIncremental('2026-05-15');
+
+        expect(records).toHaveLength(1);
+        expect(records[0].setid).toBe('bbbb-bbbb');
     });
 });
