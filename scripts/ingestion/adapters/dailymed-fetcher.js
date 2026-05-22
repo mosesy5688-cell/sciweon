@@ -22,19 +22,48 @@ export function todayIso() {
     return new Date().toISOString().slice(0, 10);
 }
 
+// Cycle 21 PR #8: scope shrink. Previously today-7d, which on first-ever
+// deploy tried to pull 7-day backlog. Combined with the DailyMed v2
+// server-side `startdate` filter being **completely ignored** (verified
+// 2026-05-22: queries with startdate=2025-01-01 and startdate=2026-05-22
+// return identical responses — server returns full 156505-label corpus
+// sorted by published_date desc), the bootstrap loop tried to ingest the
+// entire corpus and would time out the GHA 6h job.
+//
+// New design: incremental adapter only handles "today + 1-day overlap".
+// Historical / full-corpus ingest is delegated to a separate bulk-harvest
+// workflow (PLANNED, tracked in SCIWEON_BULK_ACQUISITION_TRACKER.md).
+// Daily cron now pulls ~50-200 freshly-published labels in 1-2 minutes.
 export function bootstrapSince() {
     const d = new Date();
-    d.setDate(d.getDate() - 7);
+    d.setDate(d.getDate() - 1);
     return d.toISOString().slice(0, 10);
 }
 
-// MM/DD/YYYY or ISO → YYYY-MM-DD
+const MONTH_MAP = {
+    jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
+    jul: '07', aug: '08', sep: '09', sept: '09', oct: '10', nov: '11', dec: '12',
+    january: '01', february: '02', march: '03', april: '04', june: '06',
+    july: '07', august: '08', september: '09', october: '10', november: '11', december: '12',
+};
+
+// MM/DD/YYYY or YYYY-MM-DD or "Month DD, YYYY" → YYYY-MM-DD
+// Cycle 21 PR #8: added textual-month branch. DailyMed API returns
+// "May 21, 2026" for published_date — the old regex chain dropped to the
+// `return s` fallback, breaking lexicographic date comparison needed for
+// client-side cutoff (the fix for the broken server-side startdate
+// filter). Verified live 2026-05-22.
 export function normalizeDailyMedDate(dateStr) {
     if (!dateStr) return null;
     const s = String(dateStr).trim();
-    const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-    if (m) return `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+    const mNum = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (mNum) return `${mNum[3]}-${mNum[1].padStart(2, '0')}-${mNum[2].padStart(2, '0')}`;
     if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+    const mText = s.match(/^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})$/);
+    if (mText) {
+        const mm = MONTH_MAP[mText[1].toLowerCase()];
+        if (mm) return `${mText[3]}-${mm}-${mText[2].padStart(2, '0')}`;
+    }
     return s;
 }
 
