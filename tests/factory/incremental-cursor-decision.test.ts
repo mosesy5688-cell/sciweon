@@ -95,4 +95,70 @@ describe('decideCursorAdvance', () => {
         expect(d.kind).toBe('advance');
         expect(d.cursorUpdate.sinceToken).toBe('2026-05-19T00:00:00Z');
     });
+
+    // Cycle 21 — Pattern A2 (probe-path early exit must not trust adapter
+    // nextSinceToken). DailyMed/WHO-ATC returned today, poisoning the
+    // cursor and permanently locking the source. The SSoT must symmetrize
+    // the hold-on-no-progress rule across both branches.
+    describe('no_updates_hold (Pattern A2)', () => {
+        it('hasUpdates=false holds cursor at currentSinceToken, ignores adapter nextSinceToken', () => {
+            const d = decideCursorAdvance({
+                recordsLength: 0,
+                currentSinceToken: '2026-05-15',
+                nextSinceToken: '2026-05-22', // poisoned value adapter returns
+                source: 'dailymed',
+                hasUpdates: false,
+            });
+            expect(d.kind).toBe('no_updates_hold');
+            expect(d.cursorUpdate.sinceToken).toBe('2026-05-15');
+            expect(d.cursorUpdate.status).toBe('no_updates');
+            expect(d.cursorUpdate.record_count).toBe(0);
+        });
+
+        it('no_updates_hold message references Pattern A2 + source name', () => {
+            const d = decideCursorAdvance({
+                recordsLength: 0,
+                currentSinceToken: '2026-05-15',
+                nextSinceToken: '2026-05-22',
+                source: 'who-atc',
+                hasUpdates: false,
+            });
+            expect(d.message).toContain('Pattern A2');
+            expect(d.message).toContain('who-atc');
+        });
+
+        it('hasUpdates=false with null currentSinceToken (first-ever run, no probe data) holds null', () => {
+            const d = decideCursorAdvance({
+                recordsLength: 0,
+                currentSinceToken: null,
+                nextSinceToken: '2026-05-22',
+                source: 'dailymed',
+                hasUpdates: false,
+            });
+            expect(d.kind).toBe('no_updates_hold');
+            expect(d.cursorUpdate.sinceToken).toBeNull();
+        });
+
+        it('hasUpdates defaults to true → back-compat with existing fetchIncremental callers', () => {
+            const d = decideCursorAdvance({
+                recordsLength: 100,
+                currentSinceToken: 't0',
+                nextSinceToken: 't1',
+                source: 'pubmed',
+            });
+            expect(d.kind).toBe('advance');
+        });
+
+        it('hasUpdates=true + zero records still routes to anomaly_zero_fetch_hold (Pattern A unchanged)', () => {
+            const d = decideCursorAdvance({
+                recordsLength: 0,
+                currentSinceToken: 't0',
+                nextSinceToken: 't1',
+                source: 'chembl',
+                hasUpdates: true,
+            });
+            expect(d.kind).toBe('anomaly_zero_fetch_hold');
+            expect(d.cursorUpdate.status).toBe('anomaly_zero_fetch');
+        });
+    });
 });

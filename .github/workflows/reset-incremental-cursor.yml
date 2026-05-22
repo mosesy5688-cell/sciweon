@@ -1,0 +1,63 @@
+name: Recovery — Reset Incremental Cursor
+
+# One-time recovery for the cycle 21 cursor-poisoning bug. The V0.7
+# incremental worker (pre-fix) advanced the cursor to today even on
+# zero-fetch early-exit, which permanently stalled DailyMed + WHO-ATC
+# (and potentially any other adapter whose checkForUpdates returns
+# nextSinceToken=today). After the worker fix, sources with poisoned
+# cursors will still hold at today forever — they need a one-time reset
+# to re-enter bootstrap and pick up the historical backlog.
+#
+# Manual dispatch only. Specify comma-separated sources. `hard=true`
+# deletes the cursor object outright (cleanest bootstrap); `hard=false`
+# clears sinceToken in-place and preserves prior fields.
+#
+# After dispatch, trigger Factory 1/4 to repopulate the affected source
+# (or wait for the next scheduled run).
+
+on:
+  workflow_dispatch:
+    inputs:
+      sources:
+        description: 'Comma-separated source names (e.g. dailymed,who-atc)'
+        required: true
+        type: string
+      hard:
+        description: 'Delete cursor object (true) or just clear sinceToken (false)'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['true', 'false']
+      dry_run:
+        description: 'Print plan without writing'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['true', 'false']
+
+permissions:
+  contents: read
+
+jobs:
+  reset:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Reset cursor(s)
+        run: |
+          ARGS="--source=${{ inputs.sources }}"
+          if [ "${{ inputs.hard }}" = "true" ]; then ARGS="$ARGS --hard"; fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          node scripts/factory/reset-incremental-cursor.js $ARGS
