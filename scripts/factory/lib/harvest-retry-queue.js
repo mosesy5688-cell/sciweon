@@ -38,7 +38,14 @@ import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3
 const QUEUE_KEY = 'state/harvest-retry-queue.json';
 const REQUIRED_ENV = ['R2_ENDPOINT', 'R2_BUCKET', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'];
 
-export const MAX_QUEUE_DEPTH = 500;
+// Cycle 21 raised 500 → 1500 after in-run retry landed in pubchem-adapter
+// (lib/fetch-with-retry.js). Pre-fix, a single PubChem episode could fail
+// 2000+ CIDs in one batch (F1 run 26269624764 logged 2113 failures);
+// in-run retry resolves most transient burst on attempt 2/3, so the
+// cross-run queue should rarely fill past a few hundred. 1500 gives
+// headroom for slow-recovery scenarios while still surfacing a real
+// extended outage (each 5K CID run leaves <1500 unresolved → halt + alert).
+export const MAX_QUEUE_DEPTH = 1500;
 export const MAX_RETRIES_PER_ENTRY = 10;
 
 const DEFAULT_QUEUE = { entries: [], last_updated: null };

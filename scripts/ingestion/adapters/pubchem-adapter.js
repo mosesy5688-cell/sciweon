@@ -11,6 +11,7 @@
 
 import { computeLipinskiViolations } from '../../factory/lib/lipinski.js';
 import { scoreEntity } from '../../factory/lib/confidence-scorer.js';
+import { fetchJsonWithRetry } from '../../factory/lib/fetch-with-retry.js';
 
 // ─── V2 adapter contract ──────────────────────────────────────────────────
 export const supportsIncremental     = true;
@@ -28,28 +29,27 @@ const PROPERTIES = [
     'Complexity', 'HBondDonorCount', 'HBondAcceptorCount', 'RotatableBondCount',
 ].join(',');
 
-async function fetchJson(url) {
-    const res = await fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}: ${url}`);
-    return res.json();
-}
-
 /**
- * Fetch raw PubChem data for a single CID.
+ * Fetch raw PubChem data for a single CID. Cycle 21 fix: in-run retry +
+ * 429/503 backoff via shared helper. Pre-fix, a single PubChem flake
+ * would mark the CID as fetch_failed and overflow the cross-run retry
+ * queue (F1 run 26269624764 halted with 2113 failures from one episode).
  */
 export async function fetchCompound(cid) {
     const url = `${PUBCHEM_BASE}/compound/cid/${cid}/property/${PROPERTIES}/JSON`;
-    const data = await fetchJson(url);
+    const data = await fetchJsonWithRetry(url, { timeoutMs: REQUEST_TIMEOUT_MS });
     return data?.PropertyTable?.Properties?.[0] ?? null;
 }
 
 /**
- * Fetch synonyms for a CID (separate endpoint).
+ * Fetch synonyms for a CID (separate endpoint). 404 is normal for
+ * compounds without synonym records — allow404 skips retry and returns
+ * null, which the catch maps to [].
  */
 export async function fetchSynonyms(cid) {
     try {
         const url = `${PUBCHEM_BASE}/compound/cid/${cid}/synonyms/JSON`;
-        const data = await fetchJson(url);
+        const data = await fetchJsonWithRetry(url, { timeoutMs: REQUEST_TIMEOUT_MS, allow404: true });
         return data?.InformationList?.Information?.[0]?.Synonym?.slice(0, 100) ?? [];
     } catch { return []; }
 }

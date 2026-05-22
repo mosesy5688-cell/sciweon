@@ -34,25 +34,20 @@
 // V2 adapter contract: reactive AID/CID lookup — called per-compound from stage-2 enrichment.
 export const supportsIncremental = false;
 
+import { fetchJsonWithRetry } from '../../factory/lib/fetch-with-retry.js';
+
 const PUBCHEM_BASE = 'https://pubchem.ncbi.nlm.nih.gov/rest/pug';
 const REQUEST_TIMEOUT_MS = 30000;
 const REQUEST_DELAY_MS = 250;
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-async function fetchJson(url) {
-    const res = await fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-    if (!res.ok) {
-        if (res.status === 404) return null;
-        if (res.status === 429 || res.status === 503) {
-            await sleep(5000);
-            const retry = await fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-            if (!retry.ok) throw new Error(`HTTP ${retry.status}: ${url}`);
-            return retry.json();
-        }
-        throw new Error(`HTTP ${res.status}: ${url}`);
-    }
-    return res.json();
+// Cycle 21 — replaced inline 5-sec/single-retry block with the shared
+// helper (3 attempts + exponential backoff + 429/503 + Retry-After).
+// Behavior strictly better; 404 still returned as null for callers that
+// treat absent-bioassay as empty (existing semantics).
+function fetchJson(url) {
+    return fetchJsonWithRetry(url, { timeoutMs: REQUEST_TIMEOUT_MS, allow404: true });
 }
 
 /**
