@@ -37,6 +37,21 @@ function ghInherit(cmd, extraEnv = {}) {
     execSync(cmd, { stdio: 'inherit', env: { ...process.env, ...extraEnv } });
 }
 
+// Idempotent label ensure. `gh issue create --label X` hard-fails if X
+// doesn't exist. Cycle 21 PR #5 (factory-cron-health label was missing,
+// took down the entire cron-health summary job when the new stalled-
+// cursor detection started flagging adapters). Create-or-ignore.
+function ensureLabel(name) {
+    try {
+        ghQuiet(`gh label create "${name.replace(/"/g, '\\"')}" --color "ededed" --description "Auto-managed by canary-issue-manage.js"`);
+        console.log(`[LABEL-CREATE] ${name}`);
+    } catch (e) {
+        // gh exits non-zero if label already exists — treat as success.
+        // Any other failure (auth, network) will resurface on the actual
+        // gh issue create call below, where it's the relevant context.
+    }
+}
+
 async function main() {
     const threshold = parseInt(process.env.CANARY_THRESHOLD || String(DEFAULT_THRESHOLD), 10);
     const report = JSON.parse(await fs.readFile(REPORT_PATH, 'utf-8'));
@@ -61,6 +76,10 @@ async function main() {
 
     let opened = 0;
     let closed = 0;
+    // Pre-create the label once per run; gh issue create needs it to exist.
+    if (actions.some(a => a.kind === 'newly_failing' || a.kind === 'recovered')) {
+        ensureLabel(ISSUE_LABEL);
+    }
     for (const a of actions) {
         if (a.kind === 'newly_failing') {
             const consecutive = (a.prev?.consecutive_failures ?? 0) + 1;

@@ -68,7 +68,14 @@ export async function checkForUpdates(sinceToken) {
             labeltype: 'HUMAN PRESCRIPTION DRUG',
         });
         const data = await fetchJson(`${DAILYMED_BASE}/spls.json?${params}`);
-        const total = data.metadata?.total ?? 0;
+        // DailyMed v2 returns `total_elements` (not `total`). The earlier
+        // `metadata.total ?? 0` always evaluated to 0 → hasUpdates=false on
+        // every cron, and combined with cycle 21 cursor poisoning this
+        // permanently blocked drug-labels publication. Verified live at
+        // https://dailymed.nlm.nih.gov/dailymed/services/v2/spls.json
+        // — response.metadata.total_elements = 156505 (full corpus).
+        // [[feedback_local_verify_external_api]]
+        const total = data.metadata?.total_elements ?? 0;
         return { hasUpdates: total > 0, count: total, nextSinceToken: todayIso() };
     } catch (e) {
         console.warn(`[DAILYMED] checkForUpdates: ${e.message}`);

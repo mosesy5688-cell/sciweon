@@ -78,8 +78,11 @@ export async function listSplPage(startDate, page) {
         labeltype: 'HUMAN PRESCRIPTION DRUG',
     });
     const data = await fetchJson(`${DAILYMED_BASE}/spls.json?${params}`);
+    // DailyMed v2 uses `total_elements` not `total`; see dailymed-adapter.js
+    // checkForUpdates note. Bug was symmetric across probe + list paths —
+    // bootstrap fetch loop terminated on page 1 (maxPage = 0 / 0 = NaN).
     return {
-        total: data.metadata?.total ?? 0,
+        total: data.metadata?.total_elements ?? 0,
         items: Array.isArray(data.data) ? data.data : [],
     };
 }
