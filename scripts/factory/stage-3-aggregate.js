@@ -32,11 +32,11 @@
 
 import { spawn } from 'child_process';
 import path from 'path';
-import { downloadStage, uploadStage, deriveRunId, readStagePointer, downloadStageByRunId } from './lib/r2-stage-bridge.js';
-import { mergeLocalAggregatedWithPrevious, MERGE_FILES } from './lib/aggregated-merger.js';
+import { downloadStage, uploadStage, deriveRunId } from './lib/r2-stage-bridge.js';
+import { executeCumulativeMerge } from './lib/stage-3-merge.js';
 import { buildIndex as buildSearchIndex, OUTPUT_FILE as SEARCH_INDEX_FILE } from './lib/search-index-builder.js';
 import { buildIndex as buildTargetIndex, OUTPUT_FILE as TARGET_INDEX_FILE } from './lib/target-index-builder.js';
-import { readFirstRunSentinel, writeFirstRunSentinel, decideMergeAction } from './lib/aggregated-sentinel.js';
+import { writeFirstRunSentinel } from './lib/aggregated-sentinel.js';
 import { AGGREGATED_FILES, ENRICHED_FILES } from './lib/aggregated-files.js';
 
 const SCRIPT_DIR = 'scripts/factory';
@@ -119,63 +119,26 @@ async function main() {
         { name: 'neg-evidence-builder', fn: () => runScript('neg-evidence-builder.js') },
     ]);
 
-    // V0.5.2.1 cumulative aggregation: merge this cycle's outputs with the
-    // PREVIOUSLY-published aggregated bundle. Without this step each cycle
-    // would completely replace the API-visible state and historical CIDs
-    // would disappear (cross-cycle silent data loss anti-pattern).
-    // Replace-by-id (newer cycle wins) for retry-queue / re-harvest cases.
-    console.log('\n[STAGE-3] === Cumulative merge with previous aggregated ===');
+    // V0.5.2.1 cumulative aggregation extracted to lib/stage-3-merge.js
+    // (cycle 22 PR-CORE-3 split for Art 5.1). Hard-fails via process.exit
+    // on the suspicious-prior-state cases (codes 4/5/6/7); see helper
+    // module header for the full code table.
+    await executeCumulativeMerge(runId);
+
+    // PR-CORE-3 (cycle 22): aggregated cumulative backfill. Runs AFTER the
+    // cumulative merge (so we operate on the post-merge cumulative) and
+    // BEFORE the search/target indices (so they reflect newly-backfilled
+    // records). Closes the wiring arc that PR-CORE-2 missed (its F2-side
+    // cursors only see ~5k F1 deltas, never the ~70k cumulative backlog).
+    // Per D7: non-fatal to F3 - failure logs explicit but stage continues
+    // with un-backfilled cumulative so the un-related downstream work
+    // (search index, target index, upload, snapshot) still produces output.
+    console.log('\n[STAGE-3] === PR-CORE-3 cumulative backfill ===');
     try {
-        const prevPointer = await readStagePointer('aggregated');
-        const firstRunDone = await readFirstRunSentinel();
-        let previousBuffers = null;
-        let prevBufferNonEmpty = false;
-        if (prevPointer?.run_id && prevPointer.run_id !== runId) {
-            previousBuffers = await downloadStageByRunId('aggregated', prevPointer.run_id, MERGE_FILES);
-            const compoundsBuf = previousBuffers['compounds-enriched.jsonl'];
-            prevBufferNonEmpty = (compoundsBuf?.length ?? 0) > 100;
-        }
-        const action = decideMergeAction({ prevPointer, runId, firstRunDone, prevBufferNonEmpty });
-        switch (action.kind) {
-            case 'first_run_skip':
-                console.log('[STAGE-3] First-ever run (no sentinel, no pointer) — skipping merge, will mark sentinel after upload.');
-                break;
-            case 'sentinel_present_pointer_missing':
-                console.error('[STAGE-3] FATAL: first_run_complete sentinel set but latest.json pointer missing — refusing merge (would clobber cumulative data). Operator must restore latest.json or remove sentinel before re-running.');
-                process.exit(4);
-                break;
-            case 'pointer_missing_run_id':
-                console.error('[STAGE-3] FATAL: latest.json pointer is missing run_id field — refusing merge (foreign writer / manual R2 PutObject suspected). Operator must rewrite processed/aggregated/latest.json with run_id field before re-running.');
-                process.exit(6);
-                break;
-            case 'same_run_skip':
-                console.log(`[STAGE-3] Pointer already references current run_id=${runId} (re-run) — skipping merge.`);
-                break;
-            case 'empty_buffer_abort':
-                console.error('[STAGE-3] FATAL: Previous bundle compounds-enriched.jsonl empty/missing — refusing merge against empty previous (partial upload crash suspected). Operator must verify previous bundle integrity before re-running.');
-                process.exit(5);
-                break;
-            case 'merge': {
-                console.log(`[STAGE-3] Merging current cycle with previous aggregated run_id=${prevPointer.run_id}`);
-                const totalBytesIn = Object.values(previousBuffers).reduce((s, b) => s + b.length, 0);
-                console.log(`[STAGE-3] Downloaded ${MERGE_FILES.length} previous files (${(totalBytesIn / 1024).toFixed(1)} KB)`);
-                const mergeResult = await mergeLocalAggregatedWithPrevious(previousBuffers);
-                console.log('[STAGE-3] Merge stats per file:');
-                for (const [fname, stats] of Object.entries(mergeResult.perFile)) {
-                    console.log(`  ${fname.padEnd(35)} total=${stats.total} (cur=${stats.from_current} prev_kept=${stats.from_previous_kept} replaced=${stats.replaced_by_current})`);
-                }
-                console.log(`[STAGE-3] Cumulative records across all files: ${mergeResult.totalMergedRecords}`);
-                break;
-            }
-        }
+        await runScript('aggregated-backfill-enrich.js');
+        console.log('[STAGE-3] Backfill OK');
     } catch (err) {
-        // Per [[feedback_cross_cycle_silent_data_loss]] — a swallowed merge
-        // failure that downgrades to per-cycle upload is the exact silent-loss
-        // anti-pattern that produced the 2026-05-19 F3 5000-record regression.
-        // Hard-abort instead so stage-4 never runs against downgraded data.
-        console.error(`[STAGE-3] FATAL: Cumulative merge failed: ${err.message}`);
-        console.error('[STAGE-3] Refusing to fall back to per-cycle upload — that would clobber historical compounds. Stage halted; investigate R2 connectivity / pointer schema / previous bundle integrity before re-running.');
-        process.exit(7);
+        console.error(`[STAGE-3] Backfill failed (non-fatal, F3 continues with un-backfilled cumulative): ${err.message}`);
     }
 
     // V0.5.3 Tier 1.5 search index — rebuild SQLite FTS5 over cumulative

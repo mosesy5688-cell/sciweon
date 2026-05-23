@@ -41,8 +41,12 @@ import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3
 const REQUIRED_ENV = ['R2_ENDPOINT', 'R2_BUCKET', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'];
 export const DEFAULT_CHUNK_SIZE = 5000;
 
-function cursorKey(source) {
-    return `state/enrichment-cursor/${source}.json`;
+// Cursor JSON R2 key. `prefix` lets a caller (e.g. PR-CORE-3 aggregated
+// backfill) target a separate cursor namespace from the PR-CORE-2 F2-baseline
+// cursors. Default 'state/enrichment-cursor/' keeps existing baseline callers
+// unchanged. Aggregated backfill uses 'state/aggregated-cursor/'.
+function cursorKey(source, prefix = 'state/enrichment-cursor/') {
+    return `${prefix}${source}.json`;
 }
 
 function makeR2Client() {
@@ -65,14 +69,16 @@ async function streamToBuffer(stream) {
 }
 
 // Read cursor for source; null when no cursor exists yet (first run).
+// `prefix` selects namespace (default = F2-baseline cursors;
+// 'state/aggregated-cursor/' = PR-CORE-3 cumulative backfill).
 // Network/IO failures bubble up - the script must decide whether to
 // fall back to a fresh cursor or abort.
-export async function readCursor(source) {
+export async function readCursor(source, prefix) {
     const client = makeR2Client();
     try {
         const res = await client.send(new GetObjectCommand({
             Bucket: process.env.R2_BUCKET,
-            Key: cursorKey(source),
+            Key: cursorKey(source, prefix),
         }));
         const buf = await streamToBuffer(res.Body);
         return JSON.parse(buf.toString());
@@ -84,11 +90,11 @@ export async function readCursor(source) {
     }
 }
 
-export async function writeCursor(source, cursor) {
+export async function writeCursor(source, cursor, prefix) {
     const client = makeR2Client();
     await client.send(new PutObjectCommand({
         Bucket: process.env.R2_BUCKET,
-        Key: cursorKey(source),
+        Key: cursorKey(source, prefix),
         Body: JSON.stringify(cursor, null, 2),
         ContentType: 'application/json',
     }));
