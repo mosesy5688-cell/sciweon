@@ -139,4 +139,30 @@ describe('buildNextCursor', () => {
         });
         expect(next.chunk_size).toBe(20000);
     });
+
+    it('PR-CORE-3b: explicit chunkSize param overrides default + prev (persistence bug fix)', () => {
+        // Caller with a non-default fallback (e.g. aggregated-backfill-enrich
+        // uses 2000) must persist its effective value, not the global default.
+        const next = buildNextCursor({
+            source: 'rxnorm',
+            prev: null,  // first cycle, no prev cursor
+            chunkResult: { slice: [], nextCursorId: 'a', wrapped: false, totalEligible: 10 },
+            processedCount: 2000,
+            totalEligible: 10,
+            chunkSize: 2000,
+        });
+        expect(next.chunk_size).toBe(2000);
+    });
+
+    it('PR-CORE-3b: explicit chunkSize wins over prev.chunk_size when both present', () => {
+        const next = buildNextCursor({
+            source: 'rxnorm',
+            prev: { source: 'rxnorm', cursor_id: 'x', chunk_size: 5000 } as never,
+            chunkResult: { slice: [], nextCursorId: 'y', wrapped: false, totalEligible: 100 },
+            processedCount: 2000,
+            totalEligible: 100,
+            chunkSize: 2000,
+        });
+        expect(next.chunk_size).toBe(2000);
+    });
 });

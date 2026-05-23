@@ -150,13 +150,23 @@ export function chunkIterator(records, cursor, chunkSize = DEFAULT_CHUNK_SIZE) {
 
 // Build the cursor object to persist after an enrichment chunk completes.
 // Caller passes the previous cursor (may be null), chunk result, and
-// the per-source attempted count for telemetry.
-export function buildNextCursor({ source, prev, chunkResult, processedCount, totalEligible }) {
+// the per-source attempted count for telemetry. Optional `chunkSize`
+// explicitly persists the effective slice size used this cycle - PR-CORE-3b
+// fix for the persistence bug where a caller with a non-default
+// fallback (e.g. aggregated-backfill-enrich.js uses 2000 not 5000) would
+// silently leak DEFAULT_CHUNK_SIZE into the cursor and blow its budget
+// on the next cycle. When `chunkSize` is omitted, falls back to
+// prev?.chunk_size ?? DEFAULT_CHUNK_SIZE (preserves legacy behavior for
+// F2-side enrichers whose intended default IS DEFAULT_CHUNK_SIZE).
+export function buildNextCursor({ source, prev, chunkResult, processedCount, totalEligible, chunkSize }) {
     const cyclesCompleted = (prev?.cycles_completed ?? 0) + (chunkResult.wrapped ? 1 : 0);
+    const effectiveChunkSize = chunkSize != null
+        ? chunkSize
+        : (prev?.chunk_size ?? DEFAULT_CHUNK_SIZE);
     return {
         source,
         cursor_id: chunkResult.nextCursorId,
-        chunk_size: prev?.chunk_size ?? DEFAULT_CHUNK_SIZE,
+        chunk_size: effectiveChunkSize,
         processed_in_run: processedCount,
         cycles_completed: cyclesCompleted,
         last_run: new Date().toISOString(),
