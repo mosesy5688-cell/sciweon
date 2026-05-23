@@ -35,6 +35,7 @@ import { publishCompoundShards } from './lib/compound-shard-publisher.js';
 import { verifyShardIntegrity, updateLatestPointer } from './lib/compound-shard-pointer.js';
 
 import { AGGREGATED_FILES } from './lib/aggregated-files.js';
+import { verifySnapshotPresent } from './lib/snapshot-bridge.js';
 
 const SCRIPT_DIR = 'scripts/factory';
 
@@ -180,11 +181,32 @@ async function main() {
         process.exit(9);
     }
 
+    // Cycle 22 PR-L4: post-upload R2 presence verification. F4 success
+    // claim must be backed by actual listable snapshot/<today>/manifest.json
+    // — otherwise silently fails Layer 4 完整性 leg of triple-lock. Same
+    // HARDFAIL defense pattern as cycle 21 PR #4/#112/#113 SSoT guards.
+    console.log('\n[STAGE-4] === Post-upload R2 verification ===');
+    const todayIso = new Date().toISOString().slice(0, 10);
+    try {
+        const r2c = makeR2Client();
+        const bucket = process.env.R2_BUCKET;
+        const present = await verifySnapshotPresent(r2c, bucket, todayIso);
+        if (!present) {
+            console.error(`[STAGE-4] FAIL: snapshots/${todayIso}/manifest.json not listable in R2 post-upload — Layer 4 完整性 violation`);
+            process.exit(10);
+        }
+        console.log(`[STAGE-4] Post-upload verification OK: snapshots/${todayIso}/manifest.json confirmed in R2`);
+    } catch (err) {
+        console.error(`[STAGE-4] Post-upload verification ERROR: ${err.message}`);
+        process.exit(10);
+    }
+
     const elapsed = Math.round((Date.now() - startTime) / 1000);
     console.log(`\n[STAGE-4] === Summary ===`);
     console.log(`  Elapsed:        ${elapsed}s (${(elapsed / 60).toFixed(1)} min)`);
     console.log(`  Snapshot:       uploaded to R2 snapshots/<date>/`);
     console.log(`  Latest pointer: updated`);
+    console.log(`  Post-upload:    verified present in R2`);
     console.log('[STAGE-4] Pipeline complete');
     process.exit(0);
 }

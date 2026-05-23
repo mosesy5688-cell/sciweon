@@ -52,7 +52,12 @@ function todayUtcIso() {
 }
 
 async function main() {
-    const dateStr = process.argv.find(a => a.startsWith('--date='))?.split('=')[1] || todayUtcIso();
+    // Date precedence: --date CLI arg > TARGET_DATE env (cycle 22 PR-L4
+    // backfill) > today. Both allow snapshot-backfill.js to drive an OLD
+    // target date without modifying builder logic.
+    const dateStr = process.argv.find(a => a.startsWith('--date='))?.split('=')[1]
+        || process.env.TARGET_DATE
+        || todayUtcIso();
     console.log(`[SNAPSHOT-BUILDER] V0.4.3 — building snapshot ${dateStr}`);
 
     const snapshotDir = path.join(SNAPSHOT_ROOT, dateStr);
