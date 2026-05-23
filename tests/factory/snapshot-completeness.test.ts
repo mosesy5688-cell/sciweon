@@ -10,7 +10,7 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-    expectedDateRange, computeCompleteness,
+    expectedDateRange, computeCompleteness, detectInfraStart,
 } from '../../scripts/factory/lib/snapshot-bridge.js';
 
 describe('expectedDateRange', () => {
@@ -53,6 +53,68 @@ describe('expectedDateRange', () => {
     it('throws on invalid today format', () => {
         expect(() => expectedDateRange(7, '2026/05/23')).toThrow();
         expect(() => expectedDateRange(7, 'today')).toThrow();
+    });
+
+    // PR-L4e: infra-start cutoff filters out pre-infrastructure dates so
+    // they are not counted as "missing" (snapshot workflow did not exist).
+    it('infraStart cutoff trims pre-infra dates from expected range', () => {
+        const r = expectedDateRange(7, '2026-05-23', '2026-05-20');
+        expect(r).toEqual(['2026-05-20', '2026-05-21', '2026-05-22', '2026-05-23']);
+    });
+
+    it('infraStart at today returns only today', () => {
+        const r = expectedDateRange(30, '2026-05-23', '2026-05-23');
+        expect(r).toEqual(['2026-05-23']);
+    });
+
+    it('infraStart after window-start has no effect (no dates filtered)', () => {
+        const r = expectedDateRange(3, '2026-05-23', '2026-05-19');
+        expect(r).toEqual(['2026-05-20', '2026-05-21', '2026-05-22', '2026-05-23']);
+    });
+
+    it('infraStart null/undefined disables cutoff (back-compat)', () => {
+        const baseline = expectedDateRange(3, '2026-05-23');
+        expect(expectedDateRange(3, '2026-05-23', null)).toEqual(baseline);
+        expect(expectedDateRange(3, '2026-05-23', undefined)).toEqual(baseline);
+    });
+
+    it('infraStart future date filters out entire window', () => {
+        const r = expectedDateRange(7, '2026-05-23', '2026-06-01');
+        expect(r).toEqual([]);
+    });
+
+    it('throws on invalid infraStart format', () => {
+        expect(() => expectedDateRange(7, '2026-05-23', '2026/05/13')).toThrow();
+    });
+
+    it('production observed 2026-05-23: 60d window + infra_start=2026-05-13 → 11 dates', () => {
+        const r = expectedDateRange(60, '2026-05-23', '2026-05-13');
+        expect(r.length).toBe(11);
+        expect(r[0]).toBe('2026-05-13');
+        expect(r[r.length - 1]).toBe('2026-05-23');
+    });
+});
+
+describe('detectInfraStart', () => {
+    it('returns null on empty input', () => {
+        expect(detectInfraStart([])).toBeNull();
+    });
+
+    it('returns null on non-array input', () => {
+        expect(detectInfraStart(null)).toBeNull();
+        expect(detectInfraStart(undefined)).toBeNull();
+    });
+
+    it('returns earliest date from sorted list', () => {
+        expect(detectInfraStart(['2026-05-13', '2026-05-14', '2026-05-23'])).toBe('2026-05-13');
+    });
+
+    it('returns earliest date from unsorted list (defensive sort)', () => {
+        expect(detectInfraStart(['2026-05-23', '2026-05-13', '2026-05-20'])).toBe('2026-05-13');
+    });
+
+    it('returns the single date when only one present', () => {
+        expect(detectInfraStart(['2026-05-23'])).toBe('2026-05-23');
     });
 });
 
