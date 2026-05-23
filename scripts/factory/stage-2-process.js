@@ -10,8 +10,12 @@
  *   processed/baseline/<latest_pointer>/bioactivities.jsonl
  *
  * Outputs (R2):
- *   processed/enriched/<run_id>/compounds-enriched.jsonl  (in-place enriched)
- *   processed/enriched/<run_id>/bioactivities.jsonl       (cross-validated)
+ *   processed/enriched/<run_id>/<ENRICHED_FILES list>      (SSoT in
+ *     lib/aggregated-files.js — currently compounds-enriched.jsonl +
+ *     bioactivities.jsonl + drug-labels.jsonl. Drift between this list
+ *     and the actual emit pipeline is what silently dropped drug-labels
+ *     from cycle 21 PRs #103-#8; SSoT extraction 2026-05-23 closes the
+ *     pattern for stage-2 as PR #98 did for stage-3/4.)
  *   processed/enriched/latest.json
  *
  * Exit codes:
@@ -28,6 +32,7 @@ import { downloadAdapterCumulative } from './lib/adapter-bridge.js';
 import { countJsonlRecords } from './lib/snapshot-history-gate.js';
 import { decideYieldAction } from './lib/stage-2-yield.js';
 import { downloadCache, uploadCache } from './lib/r2-cache-bridge.js';
+import { ENRICHED_FILES } from './lib/aggregated-files.js';
 
 const SCRIPT_DIR = 'scripts/factory';
 
@@ -150,7 +155,7 @@ async function main() {
 
     console.log('\n[STAGE-2] === Upload enriched bundle to R2 ===');
     try {
-        await uploadStage('enriched', runId, ['compounds-enriched.jsonl', 'bioactivities.jsonl']);
+        await uploadStage('enriched', runId, ENRICHED_FILES);
     } catch (err) {
         console.error(`[STAGE-2] R2 upload failed: ${err.message}`);
         process.exit(3);
