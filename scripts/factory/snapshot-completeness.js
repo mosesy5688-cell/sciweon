@@ -29,6 +29,7 @@
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 import {
     makeR2Client, listSnapshotDates, expectedDateRange, computeCompleteness,
+    detectInfraStart,
 } from './lib/snapshot-bridge.js';
 
 const STATE_KEY = 'state/snapshot-completeness.json';
@@ -70,13 +71,22 @@ async function main() {
 
     const presentDates = await listSnapshotDates(client, bucket);
     const today = new Date().toISOString().slice(0, 10);
-    const expectedDates = expectedDateRange(window, today);
+
+    // PR-L4e: infra-start cutoff. Earliest present snapshot date marks when
+    // snapshot-builder infrastructure first ran successfully. Counting dates
+    // before that as "missing" is a false positive — the workflow did not
+    // exist, so absence is not actionable loss. Without this cutoff, audit
+    // permanently reports ~30+ historical "missing" dates that no backfill
+    // can ever address (no source aggregated bundle exists pre-infra).
+    const infraStart = detectInfraStart(presentDates);
+    const expectedDates = expectedDateRange(window, today, infraStart);
     const { present, missing, present_pct } = computeCompleteness(expectedDates, presentDates);
     const cat = categorizeWindow(missing);
 
     const result = {
         audit_date: today,
         window_days: window,
+        infra_start_date: infraStart,
         expected_count: expectedDates.length,
         present_count: present.length,
         missing_count: missing.length,
@@ -89,7 +99,7 @@ async function main() {
         },
         last_7d_complete: cat.last7.length === 0,
         last_30d_complete_pct: (() => {
-            const exp = expectedDateRange(Math.min(30, window), today);
+            const exp = expectedDateRange(Math.min(30, window), today, infraStart);
             const presSet = new Set(presentDates);
             const pres = exp.filter(d => presSet.has(d));
             return exp.length === 0 ? 100 : +(100 * pres.length / exp.length).toFixed(2);
@@ -112,7 +122,8 @@ async function main() {
     // Console summary
     console.log(`\n[SNAPSHOT-COMPLETENESS] === Summary ===`);
     console.log(`  Window:              ${window} days`);
-    console.log(`  Expected dates:      ${expectedDates.length}`);
+    console.log(`  Infra-start cutoff:  ${infraStart ?? '(none — no snapshots yet)'}`);
+    console.log(`  Expected dates:      ${expectedDates.length} (post-infra-start)`);
     console.log(`  Present in R2:       ${present.length}`);
     console.log(`  Missing total:       ${missing.length} (present_pct=${present_pct}%)`);
     console.log(`  Missing last 7d:     ${cat.last7.length} ${cat.last7.length > 0 ? '⚠️  HARDFAIL trigger' : '✅'}`);

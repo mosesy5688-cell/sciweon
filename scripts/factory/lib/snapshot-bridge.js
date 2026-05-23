@@ -145,17 +145,39 @@ export async function findNearestPriorAggregated(client, bucket, targetDate) {
 
 // Compute expected calendar dates from (today - windowDays) to today inclusive.
 // Returns sorted asc array of "YYYY-MM-DD".
-export function expectedDateRange(windowDays, todayIso) {
+//
+// PR-L4e extension: optional infraStart cutoff trims the lower bound.
+// Dates before infraStart are filtered out (snapshot infrastructure
+// didn't exist yet — counting them as "missing" creates false positives).
+// Pass null/undefined to disable the cutoff (original behavior).
+export function expectedDateRange(windowDays, todayIso, infraStart) {
     const today = todayIso ?? new Date().toISOString().slice(0, 10);
     if (!DATE_RE.test(today)) throw new Error(`Invalid today: ${today}`);
+    if (infraStart != null && !DATE_RE.test(infraStart)) {
+        throw new Error(`Invalid infraStart: ${infraStart}`);
+    }
     const dates = [];
     const t = new Date(today + 'T00:00:00Z');
     for (let i = windowDays; i >= 0; i--) {
         const d = new Date(t);
         d.setUTCDate(d.getUTCDate() - i);
-        dates.push(d.toISOString().slice(0, 10));
+        const iso = d.toISOString().slice(0, 10);
+        if (infraStart != null && iso < infraStart) continue;
+        dates.push(iso);
     }
     return dates;
+}
+
+// Auto-detect infrastructure start date = earliest present snapshot in R2.
+// Returns YYYY-MM-DD or null if no snapshots exist yet (pre-infrastructure
+// entirely).  Dates before this are not actionable as "missing" because
+// snapshot-builder workflow did not exist back then.
+export function detectInfraStart(presentDates) {
+    if (!Array.isArray(presentDates) || presentDates.length === 0) return null;
+    // Already sorted asc by listSnapshotDates; defensive resort for callers
+    // passing arbitrary arrays.
+    const sorted = [...presentDates].sort();
+    return sorted[0];
 }
 
 // Diff expected vs present, returning {present, missing, present_pct} stats.
