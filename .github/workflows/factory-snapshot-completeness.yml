@@ -57,7 +57,15 @@ jobs:
         run: node scripts/factory/snapshot-completeness.js --window=${{ github.event.inputs.window_days || '60' }}
 
   backfill:
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.backfill_date != ''
+    # PR-L4c: if: always() prefix so backfill proceeds even when
+    # completeness job exits non-zero. Previous gating ("needs: completeness"
+    # without always()) created a chicken-and-egg: audit reports missing
+    # date → user dispatches backfill → completeness fails (still missing)
+    # → backfill never runs (blocked by needs). Backfill is the corrective
+    # action AGAINST completeness failure, not a step that requires it to
+    # succeed first. Ordering (audit-then-backfill) preserved by needs;
+    # always() lifts the success requirement.
+    if: always() && github.event_name == 'workflow_dispatch' && github.event.inputs.backfill_date != ''
     needs: completeness
     runs-on: ubuntu-latest
     timeout-minutes: 60
