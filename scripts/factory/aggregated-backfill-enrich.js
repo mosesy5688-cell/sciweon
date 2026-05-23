@@ -123,6 +123,10 @@ export async function backfillOneSource(sourceId, compounds) {
         chunkResult: { slice, nextCursorId, wrapped, totalEligible },
         processedCount: processed,
         totalEligible,
+        // PR-CORE-3b: explicit chunkSize persist - otherwise buildNextCursor
+        // falls back to DEFAULT_CHUNK_SIZE (5000) and leaks the wrong value
+        // into the cursor JSON, causing next cycle to use 5000 not 2000.
+        chunkSize,
     });
     try {
         await writeCursor(sourceId, nextCursor, CURSOR_PREFIX);
