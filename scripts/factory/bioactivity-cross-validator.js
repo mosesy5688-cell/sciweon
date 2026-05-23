@@ -1,32 +1,39 @@
 /**
- * Bioactivity Cross-Validator V0.3.1 — PubChem BioAssay measurement consensus.
+ * Bioactivity Cross-Validator V0.4 (cycle 22 PR-CORE-2) — PubChem BioAssay consensus.
  *
- * Existing bioactivities.jsonl carries measurements sourced from ChEMBL
- * (pharmaceutical literature curated by EMBL-EBI). PubChem BioAssay
- * aggregates from an independent pool (NIH MLP / NCI / academic / industry
- * deposits). When the same compound + target + activity_type has records
- * in both, we have genuine cross-source consensus.
+ * Existing bioactivities.jsonl carries measurements from ChEMBL.
+ * PubChem BioAssay aggregates from an independent pool (NIH MLP / NCI /
+ * academic / industry deposits). Cross-source consensus = same compound
+ * + target + activity_type has records in both pools.
+ *
+ * V0.4 (PR-CORE-2): cursor + skip-if-stamped.
+ *   - Cursor is over distinct compound_ids (the expensive PubChem assay
+ *     fetch is per-CID), iterated in lex order with default chunk_size
+ *     5000 CIDs/cycle.
+ *   - Skip-if-stamped: a bioactivity is skipped iff
+ *     `cross_source_consensus.has_pubchem_match` is already set (true OR
+ *     false - both mean "we asked PubChem and recorded the answer").
+ *     Only un-stamped bioactivities for compounds in this cycle's slice
+ *     get processed.
+ *
+ * PR-CORE-1 baseline 2026-05-23: 5.58% (18891/338660). Old non-cursored
+ * loop rebuilt the in-memory assayIndex from scratch every cycle and
+ * walltime-exhausted before reaching the tail. R2 persistence of the
+ * assayIndex itself is V2.
  *
  * Pipeline position: runs after target-resolver (which stamps
- * bioactivity.target.uniprot_accession). Operates in place on
- * output/linked/bioactivities.jsonl.
- *
- * Steps:
- *   1. Load bioactivities.jsonl
- *   2. Collect unique CIDs (Sciweon compound IDs -> pubchem_cid)
- *   3. For each CID: fetch PubChem assaysummary -> build per-compound index
- *   4. For each bioactivity: cross-validate against its compound's index
- *   5. Stamp `cross_source_consensus` on each record
- *   6. Bump sciweon_confidence: +10 on agree, +5 on soft_agree, -15 on conflict
- *   7. Save bioactivities.jsonl
+ * bioactivity.target.uniprot_accession).
  */
 
 import fs from 'fs/promises';
 import path from 'path';
 import { fetchAssaySummaryByCid, buildAssayIndex, crossValidateBioactivity, REQUEST_DELAY_MS } from '../ingestion/adapters/pubchem-bioassay-adapter.js';
+import {
+    readCursor, writeCursor, chunkIterator, buildNextCursor, DEFAULT_CHUNK_SIZE,
+} from './lib/enrichment-cursor.js';
 
+const SOURCE = 'pubchem_bioassay';
 const DATA_DIR = './output/linked';
-
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function loadJsonl(file) {
@@ -55,70 +62,109 @@ function bumpConfidence(bioactivity, consensus) {
         bioactivity.sciweon_confidence + delta));
 }
 
+// A bioactivity is skip-eligible (already stamped) when its
+// cross_source_consensus.has_pubchem_match field is present (true or
+// false - both are recorded outcomes per [[no_shortcut_in_science]]
+// quality leg). Compound-id eligibility = at least one unstamped
+// bioactivity exists for that compound.
+export function unstampedBioactivities(bioacts) {
+    return bioacts.filter(b => b?.cross_source_consensus?.has_pubchem_match == null);
+}
+
+export function distinctEligibleCompoundIds(unstamped) {
+    const set = new Set();
+    for (const b of unstamped) {
+        if (b.compound_id) set.add(b.compound_id);
+    }
+    return [...set].map(id => ({ id }));
+}
+
 async function main() {
-    console.log('[CROSS-VALIDATOR] V0.3.1 — PubChem BioAssay measurement consensus');
+    console.log('[CROSS-VALIDATOR] V0.4 - cycle 22 PR-CORE-2 cursor-driven');
 
     const bioFile = path.join(DATA_DIR, 'bioactivities.jsonl');
     const bioacts = await loadJsonl(bioFile);
     console.log(`[CROSS-VALIDATOR] Loaded ${bioacts.length} bioactivities`);
 
-    const compoundIds = [...new Set(bioacts.map(b => b.compound_id))];
-    const cidByCompound = new Map();
-    for (const cid of compoundIds) {
-        const numeric = extractCidFromCompoundId(cid);
-        if (numeric) cidByCompound.set(cid, numeric);
+    const unstamped = unstampedBioactivities(bioacts);
+    console.log(`[CROSS-VALIDATOR] Unstamped: ${unstamped.length}`);
+    if (unstamped.length === 0) {
+        console.log('[CROSS-VALIDATOR] All bioactivities already stamped this cycle.');
+        return;
     }
-    console.log(`[CROSS-VALIDATOR] Unique compounds: ${compoundIds.length}, with parseable CID: ${cidByCompound.size}`);
+
+    const eligibleCids = distinctEligibleCompoundIds(unstamped);
+    console.log(`[CROSS-VALIDATOR] Distinct unstamped compound_ids: ${eligibleCids.length}`);
+
+    let cursor = null;
+    try { cursor = await readCursor(SOURCE); }
+    catch (err) { console.warn(`[CROSS-VALIDATOR] Cursor read failed (${err.message}) - starting fresh`); }
+    const chunkSize = cursor?.chunk_size ?? DEFAULT_CHUNK_SIZE;
+    const { slice, nextCursorId, wrapped, totalEligible } = chunkIterator(eligibleCids, cursor, chunkSize);
+    console.log(`[CROSS-VALIDATOR] Cursor: prev=${cursor?.cursor_id ?? '(none)'} | chunk_size=${chunkSize} | slice=${slice.length} | wrapped=${wrapped}`);
+
+    const compoundIdSlice = new Set(slice.map(s => s.id));
+    const cidByCompound = new Map();
+    for (const compoundId of compoundIdSlice) {
+        const numeric = extractCidFromCompoundId(compoundId);
+        if (numeric != null) cidByCompound.set(compoundId, numeric);
+    }
+    console.log(`[CROSS-VALIDATOR] Resolvable to numeric CID: ${cidByCompound.size}`);
 
     const assayIndexByCompound = new Map();
     let processed = 0;
-    let totalRows = 0;
-    let totalIndexed = 0;
     for (const [compoundId, cid] of cidByCompound) {
-        const rows = await fetchAssaySummaryByCid(cid);
-        const idx = buildAssayIndex(rows);
-        assayIndexByCompound.set(compoundId, idx);
-        totalRows += rows.length;
-        totalIndexed += idx.size;
+        try {
+            const rows = await fetchAssaySummaryByCid(cid);
+            const idx = buildAssayIndex(rows);
+            assayIndexByCompound.set(compoundId, idx);
+        } catch (err) {
+            console.warn(`[CROSS-VALIDATOR] CID ${cid} fetch failed: ${err.message}`);
+        }
         processed++;
-        if (processed % 25 === 0 || processed === cidByCompound.size) {
-            console.log(`[CROSS-VALIDATOR] PubChem: ${processed}/${cidByCompound.size} compounds | total assay rows: ${totalRows} | indexed UniProt entries: ${totalIndexed}`);
+        if (processed % 50 === 0 || processed === cidByCompound.size) {
+            console.log(`[CROSS-VALIDATOR] PubChem: ${processed}/${cidByCompound.size}`);
         }
         await sleep(REQUEST_DELAY_MS);
     }
 
-    let withMatch = 0, agree = 0, softAgree = 0, conflict = 0, noMatch = 0;
+    let stamped = 0, withMatch = 0;
     for (const b of bioacts) {
+        if (!compoundIdSlice.has(b.compound_id)) continue;
+        if (b?.cross_source_consensus?.has_pubchem_match != null) continue;
         const idx = assayIndexByCompound.get(b.compound_id);
-        if (!idx) continue;
+        if (!idx) {
+            b.cross_source_consensus = { has_pubchem_match: false, pubchem_aid_count: 0, value_agreement: null, n_sources: 1 };
+            stamped++;
+            continue;
+        }
         const consensus = crossValidateBioactivity(b, idx);
         b.cross_source_consensus = consensus;
-        if (consensus.has_pubchem_match) {
-            withMatch++;
-            if (consensus.value_agreement === 'agree') agree++;
-            else if (consensus.value_agreement === 'soft_agree') softAgree++;
-            else if (consensus.value_agreement === 'conflict') conflict++;
-        } else {
-            noMatch++;
-        }
+        if (consensus.has_pubchem_match) withMatch++;
         bumpConfidence(b, consensus);
+        stamped++;
     }
+
     await writeJsonl(bioFile, bioacts);
 
-    console.log(`\n[CROSS-VALIDATOR] Complete`);
-    console.log(`  Bioactivities: ${bioacts.length}`);
-    console.log(`  PubChem match: ${withMatch} (${(100 * withMatch / bioacts.length).toFixed(1)}%)`);
-    console.log(`    value agreement -> agree: ${agree} | soft_agree: ${softAgree} | conflict: ${conflict}`);
-    console.log(`  No PubChem match: ${noMatch}`);
-    const dist = { '>=90': 0, '70-89': 0, '<70': 0 };
-    for (const b of bioacts) {
-        const c = b.sciweon_confidence;
-        if (typeof c !== 'number') continue;
-        if (c >= 90) dist['>=90']++;
-        else if (c >= 70) dist['70-89']++;
-        else dist['<70']++;
+    const nextCursor = buildNextCursor({
+        source: SOURCE, prev: cursor,
+        chunkResult: { slice, nextCursorId, wrapped, totalEligible },
+        processedCount: processed, totalEligible,
+    });
+    try {
+        await writeCursor(SOURCE, nextCursor);
+        console.log(`[CROSS-VALIDATOR] Cursor advanced -> ${nextCursor.cursor_id} | cycles_completed=${nextCursor.cycles_completed}`);
+    } catch (err) {
+        console.error(`[CROSS-VALIDATOR] Cursor write failed: ${err.message}`);
+        throw err;
     }
-    console.log(`  sciweon_confidence: ${JSON.stringify(dist)}`);
+
+    console.log(`\n[CROSS-VALIDATOR] Complete - this cycle: ${stamped} bioactivities stamped | ${withMatch} matched PubChem`);
 }
 
-main().catch(err => { console.error('[CROSS-VALIDATOR] Fatal:', err); process.exit(1); });
+const isDirectRun = import.meta.url === `file://${process.argv[1]}`
+    || import.meta.url.endsWith(process.argv[1]?.replace(/\\/g, '/'));
+if (isDirectRun) {
+    main().catch(err => { console.error('[CROSS-VALIDATOR] Fatal:', err); process.exit(1); });
+}
