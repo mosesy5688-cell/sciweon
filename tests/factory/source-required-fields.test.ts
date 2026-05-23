@@ -49,12 +49,13 @@ describe('SOURCE_REQUIRED_FIELDS registry shape', () => {
         }
     });
 
-    it('only RxNorm and OpenFDA FAERS have a UNII gate', () => {
+    it('gated sources: chembl (drug_status) + rxnorm + openfda_faers (UNII)', () => {
         const gated = Object.entries(SOURCE_REQUIRED_FIELDS)
             .filter(([, e]) => e.denominator_gate !== null)
             .map(([id]) => id)
             .sort();
-        expect(gated).toEqual(['openfda_faers', 'rxnorm']);
+        expect(gated).toEqual(['chembl', 'openfda_faers', 'rxnorm']);
+        expect(SOURCE_REQUIRED_FIELDS.chembl.denominator_gate).toBe('drug_status');
     });
 
     it('filesNeeded returns the 3 distinct bundle files sorted', () => {
@@ -160,6 +161,28 @@ describe('isFullyEnriched per-source semantics', () => {
             molecular_formula: 'C', molecular_weight: { value: null },
         };
         expect(isFullyEnriched(rec, pubchemEntry)).toBe(false);
+    });
+
+    it('ChEMBL entry requires drug_status fields (gate filters non-drug matches)', () => {
+        const e = SOURCE_REQUIRED_FIELDS.chembl;
+        // Full drug_status block -> enriched
+        expect(isFullyEnriched({
+            drug_status: { withdrawn: false, black_box_warning: true },
+        }, e)).toBe(true);
+        // Missing one field -> not enriched
+        expect(isFullyEnriched({
+            drug_status: { withdrawn: false, black_box_warning: null },
+        }, e)).toBe(false);
+        // drug_status=null means non-drug ChEMBL match; predicate fails but
+        // the gate (denominator_gate='drug_status') also fails so this
+        // record is excluded from the denominator at the tracker level.
+        expect(isFullyEnriched({ chembl_id: 'CHEMBL1', drug_status: null }, e)).toBe(false);
+        expect(checkGate({ chembl_id: 'CHEMBL1', drug_status: null }, e.denominator_gate)).toBe(false);
+        // Compound with drug_status block passes the gate even before
+        // required-field check.
+        expect(checkGate({
+            drug_status: { withdrawn: false, black_box_warning: false },
+        }, e.denominator_gate)).toBe(true);
     });
 
     it('UniChem entry requires both unii AND sources contains "unichem"', () => {

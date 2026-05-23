@@ -60,9 +60,17 @@ export const SOURCE_REQUIRED_FIELDS = Object.freeze({
 
     chembl: Object.freeze({
         file: 'compounds-enriched.jsonl',
-        denominator_gate: null,
+        // PR-CORE-1c (2026-05-23): gate by drug_status block existence.
+        // Without this gate the % conflated 3 categories: (a) compound
+        // not in ChEMBL (chembl_id=null), (b) compound in ChEMBL but not
+        // a drug (chembl_id set, drug_status=null), (c) compound is a
+        // drug but drug_status fields incomplete. Only (c) is an
+        // actionable enrichment gap for PR-CORE-2; (a) and (b) are not
+        // ChEMBL coverage issues. Sample verification 2026-05-23 confirmed
+        // most ChEMBL-matched compounds have drug_status=null (they are
+        // bioactivity references, not drugs). Phase 0 finding.
+        denominator_gate: 'drug_status',
         required_paths: Object.freeze([
-            'chembl_id',
             'drug_status.withdrawn',
             'drug_status.black_box_warning',
         ]),
