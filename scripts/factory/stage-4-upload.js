@@ -188,7 +188,13 @@ async function main() {
     console.log('\n[STAGE-4] === Post-upload R2 verification ===');
     const todayIso = new Date().toISOString().slice(0, 10);
     try {
-        const r2c = makeR2Client();
+        // PR-L4f (cycle 22 hotfix): makeR2Client() returns {client, bucket,
+        // missing} object - must destructure or verifySnapshotPresent's
+        // call to client.send() throws "client.send is not a function" and
+        // every F4 exits 10 even though the snapshot uploaded fine. PR-L4
+        // shipped this without exercising the post-upload verify path,
+        // surfaced first time post-PR-CORE-3 F3 dispatch 2026-05-23.
+        const { client: r2c } = makeR2Client();
         const bucket = process.env.R2_BUCKET;
         const present = await verifySnapshotPresent(r2c, bucket, todayIso);
         if (!present) {
