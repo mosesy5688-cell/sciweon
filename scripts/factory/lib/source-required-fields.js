@@ -99,6 +99,14 @@ export const SOURCE_REQUIRED_FIELDS = Object.freeze({
         required_paths: Object.freeze([
             'external_ids.rxcui',
         ]),
+        // PR-CORE-1d (2026-05-23): per-source threshold override. Probed
+        // 9.46% gate-adjusted. Natural API ceiling ~10-12% for current
+        // non-drug-heavy compound mix (most PubChem CIDs are chemicals
+        // not in RxNorm). Will rise to ~80% only after cycle 23 RxNorm
+        // bulk #34 lands (see SCIWEON_BULK_ACQUISITION_TRACKER row #34).
+        // Conservative hardfail at 3% trips on real regression (RxNorm
+        // API broken). Cycle 23 PR-CORE-1e bumps once bulk in place.
+        severity_thresholds: Object.freeze({ hardfail: 3, warn: 5, info: 10 }),
     }),
 
     unichem: Object.freeze({
@@ -108,6 +116,14 @@ export const SOURCE_REQUIRED_FIELDS = Object.freeze({
             'external_ids.unii',
             'external_ids.sources~~"unichem"',
         ]),
+        // PR-CORE-1d (2026-05-23): per-source threshold override. Probed
+        // value 40.4% (run 26332865197). UniChem natural ceiling still
+        // climbing via PR-CORE-3 backfill (+0.8k stamps/cycle observed);
+        // conservative hardfail at 25% catches catastrophic regression
+        // (e.g. UniChem API down) but allows the natural ~50% ceiling
+        // room to climb. Cycle 23 PR-CORE-1e refines after >=7 daily
+        // cycles per [[pipeline_auto_cron]].
+        severity_thresholds: Object.freeze({ hardfail: 25, warn: 35, info: 45 }),
     }),
 
     openfda_faers: Object.freeze({
@@ -118,6 +134,13 @@ export const SOURCE_REQUIRED_FIELDS = Object.freeze({
             'fda_signals.faers_top_adr_terms[]',
             'fda_signals.faers_total_top_count',
         ]),
+        // PR-CORE-1d (2026-05-23): per-source threshold override. Probed
+        // 2.36% gate-adjusted. FAERS only covers drugs with adverse-event
+        // reports - vast majority of UNII-bearing compounds are non-drug
+        // chemicals with no FAERS data. Natural ceiling ~3-5%. Conservative
+        // hardfail at 1% catches real regression while allowing the
+        // genuine natural ceiling. Cycle 23 PR-CORE-1e refines.
+        severity_thresholds: Object.freeze({ hardfail: 1, warn: 2, info: 5 }),
     }),
 
     chembl_bioactivity: Object.freeze({
@@ -146,6 +169,13 @@ export const SOURCE_REQUIRED_FIELDS = Object.freeze({
         required_paths: Object.freeze([
             'cross_source_consensus.has_pubchem_match===true',
         ]),
+        // PR-CORE-1d (2026-05-23): per-source threshold override. Probed
+        // 5.57%. Cross-validation rate is intrinsically small - only
+        // bioactivities where ChEMBL measurement happens to have an
+        // overlapping PubChem assay record. Natural ceiling ~10-20%.
+        // Conservative hardfail at 2% catches real regression (PubChem
+        // BioAssay API broken). Cycle 23 PR-CORE-1e refines.
+        severity_thresholds: Object.freeze({ hardfail: 2, warn: 5, info: 10 }),
     }),
 });
 
