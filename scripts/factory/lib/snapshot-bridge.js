@@ -89,13 +89,23 @@ export async function listAggregatedRuns(client, bucket) {
     return [...runs].sort((a, b) => Number(a) - Number(b));
 }
 
-// Get HEAD metadata for an aggregated run's manifest to recover created_at.
-// Returns null if no manifest.json found (run incomplete).
+// Get HEAD metadata for an aggregated run to recover created_at.
+// Returns null if probe file missing (run incomplete or not aggregated).
+//
+// PR-L4d fix: probe compounds-enriched.jsonl (canonical first file in
+// AGGREGATED_FILES SSoT) instead of manifest.json. aggregated bundles do
+// NOT contain manifest.json — that artifact is written only by stage-4
+// snapshot-builder under snapshots/<date>/manifest.json. PR-L4 + L4b +
+// L4c used manifest.json as probe, which 404'd on every aggregated run,
+// returning empty runMetas → findNearestPriorAggregated → "No aggregated
+// runs found" deadlock. Compounds-enriched.jsonl is reliably present in
+// every successful aggregated upload (cycle 21 PR #112+#113 ENRICHED_FILES
+// SSoT guarantees inclusion).
 export async function getAggregatedRunMeta(client, bucket, runId) {
     try {
         const res = await client.send(new HeadObjectCommand({
             Bucket: bucket,
-            Key: `processed/aggregated/${runId}/manifest.json`,
+            Key: `processed/aggregated/${runId}/compounds-enriched.jsonl`,
         }));
         return {
             runId,
