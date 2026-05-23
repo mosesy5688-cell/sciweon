@@ -31,7 +31,11 @@ function envReady() {
 }
 
 async function main() {
-    const dateStr = process.argv.find(a => a.startsWith('--date='))?.split('=')[1] || todayUtcIso();
+    // Date precedence: --date CLI arg > TARGET_DATE env (cycle 22 PR-L4
+    // backfill) > today.
+    const dateStr = process.argv.find(a => a.startsWith('--date='))?.split('=')[1]
+        || process.env.TARGET_DATE
+        || todayUtcIso();
     console.log(`[SNAPSHOT-UPLOADER] V0.4.3 — push snapshot ${dateStr} to R2`);
 
     if (!envReady()) {
@@ -75,20 +79,31 @@ async function main() {
         console.log(`  ${key.padEnd(50)} ${(body.length / 1024).toFixed(1).padStart(8)} KB`);
     }
 
-    // Update "latest" pointer
-    const manifestKey = `snapshots/${dateStr}/manifest.json`;
-    const latestPointer = JSON.stringify({ latest_snapshot_date: dateStr, manifest_key: manifestKey });
-    await client.send(new PutObjectCommand({
-        Bucket: process.env.R2_BUCKET,
-        Key: 'snapshots/latest.json',
-        Body: latestPointer,
-        ContentType: 'application/json',
-    }));
+    // Update "latest" pointer — UNLESS SKIP_LATEST_SWAP set (cycle 22
+    // PR-L4 backfill of an old date must not advance the live pointer
+    // to a stale date; uploader is invoked by snapshot-backfill.js with
+    // SKIP_LATEST_SWAP=1 to publish snapshots/<old_date>/ without
+    // touching snapshots/latest.json).
+    const skipLatestSwap = process.env.SKIP_LATEST_SWAP === '1';
+    if (!skipLatestSwap) {
+        const manifestKey = `snapshots/${dateStr}/manifest.json`;
+        const latestPointer = JSON.stringify({ latest_snapshot_date: dateStr, manifest_key: manifestKey });
+        await client.send(new PutObjectCommand({
+            Bucket: process.env.R2_BUCKET,
+            Key: 'snapshots/latest.json',
+            Body: latestPointer,
+            ContentType: 'application/json',
+        }));
+    }
 
     console.log(`\n[SNAPSHOT-UPLOADER] Complete`);
     console.log(`  Files uploaded:  ${uploaded}`);
     console.log(`  Total bytes:     ${(totalBytes / 1024 / 1024).toFixed(2)} MB`);
-    console.log(`  Latest pointer:  snapshots/latest.json -> ${dateStr}`);
+    if (skipLatestSwap) {
+        console.log(`  Latest pointer:  SKIPPED (backfill mode, SKIP_LATEST_SWAP=1)`);
+    } else {
+        console.log(`  Latest pointer:  snapshots/latest.json -> ${dateStr}`);
+    }
 }
 
 main().catch(err => { console.error('[SNAPSHOT-UPLOADER] Fatal:', err); process.exit(1); });
