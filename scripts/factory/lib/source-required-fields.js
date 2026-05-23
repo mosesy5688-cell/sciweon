@@ -1,5 +1,5 @@
 /**
- * Source required-fields SSoT — cycle 22 PR-CORE-1 (Pattern E tracker).
+ * Source required-fields SSoT - cycle 22 PR-CORE-1 (Pattern E tracker).
  *
  * Defines, per V1 source, the file in the aggregated bundle, the optional
  * upstream gate predicate, and the list of required field paths whose
@@ -9,47 +9,39 @@
  * Why a separate SSoT file:
  *   Entity schemas (compound / bioactivity / drug-label / neg-evidence)
  *   mix all sources into one document. Tier-class completeness is a
- *   per-source view that does not exist anywhere else — without this
+ *   per-source view that does not exist anywhere else - without this
  *   registry the tracker would scatter source-specific path strings
- *   across hundreds of lines, exactly the kind of drift `aggregated-files.js`
+ *   across hundreds of lines, exactly the kind of drift aggregated-files.js
  *   was created to prevent.
  *
- * Adding a 9th source = one entry here + (optionally) one ingestion file
- * extending the AGGREGATED_FILES SSoT. No changes to source-completeness.js
- * required — it iterates this registry.
+ * Adding a 9th source = one entry here + (optionally) one extension to
+ * AGGREGATED_FILES SSoT. No changes to source-completeness.js required.
  *
- * Triple-lock anchor (per [[no_shortcut_in_science]]):
- *   - 规模: every record in each file is counted (no Top-N).
- *   - 质量: required_paths is the STRICT semantic — missing any one path
- *     yields fully_enriched=false; the registry encodes the contract, not
- *     impressions about it.
- *   - 关联结构: denominator_gate captures upstream chained dependencies
- *     (UNII → RxNorm/FAERS), preserving the cross-source structure rather
- *     than collapsing to a flat denominator that would conflate
- *     "upstream gate missing" with "this source failed".
+ * Triple-lock anchor (per [[no-shortcut-in-science]]):
+ *   - scale: every record in each file is counted (no Top-N).
+ *   - quality: required_paths is the STRICT semantic - missing any one
+ *     path yields fully_enriched=false; the registry encodes the contract,
+ *     not impressions about it.
+ *   - relational structure: denominator_gate captures upstream chained
+ *     dependencies (UNII -> RxNorm/FAERS), preserving the cross-source
+ *     structure rather than collapsing to a flat denominator that would
+ *     conflate "upstream gate missing" with "this source failed".
  *
  * Conditional denominators (denominator_gate):
  *   Some sources can only be present when an upstream field exists.
  *   E.g. OpenFDA FAERS enrichment requires UNII to be resolved first
  *   (via UniChem). Reporting `enriched / total_records` for FAERS would
- *   mechanically cap the % at UniChem coverage and mask the real signal:
- *   "of the records that COULD be FAERS-enriched, what fraction are?".
- *   The tracker emits both `raw_pct` (full denominator) and
- *   `gate_adjusted_pct` (gate-passing denominator); PR-CORE-2 consumes
- *   the latter for prioritization.
+ *   mechanically cap the % at UniChem coverage. The tracker emits both
+ *   `raw_pct` (full denominator) and `gate_adjusted_pct` (gate-passing
+ *   denominator); PR-CORE-2 consumes the latter for prioritization.
  *
- * Required-paths semantics:
+ * Required-paths encoding:
  *   - Dotted path access (`a.b.c`) traverses nested objects.
- *   - For each path, the resolved value must be non-null AND non-undefined.
- *   - Special encoding for "array length >= 1": suffix the path with `[]`
- *     (e.g. `fda_signals.faers_top_adr_terms[]`) — requires the resolved
- *     value to be an array with length >= 1.
- *   - Special encoding for "value equals literal": suffix with `===<json>`
- *     (e.g. `cross_source_consensus.has_pubchem_match===true`).
- *   - Special encoding for "array contains literal": suffix with `~~<json>`
- *     (e.g. `external_ids.sources~~"unichem"`) — requires the resolved
- *     value to be an array that includes the literal.
- *   The resolver lives in source-completeness.js (resolveRequiredPath).
+ *   - Plain path: resolved value must be non-null AND non-undefined.
+ *   - `[]` suffix: array length >= 1 required.
+ *   - `===<json>` suffix: strict equality to literal required.
+ *   - `~~<json>` suffix: array contains literal required.
+ *   The resolver lives in source-completeness-helpers.js.
  */
 
 export const SOURCE_REQUIRED_FIELDS = Object.freeze({
@@ -139,8 +131,8 @@ export const SOURCE_REQUIRED_FIELDS = Object.freeze({
         // ChEMBL-sourced bioactivities. Strict-enriched = an independent
         // PubChem assay confirmed the measurement; has_pubchem_match=false
         // means "checked but unmatched" and is NOT counted as enriched
-        // (per [[no_shortcut_in_science]] quality leg — "looked up" ≠
-        // "confirmed"). PR-CORE-2 uses this to identify ChEMBL-only
+        // (per [[no-shortcut-in-science]] quality leg - "looked up" is
+        // not "confirmed"). PR-CORE-2 uses this to identify ChEMBL-only
         // activities needing PubChem confirmation.
         denominator_gate: null,
         required_paths: Object.freeze([
@@ -149,7 +141,7 @@ export const SOURCE_REQUIRED_FIELDS = Object.freeze({
     }),
 });
 
-// Severity tiers — see source-completeness.js exit-code mapping.
+// Severity tiers - see source-completeness.js exit-code mapping.
 export const SEVERITY_THRESHOLDS = Object.freeze({
     hardfail: 50,   // below = exit 1
     warn: 80,       // below = exit 2
