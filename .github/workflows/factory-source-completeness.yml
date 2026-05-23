@@ -1,0 +1,54 @@
+name: Factory Source Completeness
+
+# Cycle 22 PR-CORE-1 — Pattern E per-source × tier-class completeness tracker.
+# Defends quality + 关联结构 legs of the triple-lock principle (see
+# SCIWEON_BULK_ACQUISITION_TRACKER.md Governing principle section).
+#
+# Daily cron at 11:30 UTC — runs after snapshot-completeness 11:00 (Layer 4
+# time-dimension audit) so the content-dimension audit sees the same R2
+# state. Manual dispatch supports auditing a specific historical aggregated
+# run via run_id input (e.g. for regression investigation).
+#
+# Scans the latest (or specified) aggregated bundle for compounds-enriched,
+# bioactivities, drug-labels JSONL files; per-source strict-enriched stats
+# are persisted to R2 state/source-completeness.json. Exit code reflects
+# worst-case per-source tier; HARDFAIL (<50%) blocks PR-CORE-2 reliance.
+
+on:
+  schedule:
+    - cron: '30 11 * * *'
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Aggregated run_id to audit (blank = latest pointer)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+  R2_BUCKET: ${{ secrets.R2_BUCKET }}
+  R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+  R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+
+jobs:
+  completeness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run source completeness audit
+        run: |
+          ARGS=""
+          if [ -n "${{ github.event.inputs.run_id }}" ]; then
+            ARGS="--run-id=${{ github.event.inputs.run_id }}"
+          fi
+          node scripts/factory/source-completeness.js $ARGS
