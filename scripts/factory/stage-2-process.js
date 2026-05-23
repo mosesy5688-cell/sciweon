@@ -134,6 +134,13 @@ async function main() {
         // drug_status is available; and before fda/faers which gate on UNII.
         { name: 'chembl-compound', fn: () => runScript('chembl-compound-enricher.js') },
         { name: 'compound-id-resolver', fn: () => runScript('compound-id-resolver.js') },
+        // PR-CORE-2 (cycle 22): RxNorm extracted from compound-id-resolver's
+        // chained UNI->RxNorm hop into its own cursor-driven enricher. The
+        // chain only ran on freshly-resolved UNIIs in the same pass, so the
+        // backlog of UNII-bearing compounds from prior runs (24k+ records)
+        // never got RxCUI. Standalone enricher walks the entire eligible set
+        // via R2 cursor (state/enrichment-cursor/rxnorm.json).
+        { name: 'compound-rxnorm', fn: () => runScript('compound-rxnorm-enricher.js') },
         { name: 'adapter-cross-linker', fn: () => runScript('adapter-cross-linker.js') },
         { name: 'fda', fn: () => runScript('fda-enricher.js') },
         { name: 'compound-faers', fn: () => runScript('compound-faers-enricher.js') },
