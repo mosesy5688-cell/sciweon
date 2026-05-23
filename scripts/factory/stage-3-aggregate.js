@@ -37,7 +37,7 @@ import { mergeLocalAggregatedWithPrevious, MERGE_FILES } from './lib/aggregated-
 import { buildIndex as buildSearchIndex, OUTPUT_FILE as SEARCH_INDEX_FILE } from './lib/search-index-builder.js';
 import { buildIndex as buildTargetIndex, OUTPUT_FILE as TARGET_INDEX_FILE } from './lib/target-index-builder.js';
 import { readFirstRunSentinel, writeFirstRunSentinel, decideMergeAction } from './lib/aggregated-sentinel.js';
-import { AGGREGATED_FILES } from './lib/aggregated-files.js';
+import { AGGREGATED_FILES, ENRICHED_FILES } from './lib/aggregated-files.js';
 
 const SCRIPT_DIR = 'scripts/factory';
 
@@ -78,7 +78,16 @@ async function main() {
 
     console.log('\n[STAGE-3] === Download enriched from R2 ===');
     try {
-        await downloadStage('enriched', ['compounds-enriched.jsonl', 'bioactivities.jsonl']);
+        // Cycle 21 PR #113 (post-#112 hotfix): use ENRICHED_FILES SSoT, not
+        // hardcoded 2-file list. PR #112 fixed stage-2 upload side to include
+        // drug-labels.jsonl per ENRICHED_FILES, but stage-3 download side
+        // kept the old 2-file hardcoded list, so drug-labels.jsonl was
+        // downloaded-skipped → stage-3 enrichers ran without it → stage-3
+        // uploadStage(AGGREGATED_FILES) HARDFAIL on missing drug-labels.jsonl
+        // (uploadStage missing-check fired correctly per cycle 21 PR #4
+        // [[feedback_cross_cycle_silent_data_loss]] defense). Same SSoT
+        // for both sides of the boundary.
+        await downloadStage('enriched', ENRICHED_FILES);
     } catch (err) {
         console.error(`[STAGE-3] Enriched download failed: ${err.message}`);
         process.exit(2);
