@@ -18,7 +18,18 @@
  *   - initStat(sourceEntry)                 zeroed counter object
  */
 
-import { SEVERITY_THRESHOLDS } from './source-required-fields.js';
+import { SEVERITY_THRESHOLDS, SOURCE_REQUIRED_FIELDS } from './source-required-fields.js';
+
+// Per-source threshold lookup with global fallback. PR-CORE-1d (2026-05-23)
+// added per-source overrides for sources with natural ceilings well below
+// the global 50/80/95 default (rxnorm/openfda_faers/unichem/pubchem_bioassay).
+// Sources without override fall back to the global SEVERITY_THRESHOLDS.
+function thresholdsFor(source) {
+    if (source && SOURCE_REQUIRED_FIELDS[source]?.severity_thresholds) {
+        return SOURCE_REQUIRED_FIELDS[source].severity_thresholds;
+    }
+    return SEVERITY_THRESHOLDS;
+}
 
 // Walk a dotted path on a record, returning undefined if any segment is
 // absent. Does not throw - caller decides whether undefined fails the
@@ -83,21 +94,27 @@ export function isFullyEnriched(record, sourceEntry) {
 
 // Map a 0-100 percentage to a severity tier (0=healthy, 1=hardfail,
 // 2=warn, 3=info). NaN / missing data treated as worst-case hardfail.
-export function severityTierForPct(p) {
+// Optional `source` id triggers per-source threshold override lookup
+// (PR-CORE-1d). When omitted, uses global SEVERITY_THRESHOLDS for
+// backward compatibility with legacy callers.
+export function severityTierForPct(p, source) {
     if (!Number.isFinite(p)) return 1;
-    if (p < SEVERITY_THRESHOLDS.hardfail) return 1;
-    if (p < SEVERITY_THRESHOLDS.warn) return 2;
-    if (p < SEVERITY_THRESHOLDS.info) return 3;
+    const t = thresholdsFor(source);
+    if (p < t.hardfail) return 1;
+    if (p < t.warn) return 2;
+    if (p < t.info) return 3;
     return 0;
 }
 
 // Aggregate per-source tiers into a single worst-case exit-code tier.
 // Severity ordering (worst -> best): 1 (hardfail) > 2 (warn) > 3 (info)
 // > 0 (healthy). Returns the most-severe (lowest non-zero) tier present.
+// Per-source threshold lookup: passes the source id to severityTierForPct
+// so each source is evaluated against its own override (if any).
 export function aggregateSeverity(perSourceStats) {
     let anyHardfail = false, anyWarn = false, anyInfo = false;
-    for (const stat of Object.values(perSourceStats)) {
-        const t = severityTierForPct(stat.gate_adjusted_pct);
+    for (const [source, stat] of Object.entries(perSourceStats)) {
+        const t = severityTierForPct(stat.gate_adjusted_pct, source);
         if (t === 1) anyHardfail = true;
         else if (t === 2) anyWarn = true;
         else if (t === 3) anyInfo = true;
@@ -108,10 +125,14 @@ export function aggregateSeverity(perSourceStats) {
     return 0;
 }
 
-export function listBelowThreshold(perSourceStats, threshold = SEVERITY_THRESHOLDS.info) {
+// Sources whose gate_adjusted_pct is below their info threshold (per-source
+// or global default). When `threshold` is explicitly passed, that single
+// value is used for all sources (preserved for tests / overrides).
+export function listBelowThreshold(perSourceStats, threshold) {
     const out = [];
     for (const [source, stat] of Object.entries(perSourceStats)) {
-        if (!(stat.gate_adjusted_pct >= threshold)) out.push(source);
+        const cutoff = threshold != null ? threshold : thresholdsFor(source).info;
+        if (!(stat.gate_adjusted_pct >= cutoff)) out.push(source);
     }
     return out;
 }

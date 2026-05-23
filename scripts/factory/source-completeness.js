@@ -41,6 +41,9 @@ import { SOURCE_REQUIRED_FIELDS, SEVERITY_THRESHOLDS, filesNeeded } from './lib/
 import {
     pct, initStat, scanFile, severityTierForPct, aggregateSeverity, listBelowThreshold,
 } from './lib/source-completeness-helpers.js';
+// SEVERITY_THRESHOLDS still imported for the final HARDFAIL log line
+// (uses the GLOBAL hardfail threshold in the message - per-source values
+// are reflected in the per-source tier label printed by printSummary).
 
 const STATE_KEY = 'state/source-completeness.json';
 const POINTER_KEY = 'processed/aggregated/latest.json';
@@ -118,7 +121,8 @@ function printSummary(sources, totals, belowThreshold, severityTier, runId) {
     console.log(`  DailyMed-linked %:       ${totals.dailymedLinkedPct}%`);
     console.log(`  --`);
     for (const [sourceId, s] of Object.entries(sources)) {
-        const tier = severityTierForPct(s.gate_adjusted_pct);
+        // PR-CORE-1d: per-source threshold (override or global default)
+        const tier = severityTierForPct(s.gate_adjusted_pct, sourceId);
         const flag = tier === 0 ? 'OK' : tier === 1 ? 'HARDFAIL' : tier === 2 ? 'WARN' : 'INFO';
         console.log(`  ${sourceId.padEnd(22)} raw=${String(s.raw_pct).padStart(6)}%  gate=${String(s.gate_adjusted_pct).padStart(6)}%  (${s.fully_enriched}/${s.gate_pass} of ${s.total}) [${flag}]`);
     }
@@ -184,6 +188,11 @@ async function main() {
         const s = entry._stat;
         s.raw_pct = pct(s.fully_enriched, s.total);
         s.gate_adjusted_pct = pct(s.fully_enriched, s.gate_pass);
+        // PR-CORE-1d (2026-05-23): per-source severity_tier computed
+        // against per-source threshold override (or global default for
+        // sources without override). Lets downstream consumers read
+        // per-source state without re-computing from raw pct.
+        s.severity_tier = severityTierForPct(s.gate_adjusted_pct, sourceId);
         sources[sourceId] = s;
     }
 

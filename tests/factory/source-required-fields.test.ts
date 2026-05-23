@@ -226,3 +226,7 @@ describe('SEVERITY_THRESHOLDS contract', () => {
         expect(SEVERITY_THRESHOLDS.info).toBe(95);
     });
 });
+
+// Per-source severity_thresholds overrides (PR-CORE-1d) split into
+// tests/factory/per-source-thresholds.test.ts to keep this file under
+// Art 5.1 250-line cap.

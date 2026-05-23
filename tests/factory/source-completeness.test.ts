@@ -18,6 +18,91 @@ import {
     scanFile,
 } from '../../scripts/factory/lib/source-completeness-helpers.js';
 
+describe('Per-source severityTierForPct overrides (PR-CORE-1d)', () => {
+    it('rxnorm 9.46% (current production) uses override -> tier 3 INFO (under info=10)', () => {
+        expect(severityTierForPct(9.46, 'rxnorm')).toBe(3);
+    });
+
+    it('rxnorm above its info threshold (10%) -> tier 0', () => {
+        expect(severityTierForPct(10, 'rxnorm')).toBe(0);
+        expect(severityTierForPct(50, 'rxnorm')).toBe(0);
+    });
+
+    it('rxnorm 2% (below hardfail=3) -> tier 1', () => {
+        expect(severityTierForPct(2, 'rxnorm')).toBe(1);
+    });
+
+    it('openfda_faers 2.36% (current) -> tier 3 (under info=5)', () => {
+        expect(severityTierForPct(2.36, 'openfda_faers')).toBe(3);
+    });
+
+    it('pubchem (no override) falls back to global 50/80/95', () => {
+        expect(severityTierForPct(100, 'pubchem')).toBe(0);
+        expect(severityTierForPct(49, 'pubchem')).toBe(1);
+        expect(severityTierForPct(70, 'pubchem')).toBe(2);
+    });
+
+    it('unknown source falls back to global', () => {
+        expect(severityTierForPct(40, 'nonexistent_source')).toBe(1);
+    });
+
+    it('no source arg falls back to global (legacy callers)', () => {
+        expect(severityTierForPct(40)).toBe(1);
+    });
+});
+
+describe('aggregateSeverity with per-source overrides (PR-CORE-1d)', () => {
+    it('today\'s production state JSON values: rxnorm 9.46 / faers 2.36 / unichem 40.4 / bioassay 5.57 -> aggregate tier 3 (not 1)', () => {
+        const stats = {
+            pubchem:            { gate_adjusted_pct: 100 },
+            chembl:             { gate_adjusted_pct: 100 },
+            dailymed:           { gate_adjusted_pct: 100 },
+            chembl_bioactivity: { gate_adjusted_pct: 100 },
+            unichem:            { gate_adjusted_pct: 40.4 },
+            rxnorm:             { gate_adjusted_pct: 9.46 },
+            openfda_faers:      { gate_adjusted_pct: 2.36 },
+            pubchem_bioassay:   { gate_adjusted_pct: 5.57 },
+        };
+        expect(aggregateSeverity(stats as never)).toBe(3);
+    });
+
+    it('rxnorm dropping below its hardfail (3%) still surfaces tier 1', () => {
+        const stats = {
+            pubchem: { gate_adjusted_pct: 100 },
+            rxnorm:  { gate_adjusted_pct: 2.5 }, // below override hardfail=3
+        };
+        expect(aggregateSeverity(stats as never)).toBe(1);
+    });
+
+    it('pubchem regression to 40% (no override) tripped as tier 1 (global hardfail=50)', () => {
+        const stats = {
+            pubchem: { gate_adjusted_pct: 40 },
+            rxnorm:  { gate_adjusted_pct: 9.46 },
+        };
+        expect(aggregateSeverity(stats as never)).toBe(1);
+    });
+});
+
+describe('listBelowThreshold honors per-source info thresholds (PR-CORE-1d)', () => {
+    it('uses per-source info threshold when threshold arg omitted', () => {
+        const stats = {
+            pubchem:       { gate_adjusted_pct: 100 },     // >= 95 global info -> not below
+            rxnorm:        { gate_adjusted_pct: 9.46 },    // < 10 override info -> below
+            openfda_faers: { gate_adjusted_pct: 5 },       // = 5 override info, so NOT below
+        };
+        const below = listBelowThreshold(stats as never).sort();
+        expect(below).toEqual(['rxnorm']);
+    });
+
+    it('explicit threshold arg overrides per-source lookup', () => {
+        const stats = {
+            rxnorm: { gate_adjusted_pct: 9.46 },
+        };
+        // Force 5% cutoff: 9.46 > 5 so not below
+        expect(listBelowThreshold(stats as never, 5)).toEqual([]);
+    });
+});
+
 describe('severityTierForPct boundary cases', () => {
     it('100% -> tier 0 (healthy)', () => {
         expect(severityTierForPct(100)).toBe(0);
