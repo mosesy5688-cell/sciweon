@@ -8,6 +8,8 @@ dist/
 output/
 data/
 tmp/
+.tmp.driveupload/
+**/__pycache__/
 .DS_Store
 .vscode/
 playwright-report/

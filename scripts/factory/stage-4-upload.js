@@ -183,8 +183,8 @@ async function main() {
 
     // Cycle 22 PR-L4: post-upload R2 presence verification. F4 success
     // claim must be backed by actual listable snapshot/<today>/manifest.json
-    // — otherwise silently fails Layer 4 完整性 leg of triple-lock. Same
-    // HARDFAIL defense pattern as cycle 21 PR #4/#112/#113 SSoT guards.
+    // — otherwise silently fails Layer 4 completeness leg of triple-lock.
+    // Same HARDFAIL defense pattern as cycle 21 PR #4/#112/#113 SSoT guards.
     console.log('\n[STAGE-4] === Post-upload R2 verification ===');
     const todayIso = new Date().toISOString().slice(0, 10);
     try {
@@ -192,7 +192,7 @@ async function main() {
         const bucket = process.env.R2_BUCKET;
         const present = await verifySnapshotPresent(r2c, bucket, todayIso);
         if (!present) {
-            console.error(`[STAGE-4] FAIL: snapshots/${todayIso}/manifest.json not listable in R2 post-upload — Layer 4 完整性 violation`);
+            console.error(`[STAGE-4] FAIL: snapshots/${todayIso}/manifest.json not listable in R2 post-upload — Layer 4 completeness violation`);
             process.exit(10);
         }
         console.log(`[STAGE-4] Post-upload verification OK: snapshots/${todayIso}/manifest.json confirmed in R2`);

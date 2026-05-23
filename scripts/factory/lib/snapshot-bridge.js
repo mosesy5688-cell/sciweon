@@ -2,13 +2,13 @@
  * Snapshot Bridge V0.7 — R2 listing helpers for Layer 4 audit + backfill.
  *
  * Cycle 22 PR-L4 addition. Centralizes R2 prefix enumeration logic shared
- * by snapshot-audit.js + snapshot-backfill.js, mirroring the pattern of
+ * by snapshot-completeness.js + snapshot-backfill.js, mirroring the pattern of
  * r2-stage-bridge.js for stage-1..4 pipeline boundaries.
  *
- * Triple-lock anchor: this module is the 规模-in-time-leg measurement
- * substrate (per `[[reference_verified_facts]]` triple-lock + tracker
- * §Governing principle). All consumers (audit / backfill) treat its
- * output as authoritative for "what dates exist in R2".
+ * Triple-lock anchor: this module is the scale-in-time-leg measurement
+ * substrate (per [[reference_verified_facts]] triple-lock + tracker
+ * Governing principle). All consumers (completeness / backfill) treat
+ * its output as authoritative for "what dates exist in R2".
  */
 
 import { S3Client, ListObjectsV2Command, HeadObjectCommand } from '@aws-sdk/client-s3';
