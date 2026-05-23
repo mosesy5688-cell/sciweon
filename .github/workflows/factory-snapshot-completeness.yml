@@ -1,8 +1,8 @@
-name: Factory Snapshot Audit
+name: Factory Snapshot Completeness
 
 # Cycle 22 PR-L4 — Layer 4 daily snapshot completeness scanner + on-demand
-# backfill. Defends 规模-in-time leg of triple-lock principle (see
-# SCIWEON_BULK_ACQUISITION_TRACKER.md §Governing principle).
+# backfill. Defends scale-in-time leg of triple-lock principle (see
+# SCIWEON_BULK_ACQUISITION_TRACKER.md Governing principle section).
 #
 # Daily cron at 11:00 UTC (after typical F4 completion ~10:30 UTC, 30-min
 # buffer for slow runs). Emits R2 state/snapshot-completeness.json + exit
@@ -18,11 +18,11 @@ on:
   workflow_dispatch:
     inputs:
       backfill_date:
-        description: 'YYYY-MM-DD to backfill (blank = audit only)'
+        description: 'YYYY-MM-DD to backfill (blank = scan only)'
         required: false
         default: ''
       window_days:
-        description: 'Audit window in days (default 60, max 365)'
+        description: 'Scan window in days (default 60, max 365)'
         required: false
         default: '60'
       dry_run:
@@ -42,7 +42,7 @@ env:
   R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
 
 jobs:
-  audit:
+  completeness:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -53,12 +53,12 @@ jobs:
           cache: 'npm'
       - name: Install dependencies
         run: npm ci
-      - name: Run snapshot audit
-        run: node scripts/factory/snapshot-audit.js --window=${{ github.event.inputs.window_days || '60' }}
+      - name: Run snapshot completeness scan
+        run: node scripts/factory/snapshot-completeness.js --window=${{ github.event.inputs.window_days || '60' }}
 
   backfill:
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.backfill_date != ''
-    needs: audit
+    needs: completeness
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

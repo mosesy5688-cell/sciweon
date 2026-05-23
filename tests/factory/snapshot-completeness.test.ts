@@ -1,11 +1,11 @@
 /**
- * Tests for cycle 22 PR-L4 — snapshot-bridge helpers (audit + backfill
- * shared logic).
+ * Tests for cycle 22 PR-L4 — snapshot-bridge helpers (completeness +
+ * backfill shared logic).
  *
- * Per `[[feedback_no_shortcut_in_science]]` triple-lock 规模-in-time leg:
+ * Per [[feedback_no_shortcut_in_science]] triple-lock scale-in-time leg:
  * Layer 4 daily snapshot completeness measurement is mandatory. These
- * tests lock the audit logic to prevent silent regressions in the
- * detection mechanism itself.
+ * tests lock the completeness logic to prevent silent regressions in
+ * the detection mechanism itself.
  */
 
 import { describe, it, expect } from 'vitest';

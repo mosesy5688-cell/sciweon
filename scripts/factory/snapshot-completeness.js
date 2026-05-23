@@ -1,18 +1,18 @@
 /**
- * Snapshot Audit V0.7 (cycle 22 PR-L4) — Layer 4 daily completeness scanner.
+ * Snapshot Completeness V0.7 (cycle 22 PR-L4) — Layer 4 daily scanner.
  *
  * Scans R2 snapshots/<YYYY-MM-DD>/ presence across a configurable window
  * (default 60 days), computes completeness %, emits state JSON, exits with
  * code indicating severity of any gaps.
  *
- * Cycle 22 motivation: 2026-05-22 audit observed 22% miss rate (5/14 + 5/19
- * missing among last 9 days). No detection mechanism existed pre-this-PR;
- * gaps surfaced only via mid-session user investigation. Layer 4 time-
- * dimension moat (per `[[reference_verified_facts]]` triple-lock §规模)
- * requires explicit measurement + HARDFAIL on recent gaps.
+ * Cycle 22 motivation: 2026-05-22 review observed 22% miss rate (5/14 +
+ * 5/19 missing among last 9 days). No detection mechanism existed pre-
+ * this-PR; gaps surfaced only via mid-session user investigation. Layer 4
+ * time-dimension moat (per [[reference_verified_facts]] triple-lock
+ * scale-leg) requires explicit measurement + HARDFAIL on recent gaps.
  *
  * Usage:
- *   node snapshot-audit.js [--window=60]
+ *   node snapshot-completeness.js [--window=60]
  *
  * Exit codes:
  *   0  last 7 days complete (healthy)
@@ -57,14 +57,14 @@ function categorizeWindow(missing) {
 
 async function main() {
     const { window } = parseArgs();
-    console.log(`[SNAPSHOT-AUDIT] window=${window}d, scanning R2 snapshots/<date>/`);
+    console.log(`[SNAPSHOT-COMPLETENESS] window=${window}d, scanning R2 snapshots/<date>/`);
 
     let client, bucket;
     try {
         client = makeR2Client();
         bucket = process.env.R2_BUCKET;
     } catch (err) {
-        console.error(`[SNAPSHOT-AUDIT] R2 init failed: ${err.message}`);
+        console.error(`[SNAPSHOT-COMPLETENESS] R2 init failed: ${err.message}`);
         process.exit(4);
     }
 
@@ -104,13 +104,13 @@ async function main() {
             Body: JSON.stringify(result, null, 2),
             ContentType: 'application/json',
         }));
-        console.log(`[SNAPSHOT-AUDIT] State emitted: ${STATE_KEY}`);
+        console.log(`[SNAPSHOT-COMPLETENESS] State emitted: ${STATE_KEY}`);
     } catch (err) {
-        console.error(`[SNAPSHOT-AUDIT] State emit failed (non-fatal): ${err.message}`);
+        console.error(`[SNAPSHOT-COMPLETENESS] State emit failed (non-fatal): ${err.message}`);
     }
 
     // Console summary
-    console.log(`\n[SNAPSHOT-AUDIT] === Summary ===`);
+    console.log(`\n[SNAPSHOT-COMPLETENESS] === Summary ===`);
     console.log(`  Window:              ${window} days`);
     console.log(`  Expected dates:      ${expectedDates.length}`);
     console.log(`  Present in R2:       ${present.length}`);
@@ -124,22 +124,22 @@ async function main() {
 
     // Exit code per severity tier
     if (cat.last7.length > 0) {
-        console.error(`[SNAPSHOT-AUDIT] FAIL: ${cat.last7.length} missing in last 7d (HARDFAIL).`);
+        console.error(`[SNAPSHOT-COMPLETENESS] FAIL: ${cat.last7.length} missing in last 7d (HARDFAIL).`);
         process.exit(1);
     }
     if (cat.between8_30.length > 0) {
-        console.warn(`[SNAPSHOT-AUDIT] WARN: ${cat.between8_30.length} missing in 8-30d window. Run backfill via factory-snapshot-audit.yml dispatch.`);
+        console.warn(`[SNAPSHOT-COMPLETENESS] WARN: ${cat.between8_30.length} missing in 8-30d window. Run backfill via factory-snapshot-completeness.yml dispatch.`);
         process.exit(2);
     }
     if (cat.beyond30.length > 0) {
-        console.log(`[SNAPSHOT-AUDIT] INFO: ${cat.beyond30.length} missing beyond 30d (low-priority backfill).`);
+        console.log(`[SNAPSHOT-COMPLETENESS] INFO: ${cat.beyond30.length} missing beyond 30d (low-priority backfill).`);
         process.exit(3);
     }
-    console.log(`[SNAPSHOT-AUDIT] All ${expectedDates.length} dates in window present. ✅`);
+    console.log(`[SNAPSHOT-COMPLETENESS] All ${expectedDates.length} dates in window present. ✅`);
     process.exit(0);
 }
 
 main().catch(err => {
-    console.error('[SNAPSHOT-AUDIT] Fatal:', err);
+    console.error('[SNAPSHOT-COMPLETENESS] Fatal:', err);
     process.exit(4);
 });
