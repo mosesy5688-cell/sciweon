@@ -76,18 +76,27 @@ jobs:
           /tmp/duckdb -c "SELECT COUNT(*) AS rows FROM '/tmp/drug_molecule.parquet';"
           echo "--- 3 SAMPLE ROWS ---"
           /tmp/duckdb -c "SELECT * FROM '/tmp/drug_molecule.parquet' LIMIT 3;"
-      - name: Probe additional OT drug-side table schemas (PR-OT-3b)
-        # PR-OT-3b: extend probe to the 4 OT drug-side tables that PR-OT-3c
-        # will join into compound.known_drug_info: drug_indication (drug ->
-        # disease), drug_mechanism_of_action (drug -> target + mechanism),
-        # drug_warning (black-box / withdrawal warnings), known_drug
-        # (pre-joined drug -> target -> disease association). One partition
-        # per table is enough for DESCRIBE; PR-OT-3c will join all partitions.
+      - name: Probe additional OT drug-side table schemas (PR-OT-3b + PR-OT-3b2)
+        # PR-OT-3b: probe drug-side tables drug_mechanism_of_action + drug_warning
+        # (drug_indication + known_drug returned HTTP 404 in PR-OT-3b dispatch on
+        # 26.03; root-cause: tables renamed and restructured into the clinical_*
+        # family per the third foundation-doc correction in this cascade — see
+        # tracker §3 detail + brain memo entry 2026-05-24 continuation 3).
+        #
+        # PR-OT-3b2: extends the probe to the clinical_* family that replaced
+        # drug_indication + known_drug:
+        #   - clinical_indication (drug -> disease via clinical evidence)
+        #   - clinical_report (clinical study / report metadata)
+        #   - clinical_target (drug -> target via clinical evidence)
+        # The keep-going tables (drug_mechanism_of_action + drug_warning) stay in
+        # the loop for self-documentation; the dead names (drug_indication +
+        # known_drug) are dropped because the probe would always emit 404 warnings
+        # and pollute the report.
         run: |
           set -e
           RELEASE=$(node -e "console.log(require('/tmp/ot-probe.json').latest_release)")
           BASE="https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/${RELEASE}/output"
-          TABLES="drug_indication drug_mechanism_of_action drug_warning known_drug"
+          TABLES="drug_mechanism_of_action drug_warning clinical_indication clinical_report clinical_target"
           for table in $TABLES; do
             echo ""
             echo "============================================"
@@ -95,7 +104,7 @@ jobs:
             echo "============================================"
             FNAME=$(curl -sL "${BASE}/${table}/" | grep -oE 'part-[a-z0-9-]+-c000\.snappy\.parquet' | head -1)
             if [ -z "$FNAME" ]; then
-              echo "::warning::no Parquet part files in ${table}; OT 26.03 may not expose this dataset"
+              echo "::warning::no Parquet part files in ${table}; OT ${RELEASE} may not expose this dataset"
               continue
             fi
             curl -sL -o "/tmp/${table}.parquet" "${BASE}/${table}/${FNAME}"
