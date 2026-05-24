@@ -122,7 +122,7 @@ async function main() {
     const ratio = (compressed.length / uncompressed.length * 100).toFixed(1);
     console.log(`[OT-INGEST] uncompressed=${uncompressed.length}B compressed=${compressed.length}B ratio=${ratio}%`);
 
-    const outputKey = `processed/bulk/open-targets/${args.release}/drug-molecule.jsonl.zst`;
+    const outputKey = `processed/bulk/open-targets/${args.release}/drug-enriched.jsonl.zst`;
     const cursor = buildCursorRecord({
         release: args.release,
         recordCount: records.length,
