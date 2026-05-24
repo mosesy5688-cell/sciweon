@@ -170,6 +170,14 @@ async function main() {
     await runScript('stage-3-sid-stamp.js');
     console.log('[STAGE-3] SID stamping OK');
 
+    // PR-SID-1.2 (cycle 23): trial entity class stamping per V1.0 §35 +
+    // §26 trial canonical anchor (field-shape detection, defect-3 fix).
+    // Second entity class on the locked SID-aware-ingest pattern.
+    // HARD-FAIL discipline same as small_molecule above.
+    console.log('\n[STAGE-3] === PR-SID-1.2 trial stamping ===');
+    await runScript('stage-3-trial-sid-stamp.js');
+    console.log('[STAGE-3] Trial SID stamping OK');
+
     // V0.5.3 Tier 1.5 search index — rebuild SQLite FTS5 over cumulative
     // aggregated. Runs AFTER the cumulative merge so the index reflects
     // historical + current compounds together. Failure here is non-fatal:
