@@ -110,12 +110,18 @@ jobs:
             echo "Auto-detected latest release: ${RELEASE}"
           fi
           echo "release=${RELEASE}" >> $GITHUB_OUTPUT
-      - name: Install DuckDB CLI
+      - name: Install DuckDB CLI + zstd
         run: |
           set -e
           curl -sL https://github.com/duckdb/duckdb/releases/download/v1.1.3/duckdb_cli-linux-amd64.zip -o /tmp/duckdb.zip
           unzip -q /tmp/duckdb.zip -d /tmp
           /tmp/duckdb --version
+          # PR-OT-3a hotfix: native zstd CLI for compression. zstd-codec
+          # WASM fallback OOMs on ~16MB inputs (drug_molecule 26.03 size).
+          # Rust FFI in lib/zstd-helper.js is not built in GHA ubuntu-latest.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zstd
+          zstd --version
       - name: Download drug_molecule Parquet partitions
         run: |
           set -e
