@@ -158,25 +158,19 @@ async function main() {
         console.error(`[STAGE-3] OT merge failed (non-fatal, F3 continues with un-OT-enriched compounds): ${err.message}`);
     }
 
-    // PR-SID-1.1c (cycle 23): first production batch stamp per V1.0 §35
-    // Dual-SID + §44 Counter Ingestion Batching. Adds sid_s + sid_c to every
-    // compound. Locks the SID-aware-ingest pattern for all subsequent bulk
-    // PRs (PR-OT-5 redesign / RxNorm / Wave A-D). HARD-FAIL (unlike OT
-    // merge above): identity infrastructure cannot have coverage gaps —
-    // an unstamped snapshot publication would create a permanent identity
-    // black hole in published data per [[no_shortcut_in_science]] +
-    // [[cross_cycle_silent_data_loss]].
+    // PR-SID-1.1c+1.2+1.3 (cycle 23): SID stamping for compound / trial /
+    // paper entity classes per V1.0 §35. HARD-FAIL on any failure —
+    // identity infrastructure cannot have coverage gaps in snapshots.
     console.log('\n[STAGE-3] === PR-SID-1.1c stamping ===');
     await runScript('stage-3-sid-stamp.js');
     console.log('[STAGE-3] SID stamping OK');
 
-    // PR-SID-1.2 (cycle 23): trial entity class stamping per V1.0 §35 +
-    // §26 trial canonical anchor (field-shape detection, defect-3 fix).
-    // Second entity class on the locked SID-aware-ingest pattern.
-    // HARD-FAIL discipline same as small_molecule above.
     console.log('\n[STAGE-3] === PR-SID-1.2 trial stamping ===');
     await runScript('stage-3-trial-sid-stamp.js');
     console.log('[STAGE-3] Trial SID stamping OK');
+
+    console.log('\n[STAGE-3] === PR-SID-1.3 paper stamping ===');
+    await runScript('stage-3-paper-sid-stamp.js');
 
     // V0.5.3 Tier 1.5 search index — rebuild SQLite FTS5 over cumulative
     // aggregated. Runs AFTER the cumulative merge so the index reflects
