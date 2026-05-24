@@ -1,0 +1,76 @@
+name: Factory Open Targets Bulk
+
+# Cycle 23 PR-OT-1 - probe-only infrastructure for the parquet-duckdb-bulk
+# pipeline pattern. First Sciweon use of DuckDB CLI against remote Parquet.
+#
+# Manual dispatch ONLY (no cron yet). Subsequent PRs unlock the full
+# pipeline:
+#   PR-OT-1 (this) - infra probe: release discovery + DuckDB DESCRIBE
+#   PR-OT-2        - schema extension (compound entity fields, confidence
+#                    weight=8, source-required-fields entry)
+#   PR-OT-3        - first ingest: full quarterly bulk -> R2 jsonl.zst
+#   PR-OT-4        - stage-3 aggregate merge (chembl_id -> CID bridge)
+#   PR-OT-5        - quarterly cron + completeness gate
+#
+# Probe validates two assumptions that the 2026-05-18 foundation-doc
+# amendment got wrong:
+#   1. "GCS anonymous read" - the gs:// bucket is requester-pays. EBI FTP
+#      HTTP mirror is the actual working endpoint.
+#   2. Single "drug" table - the OT 25.03+ release splits drug data into
+#      drug_molecule / drug_indication / drug_mechanism_of_action /
+#      drug_warning / known_drug.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install deps
+        run: npm ci
+      - name: Discover latest release + datasets
+        run: node scripts/factory/open-targets-probe.js | tee /tmp/ot-probe.json
+      - name: Install DuckDB CLI
+        run: |
+          set -e
+          curl -sL https://github.com/duckdb/duckdb/releases/download/v1.1.3/duckdb_cli-linux-amd64.zip -o /tmp/duckdb.zip
+          unzip -q /tmp/duckdb.zip -d /tmp
+          /tmp/duckdb --version
+      - name: Probe drug_molecule Parquet schema
+        run: |
+          set -e
+          RELEASE=$(node -e "console.log(require('/tmp/ot-probe.json').latest_release)")
+          echo "Using release: ${RELEASE}"
+          BASE="https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/${RELEASE}/output/drug_molecule"
+          FNAME=$(curl -sL "${BASE}/" | grep -oE 'part-[a-z0-9-]+-c000\.snappy\.parquet' | head -1)
+          if [ -z "$FNAME" ]; then
+            echo "::error::no Parquet part files found in ${BASE}/"
+            exit 1
+          fi
+          echo "First part file: ${FNAME}"
+          curl -sL -o /tmp/drug_molecule.parquet "${BASE}/${FNAME}"
+          ls -la /tmp/drug_molecule.parquet
+          echo "--- DESCRIBE ---"
+          /tmp/duckdb -c "DESCRIBE SELECT * FROM '/tmp/drug_molecule.parquet';"
+          echo "--- ROW COUNT (1 partition) ---"
+          /tmp/duckdb -c "SELECT COUNT(*) AS rows FROM '/tmp/drug_molecule.parquet';"
+          echo "--- 3 SAMPLE ROWS ---"
+          /tmp/duckdb -c "SELECT * FROM '/tmp/drug_molecule.parquet' LIMIT 3;"
+      - name: Probe report summary
+        if: always()
+        run: |
+          echo "## Open Targets PR-OT-1 probe report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          cat /tmp/ot-probe.json >> $GITHUB_STEP_SUMMARY || echo '{"error": "probe did not run"}' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
