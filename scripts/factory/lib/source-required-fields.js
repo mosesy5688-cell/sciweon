@@ -177,6 +177,42 @@ export const SOURCE_REQUIRED_FIELDS = Object.freeze({
         // BioAssay API broken). Cycle 23 PR-CORE-1e refines.
         severity_thresholds: Object.freeze({ hardfail: 2, warn: 5, info: 10 }),
     }),
+
+    open_targets: Object.freeze({
+        // Cycle 23 PR-OT-2 - Open Targets Platform (10th parallel source,
+        // derived_aggregation, confidence weight=8). OT writes three
+        // top-level compound fields (named to match the chembl_id /
+        // drug_status convention, not nested under external_ids):
+        //   compound.known_drug_info       - drug-level metadata (drug_type,
+        //                                    max_clinical_stage, mechanisms[],
+        //                                    indications[], warnings[]) merged
+        //                                    from drug_molecule + indication
+        //                                    + mechanism_of_action + warning
+        //                                    + known_drug tables.
+        //   compound.target_associations[] - drug -> target evidence joining
+        //                                    mechanism_of_action with overall
+        //                                    association scores. Entry =
+        //                                    {target_id, evidence_score,
+        //                                    datasource_ids[]}.
+        //   compound.genetic_evidence[]    - variant/GWAS evidence for the
+        //                                    drug's targets (conditional on
+        //                                    upstream evidence).
+        // Gate=chembl_id (OT's primary key is ChEMBL molecule ID; non-ChEMBL
+        // compounds cannot be OT-mapped). PR-OT-4 stage-3 merge resolves the
+        // join via OT's own crossReferences PubChem xref (preferred) or
+        // direct ChEMBL ID match (fallback).
+        file: 'compounds-enriched.jsonl',
+        denominator_gate: 'chembl_id',
+        required_paths: Object.freeze([
+            'known_drug_info.chembl_id',
+        ]),
+        // PR-OT-2 pre-ingest estimate; PR-OT-5 calibrates against the 26.03
+        // ingest baseline. Of 69977 compounds ~7% have chembl_id (cycle 22
+        // 4945/69977); OT covers ~22K known drugs out of ~2.4M ChEMBL
+        // molecules so gate-adjusted natural ceiling ~40-50%. Conservative
+        // hardfail=10 catches pipeline regression below natural floor.
+        severity_thresholds: Object.freeze({ hardfail: 10, warn: 20, info: 35 }),
+    }),
 });
 
 // Severity tiers - see source-completeness.js exit-code mapping.
