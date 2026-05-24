@@ -76,6 +76,37 @@ jobs:
           /tmp/duckdb -c "SELECT COUNT(*) AS rows FROM '/tmp/drug_molecule.parquet';"
           echo "--- 3 SAMPLE ROWS ---"
           /tmp/duckdb -c "SELECT * FROM '/tmp/drug_molecule.parquet' LIMIT 3;"
+      - name: Probe additional OT drug-side table schemas (PR-OT-3b)
+        # PR-OT-3b: extend probe to the 4 OT drug-side tables that PR-OT-3c
+        # will join into compound.known_drug_info: drug_indication (drug ->
+        # disease), drug_mechanism_of_action (drug -> target + mechanism),
+        # drug_warning (black-box / withdrawal warnings), known_drug
+        # (pre-joined drug -> target -> disease association). One partition
+        # per table is enough for DESCRIBE; PR-OT-3c will join all partitions.
+        run: |
+          set -e
+          RELEASE=$(node -e "console.log(require('/tmp/ot-probe.json').latest_release)")
+          BASE="https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/${RELEASE}/output"
+          TABLES="drug_indication drug_mechanism_of_action drug_warning known_drug"
+          for table in $TABLES; do
+            echo ""
+            echo "============================================"
+            echo "=== Probing ${table}"
+            echo "============================================"
+            FNAME=$(curl -sL "${BASE}/${table}/" | grep -oE 'part-[a-z0-9-]+-c000\.snappy\.parquet' | head -1)
+            if [ -z "$FNAME" ]; then
+              echo "::warning::no Parquet part files in ${table}; OT 26.03 may not expose this dataset"
+              continue
+            fi
+            curl -sL -o "/tmp/${table}.parquet" "${BASE}/${table}/${FNAME}"
+            ls -la "/tmp/${table}.parquet"
+            echo "--- ${table} DESCRIBE ---"
+            /tmp/duckdb -c "DESCRIBE SELECT * FROM '/tmp/${table}.parquet';"
+            echo "--- ${table} ROW COUNT (1 partition) ---"
+            /tmp/duckdb -c "SELECT COUNT(*) AS rows FROM '/tmp/${table}.parquet';"
+            echo "--- ${table} 2 SAMPLE ROWS ---"
+            /tmp/duckdb -c "SELECT * FROM '/tmp/${table}.parquet' LIMIT 2;"
+          done
       - name: Probe report summary
         if: always()
         run: |
