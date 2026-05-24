@@ -13,11 +13,11 @@ import { describe, it, expect } from 'vitest';
 import { SOURCE_REQUIRED_FIELDS } from '../../scripts/factory/lib/source-required-fields.js';
 
 describe('Per-source severity_thresholds overrides (PR-CORE-1d)', () => {
-    it('exactly the 4 currently-HARDFAIL sources carry override', () => {
+    it('the per-source overrides (4 PR-CORE-1d + 1 PR-OT-2) carry calibrated thresholds', () => {
         const withOverride = Object.entries(SOURCE_REQUIRED_FIELDS)
             .filter(([, e]) => e.severity_thresholds != null)
             .map(([id]) => id).sort();
-        expect(withOverride).toEqual(['openfda_faers', 'pubchem_bioassay', 'rxnorm', 'unichem']);
+        expect(withOverride).toEqual(['open_targets', 'openfda_faers', 'pubchem_bioassay', 'rxnorm', 'unichem']);
     });
 
     it('every override respects hardfail < warn < info ordering', () => {
@@ -29,11 +29,14 @@ describe('Per-source severity_thresholds overrides (PR-CORE-1d)', () => {
         }
     });
 
-    it('override values match plan D2 (calibrated against 2026-05-23 baseline)', () => {
+    it('override values match plan D2 (calibrated against 2026-05-23 baseline) + PR-OT-2 pre-ingest estimate', () => {
         expect(SOURCE_REQUIRED_FIELDS.unichem.severity_thresholds).toEqual({ hardfail: 25, warn: 35, info: 45 });
         expect(SOURCE_REQUIRED_FIELDS.rxnorm.severity_thresholds).toEqual({ hardfail: 3, warn: 5, info: 10 });
         expect(SOURCE_REQUIRED_FIELDS.openfda_faers.severity_thresholds).toEqual({ hardfail: 1, warn: 2, info: 5 });
         expect(SOURCE_REQUIRED_FIELDS.pubchem_bioassay.severity_thresholds).toEqual({ hardfail: 2, warn: 5, info: 10 });
+        // open_targets is a PR-OT-2 pre-ingest estimate. PR-OT-5 refines
+        // after the first 26.03 ingest provides real baseline coverage.
+        expect((SOURCE_REQUIRED_FIELDS as any).open_targets.severity_thresholds).toEqual({ hardfail: 10, warn: 20, info: 35 });
     });
 
     it('passing sources stay defaulted (no override)', () => {

@@ -22,6 +22,15 @@ const SOURCE_WEIGHTS = {
     semantic_scholar: 5, // alias for s2 — both names accepted in provenance.sources
     pubmed: 7,           // NIH NCBI authoritative biomedical index
     dailymed: 10,        // FDA/NLM prescribing info — authoritative for drug labels
+    // Cycle 23 PR-OT-2: Open Targets derived_aggregation (10th parallel
+    // source). Weight=8 per SCIWEON_DATA_SOURCES_GLOBAL.md §619 — below
+    // truth-sources (10) because OT is consortium-aggregated derivation
+    // from upstream ChEMBL/UniProt/Reactome/GWAS/ClinVar/gnomAD/FAERS
+    // (40+ sources merged), above secondary sources (5) because the
+    // aggregation itself has independent value via cross-source consensus
+    // scoring + structural target-disease-drug normalization. Sciweon
+    // re-ingests OT as supplement, not replacement for direct adapters.
+    open_targets: 8,
 };
 
 const SINGLE_SOURCE_CEILING = 60;

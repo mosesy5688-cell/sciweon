@@ -23,13 +23,14 @@ import {
 } from '../../scripts/factory/lib/source-completeness-helpers.js';
 
 describe('SOURCE_REQUIRED_FIELDS registry shape', () => {
-    it('has exactly 8 source keys', () => {
+    it('has exactly 9 source keys (8 cycle 22 baseline + 1 PR-OT-2 open_targets)', () => {
         const keys = Object.keys(SOURCE_REQUIRED_FIELDS);
-        expect(keys).toHaveLength(8);
+        expect(keys).toHaveLength(9);
         expect(keys.sort()).toEqual([
             'chembl',
             'chembl_bioactivity',
             'dailymed',
+            'open_targets',
             'openfda_faers',
             'pubchem',
             'pubchem_bioassay',
@@ -49,13 +50,14 @@ describe('SOURCE_REQUIRED_FIELDS registry shape', () => {
         }
     });
 
-    it('gated sources: chembl (drug_status) + rxnorm + openfda_faers (UNII)', () => {
+    it('gated sources: chembl (drug_status) + rxnorm + openfda_faers (UNII) + open_targets (chembl_id)', () => {
         const gated = Object.entries(SOURCE_REQUIRED_FIELDS)
             .filter(([, e]) => e.denominator_gate !== null)
             .map(([id]) => id)
             .sort();
-        expect(gated).toEqual(['chembl', 'openfda_faers', 'rxnorm']);
+        expect(gated).toEqual(['chembl', 'open_targets', 'openfda_faers', 'rxnorm']);
         expect(SOURCE_REQUIRED_FIELDS.chembl.denominator_gate).toBe('drug_status');
+        expect((SOURCE_REQUIRED_FIELDS as any).open_targets.denominator_gate).toBe('chembl_id');
     });
 
     it('filesNeeded returns the 3 distinct bundle files sorted', () => {
