@@ -1,30 +1,40 @@
 name: Factory Open Targets Bulk
 
-# Cycle 23 PR-OT-1 - probe-only infrastructure for the parquet-duckdb-bulk
-# pipeline pattern. First Sciweon use of DuckDB CLI against remote Parquet.
+# Cycle 23 PR-OT-1 (probe-only infra) + PR-OT-3 (quarterly ingest).
+# Manual dispatch only. Cron deferred to PR-OT-5.
 #
-# Manual dispatch ONLY (no cron yet). Subsequent PRs unlock the full
-# pipeline:
-#   PR-OT-1 (this) - infra probe: release discovery + DuckDB DESCRIBE
-#   PR-OT-2        - schema extension (compound entity fields, confidence
-#                    weight=8, source-required-fields entry)
-#   PR-OT-3        - first ingest: full quarterly bulk -> R2 jsonl.zst
-#   PR-OT-4        - stage-3 aggregate merge (chembl_id -> CID bridge)
-#   PR-OT-5        - quarterly cron + completeness gate
+# Two jobs:
+#   probe   - PR-OT-1 release discovery + DuckDB DESCRIBE smoke test
+#   ingest  - PR-OT-3 drug_molecule full extract + zstd + R2 upload
 #
-# Probe validates two assumptions that the 2026-05-18 foundation-doc
-# amendment got wrong:
-#   1. "GCS anonymous read" - the gs:// bucket is requester-pays. EBI FTP
-#      HTTP mirror is the actual working endpoint.
-#   2. Single "drug" table - the OT 25.03+ release splits drug data into
-#      drug_molecule / drug_indication / drug_mechanism_of_action /
-#      drug_warning / known_drug.
+# The probe job validated the parquet-duckdb-bulk pipeline pattern and
+# corrected two foundation-doc assumptions (GCS endpoint requester-pays,
+# OT 25.03+ drug-table split). PR-OT-3 ingest reuses release discovery
+# and DuckDB install logic but extracts the full corpus instead of a
+# single partition.
 
 on:
   workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'OT release version (blank = auto-detect latest from EBI mirror)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Dry-run ingest (no R2 writes)'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
 
 permissions:
   contents: read
+
+env:
+  R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+  R2_BUCKET: ${{ secrets.R2_BUCKET }}
+  R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+  R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
 
 jobs:
   probe:
@@ -74,3 +84,79 @@ jobs:
           echo '```json' >> $GITHUB_STEP_SUMMARY
           cat /tmp/ot-probe.json >> $GITHUB_STEP_SUMMARY || echo '{"error": "probe did not run"}' >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install deps
+        run: npm ci
+      - name: Resolve release version
+        id: release
+        run: |
+          set -e
+          INPUT="${{ github.event.inputs.release_version }}"
+          if [ -n "$INPUT" ]; then
+            RELEASE="$INPUT"
+            echo "Using provided release: ${RELEASE}"
+          else
+            node scripts/factory/open-targets-probe.js > /tmp/ot-probe.json
+            RELEASE=$(node -e "console.log(require('/tmp/ot-probe.json').latest_release)")
+            echo "Auto-detected latest release: ${RELEASE}"
+          fi
+          echo "release=${RELEASE}" >> $GITHUB_OUTPUT
+      - name: Install DuckDB CLI
+        run: |
+          set -e
+          curl -sL https://github.com/duckdb/duckdb/releases/download/v1.1.3/duckdb_cli-linux-amd64.zip -o /tmp/duckdb.zip
+          unzip -q /tmp/duckdb.zip -d /tmp
+          /tmp/duckdb --version
+      - name: Download drug_molecule Parquet partitions
+        run: |
+          set -e
+          mkdir -p /tmp/dm
+          BASE="https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/${{ steps.release.outputs.release }}/output/drug_molecule"
+          curl -sL "${BASE}/" | grep -oE 'part-[a-z0-9-]+-c000\.snappy\.parquet' | sort -u | while read fname; do
+            echo "Downloading ${fname}"
+            curl -sL -o "/tmp/dm/${fname}" "${BASE}/${fname}"
+          done
+          ls -la /tmp/dm/
+          COUNT=$(ls /tmp/dm/*.parquet | wc -l)
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::error::no Parquet partitions downloaded"
+            exit 1
+          fi
+          echo "Downloaded ${COUNT} partition file(s)"
+      - name: Extract Parquet -> JSONL via DuckDB
+        run: |
+          set -e
+          /tmp/duckdb -c "COPY (SELECT * FROM '/tmp/dm/*.snappy.parquet') TO '/tmp/drug-molecule.jsonl' (FORMAT JSON, ARRAY false);"
+          LINES=$(wc -l < /tmp/drug-molecule.jsonl)
+          echo "JSONL lines: ${LINES}"
+          if [ "$LINES" -eq 0 ]; then
+            echo "::error::DuckDB extract produced zero lines"
+            exit 1
+          fi
+          head -1 /tmp/drug-molecule.jsonl | head -c 500
+          echo ""
+      - name: Transform + upload to R2
+        run: |
+          set -e
+          ARGS="--jsonl=/tmp/drug-molecule.jsonl --release=${{ steps.release.outputs.release }}"
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          node scripts/factory/open-targets-harvest.js $ARGS
+      - name: Ingest report summary
+        if: always()
+        run: |
+          echo "## OT Ingest report (release ${{ steps.release.outputs.release }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f /tmp/drug-molecule.jsonl ]; then
+            echo "- JSONL lines: $(wc -l < /tmp/drug-molecule.jsonl)" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "- Dry-run: ${{ github.event.inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
+          echo "- R2 key: processed/bulk/open-targets/${{ steps.release.outputs.release }}/drug-molecule.jsonl.zst" >> $GITHUB_STEP_SUMMARY
