@@ -65,7 +65,12 @@ async function downloadObject(s3, bucket, key) {
 }
 
 function zstdDecompressFile(inputPath, outputPath) {
-    const result = spawnSync('zstd', ['-d', '--force', '--output', outputPath, inputPath]);
+    // PR-OT-4a hotfix: short-form flags (-f -o) for ubuntu-latest zstd CLI
+    // compatibility. The long-form `--force --output` was rejected by the
+    // GHA runner zstd version with "Incorrect parameter: --output" (run
+    // 26356687321 OT-MERGE step). Short-form syntax is universally
+    // supported across zstd CLI versions.
+    const result = spawnSync('zstd', ['-d', '-f', '-o', outputPath, inputPath]);
     if (result.error) throw new Error(`[OT-MERGE] zstd CLI spawn failed: ${result.error.message}`);
     if (result.status !== 0) {
         const stderr = result.stderr ? result.stderr.toString() : '';
