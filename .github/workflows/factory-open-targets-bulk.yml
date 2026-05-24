@@ -170,38 +170,58 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq zstd
           zstd --version
-      - name: Download drug_molecule Parquet partitions
+      - name: Download 6 OT drug-side Parquet datasets (PR-OT-3c)
+        # PR-OT-3c: download all 6 tables needed for the multi-table JOIN.
+        # Per [[researcher_needs_anchor]] decision 2026-05-24: researcher use
+        # cases require trial-level evidence under each indication, hence
+        # clinical_report is in scope (not deferred to a follow-up PR).
+        # Each table's directory listing is walked with the PR-OT-3b3 regex
+        # that matches both Spark multi-partition (`part-*-c000.snappy.parquet`)
+        # and single-file (`<name>.parquet`) emission patterns.
         run: |
           set -e
-          mkdir -p /tmp/dm
-          BASE="https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/${{ steps.release.outputs.release }}/output/drug_molecule"
-          curl -sL "${BASE}/" | grep -oE 'part-[a-z0-9-]+-c000\.snappy\.parquet' | sort -u | while read fname; do
-            echo "Downloading ${fname}"
-            curl -sL -o "/tmp/dm/${fname}" "${BASE}/${fname}"
+          BASE="https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/${{ steps.release.outputs.release }}/output"
+          TABLES="drug_molecule drug_mechanism_of_action drug_warning clinical_indication clinical_report clinical_target"
+          for table in $TABLES; do
+            mkdir -p "/tmp/${table}"
+            FILES=$(curl -sL "${BASE}/${table}/" | grep -oE '(part-[a-z0-9-]+-c000\.snappy\.parquet|[a-z][a-zA-Z0-9_]*\.parquet)' | sort -u)
+            if [ -z "$FILES" ]; then
+              echo "::error::no Parquet files found in ${table}"
+              exit 1
+            fi
+            for fname in $FILES; do
+              curl -sL -o "/tmp/${table}/${fname}" "${BASE}/${table}/${fname}"
+            done
+            COUNT=$(ls /tmp/${table}/ | wc -l)
+            echo "Downloaded ${table}: ${COUNT} file(s)"
           done
-          ls -la /tmp/dm/
-          COUNT=$(ls /tmp/dm/*.parquet | wc -l)
-          if [ "$COUNT" -eq 0 ]; then
-            echo "::error::no Parquet partitions downloaded"
-            exit 1
-          fi
-          echo "Downloaded ${COUNT} partition file(s)"
-      - name: Extract Parquet -> JSONL via DuckDB
+      - name: Multi-table JOIN extract -> JSONL via DuckDB (PR-OT-3c)
+        # 6-table JOIN executed from scripts/factory/sql/open-targets-join.sql.
+        # SQL kept out of workflow YAML so Art 5.1 line cap applies cleanly
+        # to both files and so the SQL is reviewable as a unit (76 lines).
+        # Two distinct join-key patterns in one query:
+        #   - drug_* tables use plural chemblIds[] via list_contains
+        #   - clinical_* tables use singular drugId via direct equi-join
+        # clinical_report nests via 2-hop correlated subquery through
+        # clinical_indication.clinicalReportIds[].
         run: |
           set -e
-          /tmp/duckdb -c "COPY (SELECT * FROM '/tmp/dm/*.snappy.parquet') TO '/tmp/drug-molecule.jsonl' (FORMAT JSON, ARRAY false);"
-          LINES=$(wc -l < /tmp/drug-molecule.jsonl)
+          /tmp/duckdb < scripts/factory/sql/open-targets-join.sql
+          LINES=$(wc -l < /tmp/drug-enriched.jsonl)
+          BYTES=$(wc -c < /tmp/drug-enriched.jsonl)
           echo "JSONL lines: ${LINES}"
+          echo "JSONL bytes: ${BYTES}"
           if [ "$LINES" -eq 0 ]; then
-            echo "::error::DuckDB extract produced zero lines"
+            echo "::error::DuckDB JOIN extract produced zero lines"
             exit 1
           fi
-          head -1 /tmp/drug-molecule.jsonl | head -c 500
+          echo "--- first record (truncated 800 chars) ---"
+          head -1 /tmp/drug-enriched.jsonl | head -c 800
           echo ""
       - name: Transform + upload to R2
         run: |
           set -e
-          ARGS="--jsonl=/tmp/drug-molecule.jsonl --release=${{ steps.release.outputs.release }}"
+          ARGS="--jsonl=/tmp/drug-enriched.jsonl --release=${{ steps.release.outputs.release }}"
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
           node scripts/factory/open-targets-harvest.js $ARGS
       - name: Ingest report summary
@@ -209,8 +229,9 @@ jobs:
         run: |
           echo "## OT Ingest report (release ${{ steps.release.outputs.release }})" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          if [ -f /tmp/drug-molecule.jsonl ]; then
-            echo "- JSONL lines: $(wc -l < /tmp/drug-molecule.jsonl)" >> $GITHUB_STEP_SUMMARY
+          if [ -f /tmp/drug-enriched.jsonl ]; then
+            echo "- JSONL lines: $(wc -l < /tmp/drug-enriched.jsonl)" >> $GITHUB_STEP_SUMMARY
+            echo "- JSONL bytes: $(wc -c < /tmp/drug-enriched.jsonl)" >> $GITHUB_STEP_SUMMARY
           fi
           echo "- Dry-run: ${{ github.event.inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
-          echo "- R2 key: processed/bulk/open-targets/${{ steps.release.outputs.release }}/drug-molecule.jsonl.zst" >> $GITHUB_STEP_SUMMARY
+          echo "- R2 key: processed/bulk/open-targets/${{ steps.release.outputs.release }}/drug-enriched.jsonl.zst" >> $GITHUB_STEP_SUMMARY
