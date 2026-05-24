@@ -144,15 +144,29 @@ export async function loadCrosswalkRaw({ entityClass, client, bucket }) {
     }
 }
 
-export async function putCrosswalkRaw({ entityClass, compressedBuffer, client, bucket }) {
+export const MAX_CROSSWALK_CAS_RETRIES = 5;
+
+export function buildPutCrosswalkParams({ entityClass, compressedBuffer, ifMatch, ifNoneMatch, bucket }) {
     if (!Buffer.isBuffer(compressedBuffer)) {
-        throw new Error('[SID-crosswalk] compressedBuffer (zstd-compressed JSONL) required — compression is caller responsibility per OT-3a CLI shell-out pattern');
+        throw new Error('[SID-crosswalk] compressedBuffer (zstd-compressed JSONL) required');
     }
-    await client.send(new PutObjectCommand({
-        Bucket: bucket,
-        Key: crosswalkKey(entityClass),
-        Body: compressedBuffer,
+    if (typeof bucket !== 'string' || !bucket) throw new Error('[SID-crosswalk] bucket required');
+    const params = {
+        Bucket: bucket, Key: crosswalkKey(entityClass), Body: compressedBuffer,
         ContentType: 'application/octet-stream',
-    }));
+    };
+    if (ifMatch) params.IfMatch = ifMatch;
+    if (ifNoneMatch) params.IfNoneMatch = ifNoneMatch;
+    return params;
+}
+
+export function isPreconditionFailed(err) {
+    if (!err) return false;
+    return err.name === 'PreconditionFailed' || err.$metadata?.httpStatusCode === 412;
+}
+
+export async function putCrosswalkRaw({ entityClass, compressedBuffer, ifMatch, ifNoneMatch, client, bucket }) {
+    const params = buildPutCrosswalkParams({ entityClass, compressedBuffer, ifMatch, ifNoneMatch, bucket });
+    await client.send(new PutObjectCommand(params));
     return { key: crosswalkKey(entityClass), byteSize: compressedBuffer.length };
 }
