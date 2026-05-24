@@ -1,0 +1,45 @@
+name: Factory SID Counter Probe
+
+# Phase 1.1b-probe: live R2 CAS verification for the SID Counter Ledger +
+# Crosswalk primitives (PR #137 6e97c41). Workflow_dispatch only — runs
+# against production R2 using an isolated sacrificial entity_class
+# (`probe_sid_v1_0`) so real entity-class counters are NOT polluted.
+#
+# Gate for Phase 1.1c first batch stamp on cycle 23 compounds-enriched.jsonl.
+# Each successful run advances the probe class counter by batch_size
+# permanently (V1.0 §40 monotonic invariant — no rollback).
+
+on:
+  workflow_dispatch:
+    inputs:
+      batch_size:
+        description: 'Counters to reserve in this probe run (1..1000)'
+        required: false
+        default: '100'
+
+permissions:
+  contents: read
+
+env:
+  R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+  R2_BUCKET: ${{ secrets.R2_BUCKET }}
+  R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+  R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+  PROBE_BATCH_SIZE: ${{ inputs.batch_size }}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install deps
+        run: npm ci
+      - name: Install zstd CLI
+        run: sudo apt-get update && sudo apt-get install -y zstd
+      - name: Run SID counter probe
+        run: node scripts/factory/sid-counter-probe.js
