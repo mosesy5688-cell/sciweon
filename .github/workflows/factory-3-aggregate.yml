@@ -42,6 +42,12 @@ jobs:
           else
             npm install
           fi
+      - name: Install zstd CLI
+        # PR-OT-4: stage-3 OT merge uses native zstd CLI to decompress the
+        # ~15 MB / ~144 MB inflated OT bulk artifact (same Constitution-
+        # compliant native-binary architecture as PR-OT-3a hotfix; avoids
+        # zstd-codec WASM OOM at ~16MB inputs).
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zstd && zstd --version
       - name: Run stage 3
         run: node scripts/factory/stage-3-aggregate.js
       - name: Upload stage-3 log artifact

@@ -141,6 +141,23 @@ async function main() {
         console.error(`[STAGE-3] Backfill failed (non-fatal, F3 continues with un-backfilled cumulative): ${err.message}`);
     }
 
+    // PR-OT-4 (cycle 23): Open Targets bulk merge into compound entity.
+    // Reads OT bulk artifact from R2 (per [[project_cycle23_pr_ot_1_shipped]])
+    // and folds known_drug_info + target_associations into chembl_id-bearing
+    // compounds. Closes the researcher-experience gap where OT data sat in
+    // R2 staging but did not surface at the API compound entity (per
+    // [[researcher_needs_anchor]] 2026-05-24 decision). Non-fatal: OT-merge
+    // failure leaves compounds-enriched.jsonl in un-OT-enriched state but
+    // does not block search/target indices or R2 upload (researchers degrade
+    // gracefully; OT data resurfaces on the next successful run).
+    console.log('\n[STAGE-3] === PR-OT-4 Open Targets stage-3 merge ===');
+    try {
+        await runScript('open-targets-stage3-merge.js');
+        console.log('[STAGE-3] OT merge OK');
+    } catch (err) {
+        console.error(`[STAGE-3] OT merge failed (non-fatal, F3 continues with un-OT-enriched compounds): ${err.message}`);
+    }
+
     // V0.5.3 Tier 1.5 search index — rebuild SQLite FTS5 over cumulative
     // aggregated. Runs AFTER the cumulative merge so the index reflects
     // historical + current compounds together. Failure here is non-fatal:
