@@ -102,7 +102,15 @@ jobs:
             echo "============================================"
             echo "=== Probing ${table}"
             echo "============================================"
-            FNAME=$(curl -sL "${BASE}/${table}/" | grep -oE 'part-[a-z0-9-]+-c000\.snappy\.parquet' | head -1)
+            # PR-OT-3b3: regex now matches BOTH Parquet emit patterns OT uses:
+            #   1. Spark-style multi-partition (drug_* tables):
+            #      part-NNNNN-UUID-c000.snappy.parquet (one file per partition)
+            #   2. Single-file Parquet (clinical_* tables in 26.03):
+            #      <table_name>.parquet
+            # The two alternatives are non-overlapping (the first requires the
+            # `part-` prefix and `c000.snappy.parquet` suffix; the second is a
+            # bare lowercase identifier with `.parquet` suffix and no hyphen).
+            FNAME=$(curl -sL "${BASE}/${table}/" | grep -oE '(part-[a-z0-9-]+-c000\.snappy\.parquet|[a-z][a-zA-Z0-9_]*\.parquet)' | head -1)
             if [ -z "$FNAME" ]; then
               echo "::warning::no Parquet part files in ${table}; OT ${RELEASE} may not expose this dataset"
               continue
