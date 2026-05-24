@@ -31,9 +31,31 @@
  */
 import { createReadStream } from 'fs';
 import readline from 'readline';
+import { spawnSync } from 'child_process';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { openTargetsRowToSciweonRecord, buildCursorRecord } from './lib/open-targets-sql.js';
-import { zstdCompress } from './lib/zstd-helper.js';
+
+/**
+ * Compress a buffer via the native zstd CLI (apt-get install -y zstd in the
+ * workflow). Shells out instead of using lib/zstd-helper.js's WASM fallback
+ * because zstd-codec WASM Simple.compress() OOMs on ~16MB inputs (the
+ * drug_molecule output is ~16MB uncompressed for the 26.03 release). The
+ * Rust FFI path in zstd-helper.js handles this natively but is not built
+ * in the GHA ubuntu-latest environment. Native CLI is identical in output
+ * and constant-memory.
+ */
+function zstdCliCompress(input, level = 3) {
+    const result = spawnSync('zstd', [`-${level}`, '--stdout', '--quiet'], {
+        input,
+        maxBuffer: 256 * 1024 * 1024,
+    });
+    if (result.error) throw new Error(`[OT-INGEST] zstd CLI spawn failed: ${result.error.message}`);
+    if (result.status !== 0) {
+        const stderr = result.stderr ? result.stderr.toString() : '';
+        throw new Error(`[OT-INGEST] zstd CLI exit ${result.status}: ${stderr}`);
+    }
+    return result.stdout;
+}
 
 const REQUIRED_ENV = ['R2_ENDPOINT', 'R2_BUCKET', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'];
 const CURSOR_KEY = 'state/open-targets-cursor.json';
@@ -96,7 +118,7 @@ async function main() {
     console.log(`[OT-INGEST] transformed ${records.length} records`);
 
     const uncompressed = Buffer.from(records.map(r => JSON.stringify(r)).join('\n') + '\n', 'utf-8');
-    const compressed = await zstdCompress(uncompressed, 3);
+    const compressed = zstdCliCompress(uncompressed, 3);
     const ratio = (compressed.length / uncompressed.length * 100).toFixed(1);
     console.log(`[OT-INGEST] uncompressed=${uncompressed.length}B compressed=${compressed.length}B ratio=${ratio}%`);
 
