@@ -76,27 +76,20 @@ jobs:
           /tmp/duckdb -c "SELECT COUNT(*) AS rows FROM '/tmp/drug_molecule.parquet';"
           echo "--- 3 SAMPLE ROWS ---"
           /tmp/duckdb -c "SELECT * FROM '/tmp/drug_molecule.parquet' LIMIT 3;"
-      - name: Probe additional OT drug-side table schemas (PR-OT-3b + PR-OT-3b2)
-        # PR-OT-3b: probe drug-side tables drug_mechanism_of_action + drug_warning
-        # (drug_indication + known_drug returned HTTP 404 in PR-OT-3b dispatch on
-        # 26.03; root-cause: tables renamed and restructured into the clinical_*
-        # family per the third foundation-doc correction in this cascade — see
-        # tracker §3 detail + brain memo entry 2026-05-24 continuation 3).
-        #
-        # PR-OT-3b2: extends the probe to the clinical_* family that replaced
-        # drug_indication + known_drug:
-        #   - clinical_indication (drug -> disease via clinical evidence)
-        #   - clinical_report (clinical study / report metadata)
-        #   - clinical_target (drug -> target via clinical evidence)
-        # The keep-going tables (drug_mechanism_of_action + drug_warning) stay in
-        # the loop for self-documentation; the dead names (drug_indication +
-        # known_drug) are dropped because the probe would always emit 404 warnings
-        # and pollute the report.
+      - name: Probe additional OT table schemas (PR-OT-3b + PR-OT-3b2 + PR-OT-3b4)
+        # PR-OT-3b: drug-side tables drug_mechanism_of_action + drug_warning
+        # PR-OT-3b2/3b3: clinical_* family (clinical_indication / clinical_report /
+        # clinical_target) that replaced drug_indication + known_drug in OT 26.03
+        # PR-OT-3b4 (this PR): adds `target` to discover OT's native target table
+        # schema. Required for Phase 1.4 target SID stamping infrastructure — OT
+        # target carries UniProt accessions in proteinIds STRUCT array, removing
+        # the need for an external Ensembl->UniProt bridge. The probe DESCRIBE
+        # output is used to write the Phase 1.4-pre SQL extraction (subsequent PR).
         run: |
           set -e
           RELEASE=$(node -e "console.log(require('/tmp/ot-probe.json').latest_release)")
           BASE="https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/${RELEASE}/output"
-          TABLES="drug_mechanism_of_action drug_warning clinical_indication clinical_report clinical_target"
+          TABLES="drug_mechanism_of_action drug_warning clinical_indication clinical_report clinical_target target"
           for table in $TABLES; do
             echo ""
             echo "============================================"
