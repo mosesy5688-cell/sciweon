@@ -59,6 +59,11 @@ export const AGGREGATED_FILES = Object.freeze([
     'trial-links.jsonl',
     'papers.jsonl',
     'paper-links.jsonl',
+    // Phase 1.4-pre.1b: targets.jsonl produced by scripts/factory/target-linker.js
+    // (OT target.jsonl.zst + bioactivity.target merged, ~19K entries). Required
+    // by Phase 1.4 SID stamping consumer; snapshot publication ensures
+    // researchers receive stamped target entities in daily bundle.
+    'targets.jsonl',
     'negative-evidence-raw.jsonl',
     'neg-evidence.jsonl',
     'sciweon-search-index.json',
