@@ -46,13 +46,13 @@ async function main() {
     const bucket = process.env.R2_BUCKET;
     console.log(`[${LABEL}] Phase 1.6a stamping | entity_class=${SAL_ASSERTION_ENTITY_CLASS} isShardingEnabled=${IS_SHARDING_ENABLED} builders=${ASSERTION_BUILDERS.length}`);
 
-    const perBuilderCounts = {};
+    const perBuilderStats = {};
     const builderResults = [];
     for (const { label, fn } of ASSERTION_BUILDERS) {
         const { rawAssertions, stats } = await fn();
-        perBuilderCounts[label] = stats.emitted;
+        perBuilderStats[label] = stats;
         builderResults.push({ rawAssertions });
-        console.log(`[${LABEL}] Builder ${label}: emitted=${stats.emitted}`);
+        console.log(`[${LABEL}] Builder ${label}: emitted=${stats.emitted} skip(missing_chembl_activity=${stats.missingChemblActivity ?? 0}, missing_target_resolution=${stats.missingTargetResolution ?? 0}, unstampable_orphan_target=${stats.unstampableOrphanTarget ?? 0}, unstampable_orphan_compound=${stats.unstampableOrphanCompound ?? 0})`);
     }
     // Defect-15 fix: for-loop merge (NOT spread-push) — spread-push blows the
     // JS argument stack at ~100K elements.
@@ -148,7 +148,7 @@ async function main() {
     const summary = buildSalStampingSummary({
         totalAssertions: allRawAssertions.length, alreadyStamped: alreadyStamped.length,
         newlyStamped: newlyStampedEntries.length, unstampable: unstampable.length,
-        perClassCounts, perBuilderCounts, reservationsIssued: plan.length, skippedParanoiaCount: 0,
+        perClassCounts, perBuilderStats, reservationsIssued: plan.length, skippedParanoiaCount: 0,
         elapsedMs: Date.now() - startMs, ledgerKeys, shardCount,
     });
     console.log(`[${LABEL}] === SUMMARY ===`);
