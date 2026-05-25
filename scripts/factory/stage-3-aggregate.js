@@ -93,17 +93,15 @@ async function main() {
         process.exit(2);
     }
 
-    // V0.5.x: trial scripts must run sequentially — both trial-linker and
-    // trial-results-enricher do writeFile on trials.jsonl, so parallel runs
-    // produce last-writer-wins. trial-linker is slowest, so it overwrites
-    // trial-results-enricher's serious_events_count enrichment, leaving
-    // neg-evidence-builder with no source data for serious_adverse_event_per_trial
-    // (cycle 1 audit: 0 records of that category vs 161 in V0.4.3 local).
-    // ctis-trial-linker uses appendFile (safe) but ordering it after trial-linker
-    // keeps the appended records aligned with the freshly-written base file.
-    // Papers writes a different file so the trial-group and paper-group can still
-    // run in parallel with each other.
-    const [trialResults, paperResults, targetResults] = await Promise.all([
+    // V0.5.x: trial scripts run sequentially — trial-linker + trial-results-enricher
+    // both writeFile trials.jsonl (last-writer-wins) so trial-linker (slowest) would
+    // overwrite enricher's serious_events_count, starving neg-evidence-builder of
+    // serious_adverse_event_per_trial (cycle 1: 0 vs V0.4.3-local 161). ctis-trial-
+    // linker appendFiles (safe) but ordered after trial-linker keeps base aligned.
+    // Papers writes a different file; trial-group + paper-group run in parallel.
+    // PR 1.4-pre.1b targets-linker + PR 1.6b-pre.1b disease-linker each own
+    // disjoint output files so all four groups parallel-safe.
+    const [trialResults, paperResults, targetResults, diseaseResults] = await Promise.all([
         runSequential('Trials', [
             { name: 'trial-linker', fn: () => runScript('trial-linker.js') },
             { name: 'ctis-trial-linker', fn: () => runScript('ctis-trial-linker.js') },
@@ -112,11 +110,11 @@ async function main() {
         runSequential('Papers', [
             { name: 'paper-linker', fn: () => runScript('paper-linker.js') },
         ]),
-        // Phase 1.4-pre.1b: target-linker dedupes OT + bioactivity targets
-        // into output/linked/targets.jsonl. Parallel with trials/papers
-        // (no shared file mutation). Foundation for Phase 1.4 stamping.
         runSequential('Targets', [
             { name: 'target-linker', fn: () => runScript('target-linker.js') },
+        ]),
+        runSequential('Diseases', [
+            { name: 'disease-linker', fn: () => runScript('disease-linker.js') },
         ]),
     ]);
 
@@ -224,6 +222,7 @@ async function main() {
 
     const failureCount = trialResults.filter(r => !r.ok).length
         + paperResults.filter(r => !r.ok).length
+        + diseaseResults.filter(r => !r.ok).length
         + crossLinkResults.filter(r => !r.ok).length;
 
     const elapsed = Math.round((Date.now() - startTime) / 1000);

@@ -64,6 +64,12 @@ export const AGGREGATED_FILES = Object.freeze([
     // by Phase 1.4 SID stamping consumer; snapshot publication ensures
     // researchers receive stamped target entities in daily bundle.
     'targets.jsonl',
+    // Phase 1.6b-pre.1b: diseases.jsonl produced by scripts/factory/disease-linker.js
+    // (~47K OT disease records normalized into Sciweon per-namespace multi-canon
+    // shape: oba / mondo / efo / hp / orphanet + unclassified_ontology tail-fuse).
+    // Required by Phase 1.6b SID disease stamper + downstream PR 1.6c
+    // clinical_indication SAL stamping (object-side disease.sid_s lookup).
+    'diseases.jsonl',
     // Phase 1.6a: sal-assertions.jsonl produced by scripts/factory/stage-3-sal-sid-stamp.js
     // (content-addressed UUID v5 anchored assertions; bioactivity-as-assertion in
     // PR 1.6a, OT clinical_indication additively appended in PR 1.6c).
