@@ -26,6 +26,7 @@ import {
 import {
     SAL_ASSERTION_ENTITY_CLASS,
     classifyAssertions, buildSalStampingEntries, buildOutputRow, buildSalStampingSummary,
+    mergeBuilderRawAssertions,
 } from './lib/sid-sal-stamping.js';
 import { buildBioactivityAssertions, BUILDER_LABEL as BIOACT_BUILDER_LABEL } from './lib/sal-bioactivity-builder.js';
 
@@ -45,14 +46,17 @@ async function main() {
     const bucket = process.env.R2_BUCKET;
     console.log(`[${LABEL}] Phase 1.6a stamping | entity_class=${SAL_ASSERTION_ENTITY_CLASS} isShardingEnabled=${IS_SHARDING_ENABLED} builders=${ASSERTION_BUILDERS.length}`);
 
-    const allRawAssertions = [];
     const perBuilderCounts = {};
+    const builderResults = [];
     for (const { label, fn } of ASSERTION_BUILDERS) {
         const { rawAssertions, stats } = await fn();
         perBuilderCounts[label] = stats.emitted;
-        allRawAssertions.push(...rawAssertions);
+        builderResults.push({ rawAssertions });
         console.log(`[${LABEL}] Builder ${label}: emitted=${stats.emitted}`);
     }
+    // Defect-15 fix: for-loop merge (NOT spread-push) — spread-push blows the
+    // JS argument stack at ~100K elements.
+    const allRawAssertions = mergeBuilderRawAssertions(builderResults);
     console.log(`[${LABEL}] Unified stream: ${allRawAssertions.length} raw assertions across ${ASSERTION_BUILDERS.length} builder(s)`);
 
     const { entries: crosswalkEntries } = await loadCrosswalkState({ entityClass: SAL_ASSERTION_ENTITY_CLASS, client, bucket, label: LABEL });

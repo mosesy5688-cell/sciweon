@@ -93,6 +93,35 @@ describe('buildOutputRow — locked double-track schema', () => {
     });
 });
 
+describe('mergeBuilderRawAssertions — defect-15 stack-safe merge', () => {
+    it('merges two small builder outputs in order', async () => {
+        const { mergeBuilderRawAssertions } = await import('../../scripts/factory/lib/sid-sal-stamping.js');
+        const merged = mergeBuilderRawAssertions([
+            { rawAssertions: [{ id: 'a' }, { id: 'b' }] },
+            { rawAssertions: [{ id: 'c' }] },
+        ]);
+        expect(merged.map(r => r.id)).toEqual(['a', 'b', 'c']);
+    });
+    it('survives 200K-element builder output (regression — spread-push blew stack at line 53 of orchestrator on 360K bioactivity prod run)', async () => {
+        const { mergeBuilderRawAssertions } = await import('../../scripts/factory/lib/sid-sal-stamping.js');
+        const huge = new Array(200_000).fill(null).map((_, i) => ({ id: i }));
+        const merged = mergeBuilderRawAssertions([{ rawAssertions: huge }]);
+        expect(merged).toHaveLength(200_000);
+        expect(merged[0].id).toBe(0);
+        expect(merged[199_999].id).toBe(199_999);
+    });
+    it('skips null/non-array builder entries silently', async () => {
+        const { mergeBuilderRawAssertions } = await import('../../scripts/factory/lib/sid-sal-stamping.js');
+        const merged = mergeBuilderRawAssertions([
+            null,
+            { rawAssertions: [{ id: 'a' }] },
+            { rawAssertions: 'not-array' },
+            { rawAssertions: [{ id: 'b' }] },
+        ]);
+        expect(merged.map(r => r.id)).toEqual(['a', 'b']);
+    });
+});
+
 describe('buildSalStampingSummary', () => {
     it('canonical telemetry shape', () => {
         const s = buildSalStampingSummary({

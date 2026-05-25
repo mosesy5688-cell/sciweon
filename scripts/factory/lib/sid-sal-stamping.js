@@ -198,6 +198,26 @@ export function buildOutputRow({ sidS, sidC, anchor, payload, displayContext }) 
     };
 }
 
+/**
+ * Safe in-memory merge of per-builder raw-assertion arrays into one unified stream.
+ *
+ * Defect-15 fix (PR-SID-1.6a-fix 2026-05-25): naive `arr.push(...subArr)` blows
+ * the JS argument stack at ~100K elements (RangeError: Maximum call stack size
+ * exceeded). 360K-bioactivity production run crashed at line 53 of the
+ * orchestrator on first deploy. For-loop push is O(N) safe at any size.
+ */
+export function mergeBuilderRawAssertions(builderResults) {
+    if (!Array.isArray(builderResults)) {
+        throw new Error('[SID-SAL] builderResults must be array of { rawAssertions[] }');
+    }
+    const merged = [];
+    for (const result of builderResults) {
+        if (!result || !Array.isArray(result.rawAssertions)) continue;
+        for (const r of result.rawAssertions) merged.push(r);
+    }
+    return merged;
+}
+
 export function buildSalStampingSummary({
     totalAssertions, alreadyStamped, newlyStamped, unstampable,
     perClassCounts, perBuilderCounts, reservationsIssued, skippedParanoiaCount,
