@@ -38,9 +38,11 @@ import readline from 'readline';
 import { Readable } from 'stream';
 import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { SOURCE_REQUIRED_FIELDS, SEVERITY_THRESHOLDS, filesNeeded } from './lib/source-required-fields.js';
+import { SOURCE_DEFERRALS, applyDeferrals } from './lib/source-deferrals.js';
 import {
     pct, initStat, scanFile, severityTierForPct, aggregateSeverity, listBelowThreshold,
 } from './lib/source-completeness-helpers.js';
+import { printSummary } from './lib/source-completeness-summary.js';
 // SEVERITY_THRESHOLDS still imported for the final HARDFAIL log line
 // (uses the GLOBAL hardfail threshold in the message - per-source values
 // are reflected in the per-source tier label printed by printSummary).
@@ -112,24 +114,6 @@ function groupByFile(working) {
     return byFile;
 }
 
-function printSummary(sources, totals, belowThreshold, severityTier, runId) {
-    console.log(`\n[SOURCE-COMPLETENESS] === Summary ===`);
-    console.log(`  Run id:                  ${runId}`);
-    console.log(`  Total compounds:         ${totals.compounds}`);
-    console.log(`  Total bioactivities:     ${totals.bioactivities}`);
-    console.log(`  Total drug labels:       ${totals.drugLabels}`);
-    console.log(`  DailyMed-linked %:       ${totals.dailymedLinkedPct}%`);
-    console.log(`  --`);
-    for (const [sourceId, s] of Object.entries(sources)) {
-        // PR-CORE-1d: per-source threshold (override or global default)
-        const tier = severityTierForPct(s.gate_adjusted_pct, sourceId);
-        const flag = tier === 0 ? 'OK' : tier === 1 ? 'HARDFAIL' : tier === 2 ? 'WARN' : 'INFO';
-        console.log(`  ${sourceId.padEnd(22)} raw=${String(s.raw_pct).padStart(6)}%  gate=${String(s.gate_adjusted_pct).padStart(6)}%  (${s.fully_enriched}/${s.gate_pass} of ${s.total}) [${flag}]`);
-    }
-    console.log(`  Below threshold (<95%):  ${belowThreshold.length === 0 ? 'none' : belowThreshold.join(', ')}`);
-    console.log(`  Aggregate tier:          ${severityTier}`);
-}
-
 async function main() {
     const { runIdOverride } = parseArgs();
     console.log(`[SOURCE-COMPLETENESS] start; run-id override=${runIdOverride ?? '(latest)'}`);
@@ -196,20 +180,34 @@ async function main() {
         sources[sourceId] = s;
     }
 
-    const severityTier = aggregateSeverity(sources);
-    const belowThreshold = listBelowThreshold(sources);
+    // PR-CORE-deferrals: apply L1 deferrals. adjustedStats drives exit code
+    // and below_threshold computation; sources (raw) preserved for R2 write
+    // per Fix 4 architect-lock (no historical metric pollution).
+    const todayIso = new Date().toISOString();
+    const { adjustedStats, telemetry } = applyDeferrals(sources, SOURCE_DEFERRALS, todayIso);
+
+    const severityTier = aggregateSeverity(adjustedStats);
+    const belowThreshold = listBelowThreshold(adjustedStats);
     totals.dailymedLinkedPct = pct(dailymedLinkedCompounds, totals.compounds);
 
     const result = {
-        audit_date: new Date().toISOString().slice(0, 10),
+        audit_date: todayIso.slice(0, 10),
         run_id: runId,
         total_compounds: totals.compounds,
         total_bioactivities: totals.bioactivities,
         total_drug_labels: totals.drugLabels,
+        // Fix 4: per-source body preserves RAW historical metrics. Deferral
+        // telemetry isolated in metadata block so downstream trend analyzers
+        // see actual coverage history, not adjusted values.
         sources,
         dailymed_linked_compounds_pct: totals.dailymedLinkedPct,
         severity_tier: severityTier,
         below_threshold: belowThreshold,
+        deferrals_metadata: {
+            deferrals_applied: telemetry.deferrals_applied,
+            expired_deferrals: telemetry.expired_deferrals,
+            new_regressions: telemetry.new_regressions,
+        },
     };
 
     try {
@@ -224,7 +222,7 @@ async function main() {
         console.error(`[SOURCE-COMPLETENESS] State emit failed (non-fatal): ${err.message}`);
     }
 
-    printSummary(sources, totals, belowThreshold, severityTier, runId);
+    printSummary(sources, adjustedStats, telemetry, totals, belowThreshold, severityTier, runId);
 
     if (severityTier === 1) {
         console.error(`[SOURCE-COMPLETENESS] FAIL: at least one source < ${SEVERITY_THRESHOLDS.hardfail}% (HARDFAIL).`);

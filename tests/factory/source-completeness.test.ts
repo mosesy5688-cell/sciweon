@@ -51,8 +51,8 @@ describe('Per-source severityTierForPct overrides (PR-CORE-1d)', () => {
     });
 });
 
-describe('aggregateSeverity with per-source overrides (PR-CORE-1d)', () => {
-    it('today\'s production state JSON values: rxnorm 9.46 / faers 2.36 / unichem 40.4 / bioassay 5.57 -> aggregate tier 3 (not 1)', () => {
+describe('aggregateSeverity with per-source overrides (PR-CORE-1d, pre-deferrals)', () => {
+    it('legacy: per-source override puts rxnorm 9.46 etc at tier 3 (pre-deferrals path)', () => {
         const stats = {
             pubchem:            { gate_adjusted_pct: 100 },
             chembl:             { gate_adjusted_pct: 100 },
@@ -64,6 +64,13 @@ describe('aggregateSeverity with per-source overrides (PR-CORE-1d)', () => {
             pubchem_bioassay:   { gate_adjusted_pct: 5.57 },
         };
         expect(aggregateSeverity(stats as never)).toBe(3);
+    });
+
+    it('PR-CORE-deferrals: pre-set severity_tier takes precedence over pct-derived', () => {
+        const stats = {
+            rxnorm: { gate_adjusted_pct: 9.46, severity_tier: 0 },  // adjusted by deferral
+        };
+        expect(aggregateSeverity(stats as never)).toBe(0);
     });
 
     it('rxnorm dropping below its hardfail (3%) still surfaces tier 1', () => {
