@@ -76,12 +76,102 @@ export async function backoff(attempt, capMs = 1000) {
     await new Promise(r => setTimeout(r, ms));
 }
 
-export async function loadCrosswalkState({ entityClass, client, bucket, label = 'SID-STAGE3' }) {
-    const { compressedBuffer, etag } = await loadCrosswalkRaw({ entityClass, client, bucket });
+export async function loadCrosswalkState({ entityClass, client, bucket, label = 'SID-STAGE3', shardPrefix = null }) {
+    const { compressedBuffer, etag } = await loadCrosswalkRaw({ entityClass, client, bucket, shardPrefix });
     if (!compressedBuffer) return { entries: [], etag: null };
     const decompressed = zstdDecompress(compressedBuffer, label);
     const entries = parseCrosswalkJsonl(decompressed.toString('utf-8'));
     return { entries, etag };
+}
+
+/**
+ * Phase 1.5 defect-13 fix: partition flat additions[] by sid_s[0..2]
+ * prefix into Map<shardPrefix, Array<entry>>. Used by
+ * casExecutePartitionedCrosswalkUpdate when isShardingEnabled=true.
+ *
+ * Pure function (no IO). Caller passes flat additions, gets per-shard
+ * slices keyed by 2-char hex prefix. Each prefix's slice contains
+ * ONLY entries whose sid_s starts with that prefix (deterministic by
+ * SHA-256 uniformity).
+ */
+export function partitionAdditionsByShardPrefix(additions) {
+    if (!Array.isArray(additions)) throw new Error('[SID-STAGE3] additions must be array');
+    const partitions = new Map();
+    for (const entry of additions) {
+        if (!entry || typeof entry.sid_s !== 'string' || entry.sid_s.length < 2) {
+            throw new Error('[SID-STAGE3] every addition must have sid_s string of length >= 2');
+        }
+        const prefix = entry.sid_s.substring(0, 2);
+        if (!partitions.has(prefix)) partitions.set(prefix, []);
+        partitions.get(prefix).push(entry);
+    }
+    return partitions;
+}
+
+/**
+ * Internal helper: single-shard atomic Read-Modify-Write.
+ * Used by both casExecutePartitionedCrosswalkUpdate (sharded mode) and
+ * its non-sharded fast-path (shardPrefix=null).
+ */
+async function casExecuteShardUpdate({ entityClass, label, client, bucket, shardAdditions, shardPrefix }) {
+    for (let attempt = 0; attempt < MAX_CROSSWALK_CAS_RETRIES; attempt++) {
+        const { entries: currentEntries, etag } = await loadCrosswalkState({ entityClass, client, bucket, label, shardPrefix });
+        const merged = mergeEntries(currentEntries, shardAdditions);
+        const compressed = zstdCompress(Buffer.from(serializeEntries(merged), 'utf-8'), label);
+        const opts = etag ? { ifMatch: etag } : { ifNoneMatch: '*' };
+        try {
+            const result = await putCrosswalkRaw({
+                entityClass, compressedBuffer: compressed, ...opts, client, bucket, shardPrefix,
+            });
+            return { ...result, totalEntries: merged.length, additionsCount: shardAdditions.length, attemptsUsed: attempt + 1, shardPrefix };
+        } catch (err) {
+            if (!isPreconditionFailed(err)) throw err;
+            const shardTag = shardPrefix ? ` shard=${shardPrefix}` : '';
+            console.warn(`[${label}] crosswalk CAS 412${shardTag} attempt=${attempt + 1} — reload + retry`);
+            await backoff(attempt);
+        }
+    }
+    throw new Error(`[${label}] crosswalk CAS exhausted after ${MAX_CROSSWALK_CAS_RETRIES} attempts${shardPrefix ? ` (shard ${shardPrefix})` : ''}`);
+}
+
+/**
+ * Phase 1.5 NEW partitioned dispatcher API (defect-13 fix).
+ *
+ * Caller hands a FLAT additions array. The shared lib internally routes
+ * per-shard when isShardingEnabled=true. Orchestrators NEVER pass a
+ * shardPrefix string directly — only the isShardingEnabled boolean toggle.
+ *
+ * Replaces the static-shardPrefix antipattern that would cause mass
+ * double-stamping when batch ingestion meets single-shard load.
+ *
+ * @param additions  flat array of crosswalk entries (post-classifier output)
+ * @param isShardingEnabled  false → single-file mode (Phase 1.5 default)
+ *                           true  → auto-partition additions by sid_s[0:2]
+ */
+export async function casExecutePartitionedCrosswalkUpdate({
+    entityClass, label = 'SID-STAGE3', client, bucket, additions, isShardingEnabled = false,
+}) {
+    if (!Array.isArray(additions)) {
+        throw new Error(`[${label}] additions must be array`);
+    }
+    if (additions.length === 0) {
+        return { shardCount: 0, perShardResults: [] };
+    }
+    if (!isShardingEnabled) {
+        const result = await casExecuteShardUpdate({
+            entityClass, label, client, bucket, shardAdditions: additions, shardPrefix: null,
+        });
+        return { shardCount: 1, perShardResults: [result] };
+    }
+    const partitions = partitionAdditionsByShardPrefix(additions);
+    const results = [];
+    for (const [prefix, shardAdditions] of partitions.entries()) {
+        const result = await casExecuteShardUpdate({
+            entityClass, label: `${label}-SHARD-${prefix}`, client, bucket, shardAdditions, shardPrefix: prefix,
+        });
+        results.push(result);
+    }
+    return { shardCount: results.length, perShardResults: results };
 }
 
 /**

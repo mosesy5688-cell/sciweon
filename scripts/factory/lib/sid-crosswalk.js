@@ -32,11 +32,25 @@ import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 
 export const CROSSWALK_PREFIX = 'state/sid-crosswalk/';
 
-export function crosswalkKey(entityClass) {
+const SHARD_PREFIX_PATTERN = /^[0-9a-f]{2}$/;
+
+/**
+ * Phase 1.5: shardPrefix is INTERNAL — only set by lib/sid-stage3-shared.js
+ * partitioned dispatcher. Orchestrators NEVER pass shardPrefix directly
+ * (defect-13: static shardPrefix + global batch additions = mass double-
+ * stamping hazard).
+ */
+export function crosswalkKey(entityClass, shardPrefix = null) {
     if (typeof entityClass !== 'string' || !entityClass) {
         throw new Error('[SID-crosswalk] entityClass required');
     }
-    return `${CROSSWALK_PREFIX}${entityClass}.jsonl.zst`;
+    if (shardPrefix == null) {
+        return `${CROSSWALK_PREFIX}${entityClass}.jsonl.zst`;
+    }
+    if (typeof shardPrefix !== 'string' || !SHARD_PREFIX_PATTERN.test(shardPrefix)) {
+        throw new Error(`[SID-crosswalk] shardPrefix must be 2-char lowercase hex, got ${JSON.stringify(shardPrefix)}`);
+    }
+    return `${CROSSWALK_PREFIX}${entityClass}/${shardPrefix}.jsonl.zst`;
 }
 
 const REQUIRED_FIELDS = [
@@ -132,9 +146,9 @@ async function streamToBuffer(stream) {
     return Buffer.concat(chunks);
 }
 
-export async function loadCrosswalkRaw({ entityClass, client, bucket }) {
+export async function loadCrosswalkRaw({ entityClass, client, bucket, shardPrefix = null }) {
     try {
-        const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: crosswalkKey(entityClass) }));
+        const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: crosswalkKey(entityClass, shardPrefix) }));
         return { compressedBuffer: await streamToBuffer(res.Body), etag: res.ETag };
     } catch (err) {
         if (err.name === 'NoSuchKey' || err.$metadata?.httpStatusCode === 404) {
@@ -146,13 +160,13 @@ export async function loadCrosswalkRaw({ entityClass, client, bucket }) {
 
 export const MAX_CROSSWALK_CAS_RETRIES = 5;
 
-export function buildPutCrosswalkParams({ entityClass, compressedBuffer, ifMatch, ifNoneMatch, bucket }) {
+export function buildPutCrosswalkParams({ entityClass, compressedBuffer, ifMatch, ifNoneMatch, bucket, shardPrefix = null }) {
     if (!Buffer.isBuffer(compressedBuffer)) {
         throw new Error('[SID-crosswalk] compressedBuffer (zstd-compressed JSONL) required');
     }
     if (typeof bucket !== 'string' || !bucket) throw new Error('[SID-crosswalk] bucket required');
     const params = {
-        Bucket: bucket, Key: crosswalkKey(entityClass), Body: compressedBuffer,
+        Bucket: bucket, Key: crosswalkKey(entityClass, shardPrefix), Body: compressedBuffer,
         ContentType: 'application/octet-stream',
     };
     if (ifMatch) params.IfMatch = ifMatch;
@@ -165,8 +179,8 @@ export function isPreconditionFailed(err) {
     return err.name === 'PreconditionFailed' || err.$metadata?.httpStatusCode === 412;
 }
 
-export async function putCrosswalkRaw({ entityClass, compressedBuffer, ifMatch, ifNoneMatch, client, bucket }) {
-    const params = buildPutCrosswalkParams({ entityClass, compressedBuffer, ifMatch, ifNoneMatch, bucket });
+export async function putCrosswalkRaw({ entityClass, compressedBuffer, ifMatch, ifNoneMatch, client, bucket, shardPrefix = null }) {
+    const params = buildPutCrosswalkParams({ entityClass, compressedBuffer, ifMatch, ifNoneMatch, bucket, shardPrefix });
     await client.send(new PutObjectCommand(params));
-    return { key: crosswalkKey(entityClass), byteSize: compressedBuffer.length };
+    return { key: crosswalkKey(entityClass, shardPrefix), byteSize: compressedBuffer.length };
 }
