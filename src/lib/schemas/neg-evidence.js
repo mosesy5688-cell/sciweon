@@ -20,7 +20,7 @@
  *   - faers_adr_signal      (from compound.fda_signals.faers_top_adr_terms)
  */
 
-import { NEG_EVIDENCE_TYPES } from './neg-evidence-types.js';
+import { NEG_EVIDENCE_TYPES, NEG_EVIDENCE_CANON_VERSIONS } from './neg-evidence-types.js';
 
 export const NEG_EVIDENCE_SCHEMA = {
     // ─── Identity ───
@@ -149,5 +149,17 @@ export const NEG_EVIDENCE_SCHEMA = {
             source_id: { type: 'string', required: false },
             agreement: { type: 'string', enum: ['full', 'partial', 'conflict'] },
         },
+    },
+
+    // ─── Phase 1.7 SID anchor metadata (Plan A1 per-type multi-canon) ───
+    // Populated post-validation by neg-evidence-builder.js via
+    // buildNegAnchorPayload (./neg-evidence-types.js). Optional at schema layer
+    // so legacy pre-1.7 records validate; stamper requires all three present
+    // and HARD-FAILS on missing per [[cross_cycle_silent_data_loss]].
+    namespace: { type: 'string', required: false, enum: ['negevidence'] },
+    anchor_payload: { type: 'string', required: false, maxLength: 500 },
+    canonicalization_version: {
+        type: 'string', required: false,
+        enum: Object.values(NEG_EVIDENCE_CANON_VERSIONS),
     },
 };

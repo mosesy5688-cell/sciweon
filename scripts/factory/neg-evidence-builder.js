@@ -18,7 +18,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { NEG_EVIDENCE_SCHEMA } from '../../src/lib/schemas/neg-evidence.js';
-import { NEG_EVIDENCE_TYPES } from '../../src/lib/schemas/neg-evidence-types.js';
+import { NEG_EVIDENCE_TYPES, buildNegAnchorPayload } from '../../src/lib/schemas/neg-evidence-types.js';
 import { gate } from './lib/validation-gate.js';
 import { buildTrialNegEvidence } from './lib/neg-builders-trial.js';
 import { buildBioassayInactive, buildPaperRetraction } from './lib/neg-builders-paper-bio.js';
@@ -80,6 +80,18 @@ async function main() {
         else invalidCount++;
     }
 
+    // PR-SID-1.7-pre.1: post-validation anchor enrichment for stamper.
+    // buildNegAnchorPayload returns null only on parse failure (should never
+    // happen post-validation since schema requires id + evidence_type); count
+    // explicitly per [[cross_cycle_silent_data_loss]] defensive telemetry.
+    let anchorMetadataAttached = 0;
+    let anchorMetadataSkipped = 0;
+    for (const r of validated) {
+        const meta = buildNegAnchorPayload(r);
+        if (meta) { Object.assign(r, meta); anchorMetadataAttached++; }
+        else anchorMetadataSkipped++;
+    }
+
     await writeJsonl(path.join(DATA_DIR, 'neg-evidence.jsonl'), validated);
 
     console.log(`\n[NEG-BUILDER] Complete`);
@@ -93,6 +105,7 @@ async function main() {
     const bySeverity = { critical: 0, major: 0, minor: 0, unknown: 0 };
     for (const r of validated) bySeverity[r.severity] = (bySeverity[r.severity] ?? 0) + 1;
     console.log(`  By severity:             critical=${bySeverity.critical} | major=${bySeverity.major} | minor=${bySeverity.minor} | unknown=${bySeverity.unknown}`);
+    console.log(`  Anchor metadata:         attached=${anchorMetadataAttached} | skipped=${anchorMetadataSkipped}`);
 }
 
 main().catch(err => { console.error('[NEG-BUILDER] Fatal:', err); process.exit(1); });
