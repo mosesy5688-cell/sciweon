@@ -103,7 +103,7 @@ async function main() {
     // keeps the appended records aligned with the freshly-written base file.
     // Papers writes a different file so the trial-group and paper-group can still
     // run in parallel with each other.
-    const [trialResults, paperResults, targetResults] = await Promise.all([
+    const [trialResults, paperResults, targetResults, diseaseResults] = await Promise.all([
         runSequential('Trials', [
             { name: 'trial-linker', fn: () => runScript('trial-linker.js') },
             { name: 'ctis-trial-linker', fn: () => runScript('ctis-trial-linker.js') },
@@ -117,6 +117,14 @@ async function main() {
         // (no shared file mutation). Foundation for Phase 1.4 stamping.
         runSequential('Targets', [
             { name: 'target-linker', fn: () => runScript('target-linker.js') },
+        ]),
+        // Phase 1.6b-pre.1b: disease-linker reads R2 OT disease bulk artifact
+        // (published by pre.1a #151), per-namespace multi-canon normalize +
+        // dedupe -> output/linked/diseases.jsonl. R2-only source (no local
+        // input file), parallel-safe with other linkers. Foundation for
+        // Phase 1.6b SID disease stamping + PR 1.6c clinical_indication SAL.
+        runSequential('Diseases', [
+            { name: 'disease-linker', fn: () => runScript('disease-linker.js') },
         ]),
     ]);
 
@@ -224,6 +232,7 @@ async function main() {
 
     const failureCount = trialResults.filter(r => !r.ok).length
         + paperResults.filter(r => !r.ok).length
+        + diseaseResults.filter(r => !r.ok).length
         + crossLinkResults.filter(r => !r.ok).length;
 
     const elapsed = Math.round((Date.now() - startTime) / 1000);
