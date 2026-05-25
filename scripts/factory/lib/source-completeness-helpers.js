@@ -109,12 +109,15 @@ export function severityTierForPct(p, source) {
 // Aggregate per-source tiers into a single worst-case exit-code tier.
 // Severity ordering (worst -> best): 1 (hardfail) > 2 (warn) > 3 (info)
 // > 0 (healthy). Returns the most-severe (lowest non-zero) tier present.
-// Per-source threshold lookup: passes the source id to severityTierForPct
-// so each source is evaluated against its own override (if any).
+// PR-CORE-deferrals (2026-05-25): prefers pre-computed stat.severity_tier
+// when present (e.g., post-applyDeferrals adjustment); falls back to
+// severityTierForPct(stat.gate_adjusted_pct, source) for legacy callers.
 export function aggregateSeverity(perSourceStats) {
     let anyHardfail = false, anyWarn = false, anyInfo = false;
     for (const [source, stat] of Object.entries(perSourceStats)) {
-        const t = severityTierForPct(stat.gate_adjusted_pct, source);
+        const t = typeof stat.severity_tier === 'number'
+            ? stat.severity_tier
+            : severityTierForPct(stat.gate_adjusted_pct, source);
         if (t === 1) anyHardfail = true;
         else if (t === 2) anyWarn = true;
         else if (t === 3) anyInfo = true;
@@ -124,6 +127,9 @@ export function aggregateSeverity(perSourceStats) {
     if (anyInfo) return 3;
     return 0;
 }
+
+// PR-CORE-deferrals: applyDeferrals + isDeferralExpired live in source-deferrals.js
+// alongside the SOURCE_DEFERRALS SSoT to keep this file under Art 5.1 250-line cap.
 
 // Sources whose gate_adjusted_pct is below their info threshold (per-source
 // or global default). When `threshold` is explicitly passed, that single
