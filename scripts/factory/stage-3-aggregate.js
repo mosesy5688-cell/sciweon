@@ -175,6 +175,8 @@ async function main() {
     await runScript('stage-3-target-sid-stamp.js');
     console.log('\n[STAGE-3] === PR-SID-1.5 bioactivity stamping ===');
     await runScript('stage-3-bioactivity-sid-stamp.js');
+    console.log('\n[STAGE-3] === PR-SID-1.6a SAL stamping (bioactivity-as-assertion) ===');
+    await runScript('stage-3-sal-sid-stamp.js');
 
     // V0.5.3 Tier 1.5 search index — rebuild SQLite FTS5 over cumulative
     // aggregated. Runs AFTER the cumulative merge so the index reflects

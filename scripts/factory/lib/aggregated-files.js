@@ -64,6 +64,10 @@ export const AGGREGATED_FILES = Object.freeze([
     // by Phase 1.4 SID stamping consumer; snapshot publication ensures
     // researchers receive stamped target entities in daily bundle.
     'targets.jsonl',
+    // Phase 1.6a: sal-assertions.jsonl produced by scripts/factory/stage-3-sal-sid-stamp.js
+    // (content-addressed UUID v5 anchored assertions; bioactivity-as-assertion in
+    // PR 1.6a, OT clinical_indication additively appended in PR 1.6c).
+    'sal-assertions.jsonl',
     'negative-evidence-raw.jsonl',
     'neg-evidence.jsonl',
     'sciweon-search-index.json',
