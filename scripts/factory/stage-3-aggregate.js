@@ -164,20 +164,20 @@ async function main() {
     }
 
     // PR-SID-1.1c..1.5 (cycle 23): SID stamping per V1.0 §35 — HARD-FAIL on any failure.
-    console.log('\n[STAGE-3] === PR-SID-1.1c compound stamping ===');
-    await runScript('stage-3-sid-stamp.js');
-    console.log('\n[STAGE-3] === PR-SID-1.2 trial stamping ===');
-    await runScript('stage-3-trial-sid-stamp.js');
-    console.log('\n[STAGE-3] === PR-SID-1.3 paper stamping ===');
-    await runScript('stage-3-paper-sid-stamp.js');
-    console.log('\n[STAGE-3] === PR-SID-1.4 target stamping ===');
-    await runScript('stage-3-target-sid-stamp.js');
-    console.log('\n[STAGE-3] === PR-SID-1.5 bioactivity stamping ===');
-    await runScript('stage-3-bioactivity-sid-stamp.js');
-    console.log('\n[STAGE-3] === PR-SID-1.6b disease stamping ===');
-    await runScript('stage-3-disease-sid-stamp.js');
-    console.log('\n[STAGE-3] === PR-SID-1.6a SAL stamping (bioactivity-as-assertion) ===');
-    await runScript('stage-3-sal-sid-stamp.js');
+    // SID stamping cascade: 7 Layer-1 atomic classes + 1 Layer-3 assertion class.
+    for (const stamper of [
+        ['1.1c compound', 'stage-3-sid-stamp.js'],
+        ['1.2 trial', 'stage-3-trial-sid-stamp.js'],
+        ['1.3 paper', 'stage-3-paper-sid-stamp.js'],
+        ['1.4 target', 'stage-3-target-sid-stamp.js'],
+        ['1.5 bioactivity', 'stage-3-bioactivity-sid-stamp.js'],
+        ['1.6b disease', 'stage-3-disease-sid-stamp.js'],
+        ['1.6a SAL', 'stage-3-sal-sid-stamp.js'],
+        ['1.7 NegEvidence', 'stage-3-negevidence-sid-stamp.js'],
+    ]) {
+        console.log(`\n[STAGE-3] === PR-SID-${stamper[0]} stamping ===`);
+        await runScript(stamper[1]);
+    }
 
     // V0.5.3 Tier 1.5 search index — rebuild SQLite FTS5 over cumulative
     // aggregated. Runs AFTER the cumulative merge so the index reflects
