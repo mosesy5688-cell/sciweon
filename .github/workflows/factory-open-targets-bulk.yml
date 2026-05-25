@@ -89,7 +89,7 @@ jobs:
           set -e
           RELEASE=$(node -e "console.log(require('/tmp/ot-probe.json').latest_release)")
           BASE="https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/${RELEASE}/output"
-          TABLES="drug_mechanism_of_action drug_warning clinical_indication clinical_report clinical_target target"
+          TABLES="drug_mechanism_of_action drug_warning clinical_indication clinical_report clinical_target target disease"
           for table in $TABLES; do
             echo ""
             echo "============================================"
@@ -239,6 +239,34 @@ jobs:
           ARGS="--jsonl=/tmp/target-enriched.jsonl --release=${{ steps.release.outputs.release }}"
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
           node scripts/factory/open-targets-target-harvest.js $ARGS
+      - name: Download disease Parquet (PR-SID-1.6b-pre.1a)
+        # PR-SID-1.6b-pre.1a: OT disease table ingest. Disease.id is the
+        # mixed-namespace EFO_xxxxxxx / MONDO_xxxxxxx string per
+        # SCIWEON_BULK_ACQUISITION_TRACKER.md schema verification. Subsequent
+        # PR 1.6b-pre.1b disease-linker performs Sciweon-layer namespace split;
+        # PR 1.6b stamper uses EFO-primary + MONDO-fallback multi-canon
+        # (analogous to Phase 1.4 target UniProt+Ensembl precedent).
+        run: |
+          set -e
+          BASE="https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/${{ steps.release.outputs.release }}/output"
+          mkdir -p /tmp/disease
+          FILES=$(curl -sL "${BASE}/disease/" | grep -oE '(part-[a-z0-9-]+-c000\.snappy\.parquet|[a-z][a-zA-Z0-9_]*\.parquet)' | sort -u)
+          if [ -z "$FILES" ]; then echo "::error::no disease Parquet files"; exit 1; fi
+          for fname in $FILES; do curl -sL -o "/tmp/disease/${fname}" "${BASE}/disease/${fname}"; done
+          echo "Downloaded disease: $(ls /tmp/disease/ | wc -l) file(s)"
+      - name: Disease extract via DuckDB (PR-SID-1.6b-pre.1a)
+        run: |
+          set -e
+          /tmp/duckdb < scripts/factory/sql/open-targets-disease.sql
+          LINES=$(wc -l < /tmp/disease-enriched.jsonl)
+          echo "Disease JSONL lines: ${LINES}"
+          if [ "$LINES" -eq 0 ]; then echo "::error::disease extract produced zero lines"; exit 1; fi
+      - name: Disease transform + upload to R2
+        run: |
+          set -e
+          ARGS="--jsonl=/tmp/disease-enriched.jsonl --release=${{ steps.release.outputs.release }}"
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          node scripts/factory/open-targets-disease-harvest.js $ARGS
       - name: Ingest report summary
         if: always()
         run: |
