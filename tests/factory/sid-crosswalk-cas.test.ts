@@ -6,6 +6,7 @@ import {
     buildPutCrosswalkParams,
     isPreconditionFailed,
     MAX_CROSSWALK_CAS_RETRIES,
+    crosswalkKey,
 } from '../../scripts/factory/lib/sid-crosswalk.js';
 
 describe('buildPutCrosswalkParams (Phase 1.1c CAS-aware extension)', () => {
@@ -81,6 +82,37 @@ describe('isPreconditionFailed', () => {
 
     it('empty object -> false', () => {
         expect(isPreconditionFailed({})).toBe(false);
+    });
+});
+
+describe('crosswalkKey shardPrefix extension (Phase 1.5)', () => {
+    it('no shardPrefix -> single-file layout (backward compat)', () => {
+        expect(crosswalkKey('bioactivity')).toBe('state/sid-crosswalk/bioactivity.jsonl.zst');
+    });
+    it('shardPrefix=null -> single-file layout', () => {
+        expect(crosswalkKey('bioactivity', null)).toBe('state/sid-crosswalk/bioactivity.jsonl.zst');
+    });
+    it('shardPrefix=ab -> sharded layout', () => {
+        expect(crosswalkKey('bioactivity', 'ab')).toBe('state/sid-crosswalk/bioactivity/ab.jsonl.zst');
+    });
+    it('shardPrefix=00 valid', () => {
+        expect(crosswalkKey('bioactivity', '00')).toBe('state/sid-crosswalk/bioactivity/00.jsonl.zst');
+    });
+    it('shardPrefix=ff valid', () => {
+        expect(crosswalkKey('bioactivity', 'ff')).toBe('state/sid-crosswalk/bioactivity/ff.jsonl.zst');
+    });
+    it('invalid shardPrefix (uppercase) throws', () => {
+        expect(() => crosswalkKey('bioactivity', 'AB')).toThrow(/shardPrefix/);
+    });
+    it('invalid shardPrefix (3 chars) throws', () => {
+        expect(() => crosswalkKey('bioactivity', 'abc')).toThrow(/shardPrefix/);
+    });
+    it('invalid shardPrefix (non-hex) throws', () => {
+        expect(() => crosswalkKey('bioactivity', 'g0')).toThrow(/shardPrefix/);
+    });
+    it('buildPutCrosswalkParams threads shardPrefix to Key', () => {
+        const p = buildPutCrosswalkParams({ entityClass: 'bioactivity', compressedBuffer: Buffer.from('x'), bucket: 'b', shardPrefix: 'ab' });
+        expect(p.Key).toBe('state/sid-crosswalk/bioactivity/ab.jsonl.zst');
     });
 });
 
