@@ -217,6 +217,28 @@ jobs:
           ARGS="--jsonl=/tmp/drug-enriched.jsonl --release=${{ steps.release.outputs.release }}"
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
           node scripts/factory/open-targets-harvest.js $ARGS
+      - name: Download target Parquet (PR-SID-1.4-pre.1a)
+        run: |
+          set -e
+          BASE="https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/${{ steps.release.outputs.release }}/output"
+          mkdir -p /tmp/target
+          FILES=$(curl -sL "${BASE}/target/" | grep -oE '(part-[a-z0-9-]+-c000\.snappy\.parquet|[a-z][a-zA-Z0-9_]*\.parquet)' | sort -u)
+          if [ -z "$FILES" ]; then echo "::error::no target Parquet files"; exit 1; fi
+          for fname in $FILES; do curl -sL -o "/tmp/target/${fname}" "${BASE}/target/${fname}"; done
+          echo "Downloaded target: $(ls /tmp/target/ | wc -l) file(s)"
+      - name: Target extract via DuckDB (PR-SID-1.4-pre.1a)
+        run: |
+          set -e
+          /tmp/duckdb < scripts/factory/sql/open-targets-target.sql
+          LINES=$(wc -l < /tmp/target-enriched.jsonl)
+          echo "Target JSONL lines: ${LINES}"
+          if [ "$LINES" -eq 0 ]; then echo "::error::target extract produced zero lines"; exit 1; fi
+      - name: Target transform + upload to R2
+        run: |
+          set -e
+          ARGS="--jsonl=/tmp/target-enriched.jsonl --release=${{ steps.release.outputs.release }}"
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          node scripts/factory/open-targets-target-harvest.js $ARGS
       - name: Ingest report summary
         if: always()
         run: |
