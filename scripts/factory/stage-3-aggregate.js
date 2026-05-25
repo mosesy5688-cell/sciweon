@@ -103,7 +103,7 @@ async function main() {
     // keeps the appended records aligned with the freshly-written base file.
     // Papers writes a different file so the trial-group and paper-group can still
     // run in parallel with each other.
-    const [trialResults, paperResults] = await Promise.all([
+    const [trialResults, paperResults, targetResults] = await Promise.all([
         runSequential('Trials', [
             { name: 'trial-linker', fn: () => runScript('trial-linker.js') },
             { name: 'ctis-trial-linker', fn: () => runScript('ctis-trial-linker.js') },
@@ -111,6 +111,12 @@ async function main() {
         ]),
         runSequential('Papers', [
             { name: 'paper-linker', fn: () => runScript('paper-linker.js') },
+        ]),
+        // Phase 1.4-pre.1b: target-linker dedupes OT + bioactivity targets
+        // into output/linked/targets.jsonl. Parallel with trials/papers
+        // (no shared file mutation). Foundation for Phase 1.4 stamping.
+        runSequential('Targets', [
+            { name: 'target-linker', fn: () => runScript('target-linker.js') },
         ]),
     ]);
 
