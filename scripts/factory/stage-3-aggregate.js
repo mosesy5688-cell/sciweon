@@ -177,6 +177,8 @@ async function main() {
 
     console.log('\n[STAGE-3] === PR-SID-1.3 paper stamping ===');
     await runScript('stage-3-paper-sid-stamp.js');
+    console.log('\n[STAGE-3] === PR-SID-1.4 target stamping ===');
+    await runScript('stage-3-target-sid-stamp.js');
 
     // V0.5.3 Tier 1.5 search index — rebuild SQLite FTS5 over cumulative
     // aggregated. Runs AFTER the cumulative merge so the index reflects

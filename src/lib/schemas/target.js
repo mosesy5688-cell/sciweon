@@ -23,7 +23,7 @@
 
 export const TARGET_SCHEMA = {
     id: { type: 'string', required: true, pattern: /^sciweon::target::/ },
-    uniprot_accession: { type: 'string', required: false, pattern: /^[A-NR-Z][0-9][A-Z0-9]{3}[0-9]$/ },
+    uniprot_accession: { type: 'string', required: false, pattern: /^(?:[OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9](?:[A-Z][A-Z0-9]{2}[0-9]){1,2})$/ },
     ensembl_gene_id: { type: 'string', required: false, pattern: /^ENSG\d{11}$/ },
     approved_symbol: { type: 'string', required: false, maxLength: 100 },
     approved_name: { type: 'string', required: false, maxLength: 500 },
