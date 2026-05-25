@@ -29,15 +29,17 @@ import {
     mergeBuilderRawAssertions,
 } from './lib/sid-sal-stamping.js';
 import { buildBioactivityAssertions, BUILDER_LABEL as BIOACT_BUILDER_LABEL } from './lib/sal-bioactivity-builder.js';
+import { buildOtIndicationAssertions, BUILDER_LABEL as OT_IND_BUILDER_LABEL } from './lib/sal-ot-indication-builder.js';
 
 const SAL_ASSERTIONS_PATH = 'output/linked/sal-assertions.jsonl';
 const LABEL = 'SAL-STAMP';
 const IS_SHARDING_ENABLED = false;
 
-// Phase 1.6a: bioactivity-builder only. Phase 1.6c will add ot-indication-builder
-// additively. Each entry: { label, fn } where fn returns { rawAssertions[], stats }.
+// Phase 1.6a: bioactivity-builder. Phase 1.6c additive: ot-indication-builder.
+// Each entry: { label, fn } where fn returns { rawAssertions[], stats }.
 const ASSERTION_BUILDERS = [
     { label: BIOACT_BUILDER_LABEL, fn: () => buildBioactivityAssertions() },
+    { label: OT_IND_BUILDER_LABEL, fn: () => buildOtIndicationAssertions() },
 ];
 
 async function main() {
