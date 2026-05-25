@@ -40,7 +40,7 @@ export const SPEC_VERSION = '1.0';  // Sciweon SID Constitution version
  *   values (small_molecule, biologic, adc, peptide, mixture, formulation,
  *   nanomaterial, polymer, partially_defined_substance,
  *   manufacturing_dependent_therapeutic, bioactivity, trial, paper,
- *   target, sal_assertion, negevidence)
+ *   target, disease, sal_assertion, negevidence)
  * @param {string} canonicalIdentityPayload — per-entity-class canonical
  *   anchor string per V0.5 §26 table (e.g. for small_molecule:
  *   `inchikey:BSYNRYMUTXBXSQ-UHFFFAOYSA-N`)

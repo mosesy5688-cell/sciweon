@@ -42,8 +42,9 @@ import { AGGREGATED_FILES, ENRICHED_FILES } from './lib/aggregated-files.js';
 const SCRIPT_DIR = 'scripts/factory';
 
 function runScript(name) {
+    // 4GB V8 heap headroom — PR 1.6c unified-stream defense (architect-locked 2026-05-25).
     return new Promise((resolve, reject) => {
-        const child = spawn('node', [path.join(SCRIPT_DIR, name)], {
+        const child = spawn('node', ['--max-old-space-size=4096', path.join(SCRIPT_DIR, name)], {
             stdio: 'inherit',
             env: { ...process.env },
         });
@@ -173,6 +174,8 @@ async function main() {
     await runScript('stage-3-target-sid-stamp.js');
     console.log('\n[STAGE-3] === PR-SID-1.5 bioactivity stamping ===');
     await runScript('stage-3-bioactivity-sid-stamp.js');
+    console.log('\n[STAGE-3] === PR-SID-1.6b disease stamping ===');
+    await runScript('stage-3-disease-sid-stamp.js');
     console.log('\n[STAGE-3] === PR-SID-1.6a SAL stamping (bioactivity-as-assertion) ===');
     await runScript('stage-3-sal-sid-stamp.js');
 
