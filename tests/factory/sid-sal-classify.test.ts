@@ -123,17 +123,19 @@ describe('mergeBuilderRawAssertions — defect-15 stack-safe merge', () => {
 });
 
 describe('buildSalStampingSummary', () => {
-    it('canonical telemetry shape', () => {
+    it('canonical telemetry shape includes per_builder_stats (Defect-16 telemetry extension)', () => {
         const s = buildSalStampingSummary({
             totalAssertions: 100, alreadyStamped: 20, newlyStamped: 80, unstampable: 0,
             perClassCounts: { bioactivity_association: 100 },
-            perBuilderCounts: { 'SAL-BIOACTIVITY-BUILDER': 100 },
+            perBuilderStats: { 'SAL-BIOACTIVITY-BUILDER': { totalBioactivities: 360142, emitted: 100, missingChemblActivity: 0, missingTargetResolution: 240000, unstampableOrphanTarget: 142, unstampableOrphanCompound: 0 } },
             reservationsIssued: 2, skippedParanoiaCount: 0,
             elapsedMs: 100, ledgerKeys: ['k1'], shardCount: 1,
         });
         expect(s.total_assertions).toBe(100);
         expect(s.newly_stamped).toBe(80);
         expect(s.per_class_counts.bioactivity_association).toBe(100);
+        expect(s.per_builder_stats['SAL-BIOACTIVITY-BUILDER'].missingTargetResolution).toBe(240000);
+        expect(s.per_builder_stats['SAL-BIOACTIVITY-BUILDER'].unstampableOrphanTarget).toBe(142);
         expect(s.shard_count).toBe(1);
     });
 });

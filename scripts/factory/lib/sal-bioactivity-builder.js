@@ -104,18 +104,79 @@ export async function buildBioactivityAssertions({
     const compoundSidSMap = buildSidSMap(compounds, 'id', 'compound');
     const targetSidSMap = buildSidSMap(targets, 'id', 'target');
     const compoundLabelMap = buildLabelMap(compounds, 'id', c => c.name || c.iupac_name || c.id);
-    const targetLabelMap = buildLabelMap(targets, 'id', t => t.gene_symbol || t.chembl_pref_name || t.id);
+    const targetLabelMap = buildLabelMap(targets, 'id', t => t.approved_symbol || t.gene_symbol || t.chembl_pref_name || t.id);
 
     console.log(`[${BUILDER_LABEL}] Loaded ${bioactivities.length} bioactivities, compoundMap=${compoundSidSMap.size}, targetMap=${targetSidSMap.size}`);
 
     const rawAssertions = [];
-    let missingChemblActivity = 0;
+    const skipCounts = {
+        missing_chembl_activity: 0,
+        missing_target_resolution: 0,
+        unstampable_orphan_target: 0,
+        unstampable_orphan_compound: 0,
+    };
     for (const b of bioactivities) {
-        const activityId = deriveChemblActivityId(b);
-        if (!activityId) { missingChemblActivity++; continue; }
-        const subjectSid = compoundSidSMap.get(b.compound_id) || null;
-        const objectSid = targetSidSMap.get(b.target_id) || null;
-        rawAssertions.push({
+        const joined = joinBioactivityToAssertion(b, compoundSidSMap, targetSidSMap, compoundLabelMap, targetLabelMap);
+        if (joined.skip) {
+            skipCounts[joined.skip]++;
+            continue;
+        }
+        rawAssertions.push(joined.assertion);
+    }
+    console.log(`[${BUILDER_LABEL}] Emitted ${rawAssertions.length} raw assertions | skips: ${JSON.stringify(skipCounts)}`);
+    return {
+        rawAssertions,
+        stats: {
+            totalBioactivities: bioactivities.length,
+            emitted: rawAssertions.length,
+            missingChemblActivity: skipCounts.missing_chembl_activity,
+            missingTargetResolution: skipCounts.missing_target_resolution,
+            unstampableOrphanTarget: skipCounts.unstampable_orphan_target,
+            unstampableOrphanCompound: skipCounts.unstampable_orphan_compound,
+        },
+    };
+}
+
+/**
+ * Defect-16 fix: pure-function join helper for bioactivity → SAL assertion.
+ *
+ * Returns `{ assertion }` on success, or `{ skip: <reason_key> }` on filterable
+ * upstream incompleteness. Filter reasons (per architect Plan A 2026-05-25):
+ *
+ *   - missing_chembl_activity:  bioactivity has no chembl provenance source_id
+ *   - missing_target_resolution: bioactivity has no target.uniprot_accession
+ *     (target-resolver did not produce a UniProt mapping for the ChEMBL target;
+ *     bioactivity is structurally not SAL-eligible because its object has no
+ *     Layer 1 SID-S)
+ *   - unstampable_orphan_target: uniprot_accession present but the constructed
+ *     `sciweon::target::uniprot:<acc>` key misses targetSidSMap — indicates
+ *     target-linker / Phase 1.4 target stamper crosswalk drift
+ *   - unstampable_orphan_compound: compound.id key misses compoundSidSMap —
+ *     indicates compound-linker / Phase 1.1c compound stamper crosswalk drift
+ *
+ * Skips are EXPLICITLY counted and reported by orchestrator summary; this is
+ * NOT silent drop per [[cross_cycle_silent_data_loss]] — it precisely defines
+ * the system boundary: a SAL assertion requires both endpoints already SID-
+ * stamped at Layer 1, per content-addressed deterministic anchor invariant.
+ */
+export function joinBioactivityToAssertion(b, compoundSidSMap, targetSidSMap, compoundLabelMap, targetLabelMap) {
+    const activityId = deriveChemblActivityId(b);
+    if (!activityId) return { skip: 'missing_chembl_activity' };
+
+    const uniprotAccession = b?.target?.uniprot_accession;
+    if (typeof uniprotAccession !== 'string' || uniprotAccession.length === 0) {
+        return { skip: 'missing_target_resolution' };
+    }
+
+    const targetLookupKey = `sciweon::target::uniprot:${uniprotAccession}`;
+    const objectSid = targetSidSMap.get(targetLookupKey);
+    if (!objectSid) return { skip: 'unstampable_orphan_target' };
+
+    const subjectSid = compoundSidSMap.get(b.compound_id);
+    if (!subjectSid) return { skip: 'unstampable_orphan_compound' };
+
+    return {
+        assertion: {
             assertion_class: ASSERTION_CLASS,
             subject_canonical_sid: subjectSid,
             predicate: derivePredicate(b),
@@ -123,14 +184,9 @@ export async function buildBioactivityAssertions({
             primary_source: `chembl_activity:${activityId}`,
             source_record_id: b.id,
             display_context: {
-                subject_label: compoundLabelMap.get(b.compound_id),
-                object_label: targetLabelMap.get(b.target_id),
+                subject_label: compoundLabelMap?.get(b.compound_id),
+                object_label: targetLabelMap?.get(targetLookupKey),
             },
-        });
-    }
-    if (missingChemblActivity > 0) {
-        console.warn(`[${BUILDER_LABEL}] WARN ${missingChemblActivity}/${bioactivities.length} bioactivities had no chembl activity_id (Phase 1.5 stamper would have rejected these as unstampable; consistent skip here for SAL builder)`);
-    }
-    console.log(`[${BUILDER_LABEL}] Emitted ${rawAssertions.length} raw assertions (${missingChemblActivity} skipped no-chembl)`);
-    return { rawAssertions, stats: { totalBioactivities: bioactivities.length, emitted: rawAssertions.length, missingChemblActivity } };
+        },
+    };
 }

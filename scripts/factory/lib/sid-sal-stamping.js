@@ -220,7 +220,7 @@ export function mergeBuilderRawAssertions(builderResults) {
 
 export function buildSalStampingSummary({
     totalAssertions, alreadyStamped, newlyStamped, unstampable,
-    perClassCounts, perBuilderCounts, reservationsIssued, skippedParanoiaCount,
+    perClassCounts, perBuilderStats, reservationsIssued, skippedParanoiaCount,
     elapsedMs, ledgerKeys, shardCount,
 }) {
     return {
@@ -229,7 +229,7 @@ export function buildSalStampingSummary({
         newly_stamped: newlyStamped,
         unstampable,
         per_class_counts: perClassCounts || {},
-        per_builder_counts: perBuilderCounts || {},
+        per_builder_stats: perBuilderStats || {},
         reservations_issued: reservationsIssued,
         skipped_paranoia_count: skippedParanoiaCount,
         elapsed_ms: elapsedMs,
