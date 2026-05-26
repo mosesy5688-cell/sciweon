@@ -23,16 +23,21 @@
  */
 
 import fs from 'fs/promises';
+import { createWriteStream } from 'fs';
+import { once } from 'events';
 import path from 'path';
 import { resolveByUnii } from '../ingestion/adapters/rxnorm-adapter.js';
 import {
     readCursor, writeCursor, chunkIterator, buildNextCursor, DEFAULT_CHUNK_SIZE,
 } from './lib/enrichment-cursor.js';
+import { drainAdapterBacklog, DEFAULT_CHUNK_DURATION_ESTIMATE_MS } from './lib/drain-adapter-backlog.js';
 
 const SOURCE = 'rxnorm';
 const DATA_DIR = './output/linked';
 const REQUEST_DELAY_MS = 150;
-const sleep = ms => new Promise(r => setTimeout(r, ms));
+// Per-adapter drain wall-time budget (env override per [[solo_repo_branch_protection]]).
+const DRAIN_BUDGET_MS = Number(process.env.ADAPTER_DRAIN_BUDGET_MS) || 25 * 60 * 1000;
+const COLD_START_MS = Number(process.env.ADAPTER_DRAIN_COLD_START_MS) || DEFAULT_CHUNK_DURATION_ESTIMATE_MS;
 
 async function loadJsonl(file) {
     try {
@@ -41,8 +46,18 @@ async function loadJsonl(file) {
     } catch { return []; }
 }
 
+// Streaming JSONL writer (V5 architect-locked V8-thread defense). Releases
+// the event loop between record writes via drain backpressure; avoids the
+// 1.2-2.5s monolithic JSON.stringify freeze on 125MB+ master arrays.
 async function writeJsonl(file, records) {
-    await fs.writeFile(file, records.map(r => JSON.stringify(r)).join('\n'));
+    const stream = createWriteStream(file, { encoding: 'utf-8' });
+    for (const r of records) {
+        if (!stream.write(JSON.stringify(r) + '\n')) {
+            await once(stream, 'drain');
+        }
+    }
+    stream.end();
+    await once(stream, 'finish');
 }
 
 // Eligibility = UNII present and rxcui absent. Caller may pre-filter for
@@ -90,46 +105,45 @@ async function main() {
     }
 
     let cursor = null;
-    try {
-        cursor = await readCursor(SOURCE);
-    } catch (err) {
-        console.warn(`[RXNORM-ENRICHER] Cursor read failed (${err.message}) - starting fresh`);
-    }
+    try { cursor = await readCursor(SOURCE); }
+    catch (err) { console.warn(`[RXNORM-ENRICHER] Cursor read failed (${err.message}) - starting fresh`); }
     const chunkSize = cursor?.chunk_size ?? DEFAULT_CHUNK_SIZE;
-    const { slice, nextCursorId, wrapped, totalEligible } = chunkIterator(eligible, cursor, chunkSize);
+    console.log(`[RXNORM-ENRICHER] Cursor: prev=${cursor?.cursor_id ?? '(none)'} | chunk_size=${chunkSize} | budget=${(DRAIN_BUDGET_MS / 60000).toFixed(1)}min | coldStart=${(COLD_START_MS / 60000).toFixed(1)}min`);
 
-    console.log(`[RXNORM-ENRICHER] Cursor: prev=${cursor?.cursor_id ?? '(none)'} | chunk_size=${chunkSize} | slice=${slice.length} | wrapped=${wrapped}`);
+    // V5 drain-until-cleared: keep consuming chunks until corpus wraps,
+    // EWMA budget gate fires, or eligible empty. Terminal commit AFTER drain.
+    const drain = await drainAdapterBacklog({
+        eligible, enrichOne, chunkIterator, chunkSize,
+        timeBudgetMs: DRAIN_BUDGET_MS, coldStartEstimateMs: COLD_START_MS,
+        sleepMsBetween: REQUEST_DELAY_MS, initialCursor: cursor,
+        logPrefix: '[RXNORM-ENRICHER]', logEveryNRecords: 100,
+    });
+    console.log(`[RXNORM-ENRICHER] Drain done | terminatedBy=${drain.terminatedBy} | chunksDrained=${drain.chunksDrained} | processedInRun=${drain.processedInRun} | remainingBacklog=${drain.remainingBacklog}`);
 
     let hit = 0;
-    let processed = 0;
-    for (const rec of slice) {
-        await enrichOne(rec);
-        if (rec.external_ids?.rxcui) hit++;
-        processed++;
-        if (processed % 100 === 0 || processed === slice.length) {
-            console.log(`[RXNORM-ENRICHER] ${processed}/${slice.length} | resolved: ${hit}`);
-        }
-        await sleep(REQUEST_DELAY_MS);
-    }
+    for (const rec of compounds) { if (rec.external_ids?.rxcui) hit++; }
 
+    // Terminal atomic commit: streaming local write then single cursor PUT.
     await writeJsonl(file, compounds);
-
-    const nextCursor = buildNextCursor({
-        source: SOURCE,
-        prev: cursor,
-        chunkResult: { slice, nextCursorId, wrapped, totalEligible },
-        processedCount: processed,
-        totalEligible,
-    });
-    try {
-        await writeCursor(SOURCE, nextCursor);
-        console.log(`[RXNORM-ENRICHER] Cursor advanced -> ${nextCursor.cursor_id} | cycles_completed=${nextCursor.cycles_completed}`);
-    } catch (err) {
-        console.error(`[RXNORM-ENRICHER] Cursor write failed (next cycle re-processes same slice): ${err.message}`);
-        throw err;
+    if (drain.finalCursorResult) {
+        const nextCursor = buildNextCursor({
+            source: SOURCE, prev: cursor,
+            chunkResult: drain.finalCursorResult,
+            processedCount: drain.processedInRun,
+            totalEligible: drain.finalCursorResult.totalEligible,
+        });
+        try {
+            await writeCursor(SOURCE, nextCursor);
+            console.log(`[RXNORM-ENRICHER] Cursor advanced -> ${nextCursor.cursor_id} | cycles_completed=${nextCursor.cycles_completed}`);
+        } catch (err) {
+            console.error(`[RXNORM-ENRICHER] Cursor write failed: ${err.message}`);
+            throw err;
+        }
+    } else {
+        console.log('[RXNORM-ENRICHER] No chunks drained (empty eligible at entry) -- cursor unchanged');
     }
 
-    console.log(`\n[RXNORM-ENRICHER] Complete - ${hit}/${processed} resolved this cycle`);
+    console.log(`\n[RXNORM-ENRICHER] Complete - cumulative RxCUI count: ${hit}/${compounds.length}`);
 }
 
 // Run main only when invoked directly (not on import for tests).
