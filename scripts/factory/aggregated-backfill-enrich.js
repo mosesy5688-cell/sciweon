@@ -28,10 +28,13 @@
  */
 
 import fs from 'fs/promises';
+import { createWriteStream } from 'fs';
+import { once } from 'events';
 import path from 'path';
 import {
     readCursor, writeCursor, chunkIterator, buildNextCursor,
 } from './lib/enrichment-cursor.js';
+import { drainAdapterBacklog, DEFAULT_CHUNK_DURATION_ESTIMATE_MS } from './lib/drain-adapter-backlog.js';
 import {
     isEligible as isEligibleUnichem,
     enrichOne as enrichOneUnichem,
@@ -49,6 +52,8 @@ const DATA_DIR = './output/linked';
 const COMPOUNDS_FILE = path.join(DATA_DIR, 'compounds-enriched.jsonl');
 const CURSOR_PREFIX = 'state/aggregated-cursor/';
 const DEFAULT_BACKFILL_CHUNK = 2000;
+const DRAIN_BUDGET_MS = Number(process.env.ADAPTER_DRAIN_BUDGET_MS) || 25 * 60 * 1000;
+const COLD_START_MS = Number(process.env.ADAPTER_DRAIN_COLD_START_MS) || DEFAULT_CHUNK_DURATION_ESTIMATE_MS;
 
 // Conservative per-source rate limits matching the underlying adapters.
 const SOURCE_CONFIG = Object.freeze({
@@ -57,8 +62,6 @@ const SOURCE_CONFIG = Object.freeze({
     openfda_faers: { delayMs: 250, enrichOne: enrichOneFaers,   isEligible: isEligibleFaers   },
 });
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
 async function loadJsonl(file) {
     try {
         const c = await fs.readFile(file, 'utf-8');
@@ -66,14 +69,23 @@ async function loadJsonl(file) {
     } catch { return []; }
 }
 
+// Streaming JSONL writer (V5 architect-locked V8-thread defense + architect
+// Lock 3 backpressure honor). Per-record write with conditional drain await
+// only on stream.write false return -- no Promise-per-record microtask thrash.
 async function writeJsonl(file, records) {
-    await fs.writeFile(file, records.map(r => JSON.stringify(r)).join('\n'));
+    const stream = createWriteStream(file, { encoding: 'utf-8' });
+    for (const r of records) {
+        if (!stream.write(JSON.stringify(r) + '\n')) await once(stream, 'drain');
+    }
+    stream.end();
+    await once(stream, 'finish');
 }
 
-// Run one source's backfill chunk on the in-memory compounds list.
-// Returns { source, processed, stamped, error }.
-// Mutates compounds in place. Writes cursor JSON before returning, even
-// on partial failure mid-chunk - per D8 we MUST NOT lose cursor progress.
+// Run one source's backfill on the in-memory compounds list via V5
+// drainAdapterBacklog. Returns { source, processed, stamped, error }.
+// Mutates compounds in place via shared object refs through eligible filter.
+// Per architect Lock 1: drainAdapterBacklog scopes runStart per-call so
+// sequential sources never inherit a polluted shared clock.
 export async function backfillOneSource(sourceId, compounds) {
     const cfg = SOURCE_CONFIG[sourceId];
     if (!cfg) throw new Error(`Unknown source: ${sourceId}`);
@@ -84,62 +96,79 @@ export async function backfillOneSource(sourceId, compounds) {
         console.warn(`[BACKFILL/${sourceId}] Cursor read failed (${err.message}) - starting fresh`);
     }
 
-    const chunkSize = cursor?.chunk_size ?? DEFAULT_BACKFILL_CHUNK;
     const eligible = compounds.filter(cfg.isEligible);
     if (eligible.length === 0) {
         console.log(`[BACKFILL/${sourceId}] Nothing eligible - all records already stamped or gate-fail.`);
         return { source: sourceId, processed: 0, stamped: 0, error: null };
     }
 
-    const { slice, nextCursorId, wrapped, totalEligible } = chunkIterator(eligible, cursor, chunkSize);
-    console.log(`[BACKFILL/${sourceId}] eligible=${eligible.length} | chunk_size=${chunkSize} | slice=${slice.length} | wrapped=${wrapped}`);
+    // Forensic sample (1d audit per cont 47): pre-drain log first 10 eligible
+    // records' identifying fields. Operators can manually verify the adapter
+    // is genuinely returning null for these InChIKeys via direct API curl.
+    const sample = eligible.slice(0, 10).map(r => ({
+        id: r.id, inchi_key: r.inchi_key, unii: r.external_ids?.unii,
+    }));
+    console.log(`[BACKFILL/${sourceId}] Forensic sample (first 10 of ${eligible.length} eligible): ${JSON.stringify(sample)}`);
 
-    let processed = 0;
-    let stamped = 0;
+    const chunkSize = cursor?.chunk_size ?? DEFAULT_BACKFILL_CHUNK;
+
+    // Architect Lock 2: O(1) per-record isEligible flip detection instead of
+    // O(N) pre/post filters that would burn 510K array scans across 3 sources.
+    // processedAttempts tracks successful enrichOne completions only (post-await
+    // increment) so partial-failure reporting matches D8 contract: r.processed
+    // = records that the adapter actually finished for, NOT records dispatched.
+    let stampedThisRun = 0;
+    let processedAttempts = 0;
     let errorMsg = null;
+    const wrappedEnrichOne = async (record) => {
+        const wasEligibleBefore = cfg.isEligible(record);
+        await cfg.enrichOne(record);
+        processedAttempts++;
+        if (wasEligibleBefore && !cfg.isEligible(record)) stampedThisRun++;
+    };
+
+    let drain;
     try {
-        for (const rec of slice) {
-            await cfg.enrichOne(rec);
-            // Heuristic post-enrichment check using the same predicate that
-            // PR-CORE-1 measures: a record is now considered stamped if
-            // isEligible() returns false (i.e. it left the eligible set).
-            if (!cfg.isEligible(rec)) stamped++;
-            processed++;
-            if (processed % 200 === 0 || processed === slice.length) {
-                console.log(`[BACKFILL/${sourceId}] ${processed}/${slice.length} | stamped: ${stamped}`);
-            }
-            await sleep(cfg.delayMs);
-        }
+        drain = await drainAdapterBacklog({
+            eligible, enrichOne: wrappedEnrichOne, chunkIterator, chunkSize,
+            timeBudgetMs: DRAIN_BUDGET_MS, coldStartEstimateMs: COLD_START_MS,
+            sleepMsBetween: cfg.delayMs, initialCursor: cursor,
+            logPrefix: `[BACKFILL/${sourceId}]`, logEveryNRecords: 200,
+        });
     } catch (err) {
         errorMsg = err.message;
-        console.error(`[BACKFILL/${sourceId}] Chunk aborted mid-flight at ${processed}/${slice.length}: ${err.message}`);
+        console.error(`[BACKFILL/${sourceId}] Drain aborted mid-flight: ${err.message}`);
+        return { source: sourceId, processed: processedAttempts, stamped: stampedThisRun, error: errorMsg };
     }
 
-    // D8: persist cursor regardless of partial failure. nextCursorId is the
-    // lex-greatest id of the *attempted* slice, so re-runs skip past the
-    // attempted (even-if-failed) records and make forward progress.
-    const nextCursor = buildNextCursor({
-        source: sourceId, prev: cursor,
-        chunkResult: { slice, nextCursorId, wrapped, totalEligible },
-        processedCount: processed,
-        totalEligible,
-        // PR-CORE-3b: explicit chunkSize persist - otherwise buildNextCursor
-        // falls back to DEFAULT_CHUNK_SIZE (5000) and leaks the wrong value
-        // into the cursor JSON, causing next cycle to use 5000 not 2000.
-        chunkSize,
-    });
-    try {
-        await writeCursor(sourceId, nextCursor, CURSOR_PREFIX);
-        console.log(`[BACKFILL/${sourceId}] Cursor advanced -> ${nextCursor.cursor_id} | cycles_completed=${nextCursor.cycles_completed}`);
-    } catch (err) {
-        // Cursor-write failure is its own diagnostic; log but don't escalate
-        // (the in-memory enriched records are still about to be uploaded by
-        // F3, which is the more important guarantee). Next cycle will re-do
-        // the same slice if cursor missing, which is wasteful but not wrong.
-        console.error(`[BACKFILL/${sourceId}] Cursor write failed - next cycle may re-do this slice: ${err.message}`);
+    // Forensic verdict per-source (1d audit): explicit empirical evidence
+    // for hypothesis A (saturation) vs B (silent failure). Future operators
+    // probe this log to distinguish "API ceiling acknowledged" from "bug".
+    const verdict = stampedThisRun > 0
+        ? `MONOTONIC_GROWTH (+${stampedThisRun} stamps this run -- API healthy, eligible pool draining)`
+        : `SATURATION_CONFIRMED (0 stamps across ${drain.processedInRun} record attempts -- consistent with prior cycles history of API returning null for this eligible subset)`;
+    console.log(`[BACKFILL/${sourceId}] Drain done | terminatedBy=${drain.terminatedBy} | processedInRun=${drain.processedInRun} | stamped_this_run=${stampedThisRun} | remainingBacklog=${drain.remainingBacklog} | verdict=${verdict}`);
+
+    // D8: persist cursor after drain (terminal atomic commit per source).
+    if (drain.finalCursorResult) {
+        const nextCursor = buildNextCursor({
+            source: sourceId, prev: cursor,
+            chunkResult: drain.finalCursorResult,
+            processedCount: drain.processedInRun,
+            totalEligible: drain.finalCursorResult.totalEligible,
+            chunkSize,
+        });
+        try {
+            await writeCursor(sourceId, nextCursor, CURSOR_PREFIX);
+            console.log(`[BACKFILL/${sourceId}] Cursor advanced -> ${nextCursor.cursor_id} | cycles_completed=${nextCursor.cycles_completed}`);
+        } catch (err) {
+            console.error(`[BACKFILL/${sourceId}] Cursor write failed - next cycle may re-do this slice: ${err.message}`);
+        }
+    } else {
+        console.log(`[BACKFILL/${sourceId}] No chunks drained -- cursor unchanged`);
     }
 
-    return { source: sourceId, processed, stamped, error: errorMsg };
+    return { source: sourceId, processed: drain.processedInRun, stamped: stampedThisRun, error: errorMsg };
 }
 
 async function main() {
