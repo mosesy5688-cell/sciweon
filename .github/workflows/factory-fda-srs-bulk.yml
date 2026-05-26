@@ -1,0 +1,142 @@
+name: Factory FDA SRS Bulk
+
+# Phase 1.8 PR-FDA-SRS-1: FDA Substance Registration System (SRS) UNII bulk ingest.
+#
+# Three jobs, identical 3-rail template as PR-OT-5:
+#   probe          - PR-OT-1-style discovery + sorted-header schema checksum (Rail 7)
+#   check-version  - Rail 1+2+3+7 pre-flight gate
+#   ingest         - streaming TSV pipeline (Rail 4+5+8) + R2 upload
+#
+# Architect rails active:
+#   Rail 1 (no-broken-windows)     -- check-version clean SUCCESS on unchanged
+#   Rail 2 (bidirectional convergence) -- cursor write at harvest end covers schedule+manual
+#   Rail 3 (defensive mirror handling) -- HEAD probe ensures archive accessible
+#   Rail 4 (streaming pipeline)    -- node-stream-zip + csv-parse row-by-row, 50MB ceiling
+#   Rail 5 (InChIKey normalization) -- shared SSoT helper between harvester + adapter
+#   Rail 6 (overlap telemetry)     -- enforced in PR-FDA-SRS-2 enricher (next PR)
+#   Rail 7 (schema break P0)       -- sorted-header SHA-256 mismatch -> probe hard-fail
+#   Rail 8 (entry-name resolution) -- probe writes target_entry_name to cursor
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry-run ingest (no R2 writes)'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+  schedule:
+    # Sunday 04:00 UTC, 1 hour after PR-OT-5 firing for non-overlap.
+    - cron: '0 4 * * 0'
+
+permissions:
+  contents: read
+
+env:
+  R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+  R2_BUCKET: ${{ secrets.R2_BUCKET }}
+  R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+  R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+
+jobs:
+  check-version:
+    # Rail 1+2+3+7 pre-flight gate. Outputs {changed, probe_json_path}.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
+      probe_path: ${{ steps.compare.outputs.probe_path }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install deps
+        run: npm ci
+      - name: Install zstd + unzip CLI
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zstd unzip
+      - name: Run probe
+        id: probe
+        run: |
+          set -e
+          node scripts/factory/fda-srs-probe.js > /tmp/fda-srs-probe.json
+          cat /tmp/fda-srs-probe.json
+      - name: Compare release vs R2 cursor (Rail 1+2+7)
+        id: compare
+        run: |
+          set -e
+          LATEST_RELEASE=$(node -e "console.log(require('/tmp/fda-srs-probe.json').release_date)")
+          LATEST_CHECKSUM=$(node -e "console.log(require('/tmp/fda-srs-probe.json').parsed_header_checksum)")
+          echo "Probe release_date=${LATEST_RELEASE} checksum=${LATEST_CHECKSUM:0:24}..."
+          PRIOR=$(node -e "
+            const {S3Client, GetObjectCommand} = require('@aws-sdk/client-s3');
+            const s3 = new S3Client({region:'auto', endpoint:process.env.R2_ENDPOINT, credentials:{accessKeyId:process.env.R2_ACCESS_KEY_ID, secretAccessKey:process.env.R2_SECRET_ACCESS_KEY}});
+            s3.send(new GetObjectCommand({Bucket:process.env.R2_BUCKET, Key:'state/fda-srs-cursor.json'})).then(async r => {
+              const text = await new Promise((res,rej)=>{ let b=''; r.Body.on('data',c=>b+=c); r.Body.on('end',()=>res(b)); r.Body.on('error',rej); });
+              const c = JSON.parse(text);
+              console.log(JSON.stringify({date: c.release_date || '', checksum: c.parsed_header_checksum || ''}));
+            }).catch(() => console.log(JSON.stringify({date:'', checksum:''})));
+          ")
+          PRIOR_DATE=$(node -e "console.log(JSON.parse(process.argv[1]).date)" "$PRIOR")
+          PRIOR_CHECKSUM=$(node -e "console.log(JSON.parse(process.argv[1]).checksum)" "$PRIOR")
+          echo "Prior cursor release=${PRIOR_DATE:-<none>} checksum=${PRIOR_CHECKSUM:0:24}..."
+          # Rail 7 schema break P0 hard-fail
+          if [ -n "$PRIOR_CHECKSUM" ] && [ "$LATEST_CHECKSUM" != "$PRIOR_CHECKSUM" ]; then
+            echo "::error::[FDA-SRS-PROBE] HALT: TSV header schema checksum changed from ${PRIOR_CHECKSUM} to ${LATEST_CHECKSUM}. Schema break suspected (column added or removed). Operator must verify column-name diff + update harvester field-name expectations + re-stamp cursor."
+            exit 1
+          fi
+          # Rail 1 no-broken-windows: unchanged release -> changed=false clean SUCCESS
+          if [ "$LATEST_RELEASE" = "$PRIOR_DATE" ]; then
+            echo "No new release. R2 cursor at ${PRIOR_DATE}; skipping ingest (Rail 1 clean success)."
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "Release transition: ${PRIOR_DATE:-<none>} -> ${LATEST_RELEASE}. Triggering ingest."
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+          echo "probe_path=/tmp/fda-srs-probe.json" >> $GITHUB_OUTPUT
+      - name: Upload probe manifest artifact (Rail 8 entry-name handoff)
+        if: steps.compare.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fda-srs-probe-manifest
+          path: /tmp/fda-srs-probe.json
+          retention-days: 1
+      - name: Summary
+        if: always()
+        run: |
+          echo "## PR-FDA-SRS-1 check-version" >> $GITHUB_STEP_SUMMARY
+          echo "- changed: ${{ steps.compare.outputs.changed }}" >> $GITHUB_STEP_SUMMARY
+
+  ingest:
+    needs: check-version
+    if: needs.check-version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install deps
+        run: npm ci
+      - name: Install zstd CLI
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zstd
+      - name: Download probe manifest (Rail 8)
+        uses: actions/download-artifact@v4
+        with:
+          name: fda-srs-probe-manifest
+          path: /tmp
+      - name: Run streaming harvester (Rail 4+5)
+        run: |
+          set -e
+          ARGS="--probe-json=/tmp/fda-srs-probe.json"
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          node scripts/factory/fda-srs-harvest.js $ARGS
+      - name: Ingest summary
+        if: always()
+        run: |
+          echo "## PR-FDA-SRS-1 ingest" >> $GITHUB_STEP_SUMMARY
+          echo "- dry-run: ${{ github.event.inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
