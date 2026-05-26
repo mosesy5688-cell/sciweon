@@ -20,15 +20,21 @@
  */
 
 import fs from 'fs/promises';
+import { createWriteStream } from 'fs';
+import { once } from 'events';
 import path from 'path';
 import { fetchByInchiKey, REQUEST_DELAY_MS as UNICHEM_DELAY } from '../ingestion/adapters/unichem-adapter.js';
 import {
     readCursor, writeCursor, chunkIterator, buildNextCursor, DEFAULT_CHUNK_SIZE,
 } from './lib/enrichment-cursor.js';
+import { drainAdapterBacklog, DEFAULT_CHUNK_DURATION_ESTIMATE_MS } from './lib/drain-adapter-backlog.js';
 
 const SOURCE = 'unichem';
 const DATA_DIR = './output/linked';
-const sleep = ms => new Promise(r => setTimeout(r, ms));
+// Per-adapter drain wall-time budget. Default 25 min; env override allows
+// faster fast-RTT adapters (e.g. RxNorm bulk file reader) to tune downward.
+const DRAIN_BUDGET_MS = Number(process.env.ADAPTER_DRAIN_BUDGET_MS) || 25 * 60 * 1000;
+const COLD_START_MS = Number(process.env.ADAPTER_DRAIN_COLD_START_MS) || DEFAULT_CHUNK_DURATION_ESTIMATE_MS;
 
 async function loadJsonl(file) {
     try {
@@ -37,8 +43,19 @@ async function loadJsonl(file) {
     } catch { return []; }
 }
 
+// Streaming JSONL writer (V5 architect-locked V8-thread defense). Releases
+// the event loop between record writes via drain backpressure; avoids the
+// 1.2-2.5s monolithic JSON.stringify freeze on 125MB+ master arrays which
+// would otherwise corrupt downstream timing observability.
 async function writeJsonl(file, records) {
-    await fs.writeFile(file, records.map(r => JSON.stringify(r)).join('\n'));
+    const stream = createWriteStream(file, { encoding: 'utf-8' });
+    for (const r of records) {
+        if (!stream.write(JSON.stringify(r) + '\n')) {
+            await once(stream, 'drain');
+        }
+    }
+    stream.end();
+    await once(stream, 'finish');
 }
 
 // Skip-if-stamped: a compound is considered UniChem-resolved when its
@@ -86,37 +103,50 @@ async function main() {
     try { cursor = await readCursor(SOURCE); }
     catch (err) { console.warn(`[ID-RESOLVER] Cursor read failed (${err.message}) - starting fresh`); }
     const chunkSize = cursor?.chunk_size ?? DEFAULT_CHUNK_SIZE;
-    const { slice, nextCursorId, wrapped, totalEligible } = chunkIterator(eligible, cursor, chunkSize);
+    console.log(`[ID-RESOLVER] Cursor: prev=${cursor?.cursor_id ?? '(none)'} | chunk_size=${chunkSize} | budget=${(DRAIN_BUDGET_MS / 60000).toFixed(1)}min | coldStart=${(COLD_START_MS / 60000).toFixed(1)}min`);
 
-    console.log(`[ID-RESOLVER] Cursor: prev=${cursor?.cursor_id ?? '(none)'} | chunk_size=${chunkSize} | slice=${slice.length} | wrapped=${wrapped}`);
+    // V5 drain-until-cleared: keep consuming chunks until corpus wraps,
+    // EWMA budget gate fires, or eligible is empty. Helper mutates eligible
+    // records in place (shared object refs with `compounds`); no per-chunk
+    // I/O. Terminal commit happens AFTER drainAdapterBacklog returns.
+    const drain = await drainAdapterBacklog({
+        eligible, enrichOne, chunkIterator, chunkSize,
+        timeBudgetMs: DRAIN_BUDGET_MS, coldStartEstimateMs: COLD_START_MS,
+        sleepMsBetween: UNICHEM_DELAY, initialCursor: cursor,
+        logPrefix: '[ID-RESOLVER]', logEveryNRecords: 100,
+    });
+    console.log(`[ID-RESOLVER] Drain done | terminatedBy=${drain.terminatedBy} | chunksDrained=${drain.chunksDrained} | processedInRun=${drain.processedInRun} | remainingBacklog=${drain.remainingBacklog}`);
 
-    let hit = 0;
-    let processed = 0;
-    let withUnii = 0;
-    for (const rec of slice) {
-        await enrichOne(rec);
+    // Compute domain-specific hit counters from the mutated master AFTER drain.
+    // hit = compounds with unichem in sources; withUnii = compounds with UNII id.
+    // Done in one pass so we don't double-iterate just for telemetry.
+    let hit = 0, withUnii = 0;
+    for (const rec of compounds) {
         if (rec.external_ids?.sources?.includes('unichem')) hit++;
         if (rec.external_ids?.unii) withUnii++;
-        processed++;
-        if (processed % 100 === 0 || processed === slice.length) {
-            console.log(`[ID-RESOLVER] ${processed}/${slice.length} | UniChem hit: ${hit} | UNII: ${withUnii}`);
-        }
-        await sleep(UNICHEM_DELAY);
     }
 
+    // Terminal atomic commit (V5 architect-locked): streaming local write
+    // then single cursor PUT to R2. If GHA aborts before this point, R2
+    // cursor stays at OLD value and next cycle re-runs the drain idempotently
+    // (isEligible filters out anything that did get committed via prior cycles).
     await writeJsonl(file, compounds);
-
-    const nextCursor = buildNextCursor({
-        source: SOURCE, prev: cursor,
-        chunkResult: { slice, nextCursorId, wrapped, totalEligible },
-        processedCount: processed, totalEligible,
-    });
-    try {
-        await writeCursor(SOURCE, nextCursor);
-        console.log(`[ID-RESOLVER] Cursor advanced -> ${nextCursor.cursor_id} | cycles_completed=${nextCursor.cycles_completed}`);
-    } catch (err) {
-        console.error(`[ID-RESOLVER] Cursor write failed: ${err.message}`);
-        throw err;
+    if (drain.finalCursorResult) {
+        const nextCursor = buildNextCursor({
+            source: SOURCE, prev: cursor,
+            chunkResult: drain.finalCursorResult,
+            processedCount: drain.processedInRun,
+            totalEligible: drain.finalCursorResult.totalEligible,
+        });
+        try {
+            await writeCursor(SOURCE, nextCursor);
+            console.log(`[ID-RESOLVER] Cursor advanced -> ${nextCursor.cursor_id} | cycles_completed=${nextCursor.cycles_completed}`);
+        } catch (err) {
+            console.error(`[ID-RESOLVER] Cursor write failed: ${err.message}`);
+            throw err;
+        }
+    } else {
+        console.log('[ID-RESOLVER] No chunks drained (empty eligible at entry) -- cursor unchanged');
     }
 
     console.log(`\n[ID-RESOLVER] Complete - this cycle: ${hit} UniChem stamps | ${withUnii} UNII gained`);
