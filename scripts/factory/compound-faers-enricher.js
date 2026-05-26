@@ -20,15 +20,19 @@
  */
 
 import fs from 'fs/promises';
+import { createWriteStream } from 'fs';
+import { once } from 'events';
 import path from 'path';
 import { fetchFaersSignalsByUnii, REQUEST_DELAY_MS } from '../ingestion/adapters/openfda-adapter.js';
 import {
     readCursor, writeCursor, chunkIterator, buildNextCursor, DEFAULT_CHUNK_SIZE,
 } from './lib/enrichment-cursor.js';
+import { drainAdapterBacklog, DEFAULT_CHUNK_DURATION_ESTIMATE_MS } from './lib/drain-adapter-backlog.js';
 
 const SOURCE = 'openfda_faers';
 const DATA_DIR = './output/linked';
-const sleep = ms => new Promise(r => setTimeout(r, ms));
+const DRAIN_BUDGET_MS = Number(process.env.ADAPTER_DRAIN_BUDGET_MS) || 25 * 60 * 1000;
+const COLD_START_MS = Number(process.env.ADAPTER_DRAIN_COLD_START_MS) || DEFAULT_CHUNK_DURATION_ESTIMATE_MS;
 
 async function loadJsonl(file) {
     try {
@@ -37,8 +41,14 @@ async function loadJsonl(file) {
     } catch { return []; }
 }
 
+// Streaming JSONL writer (V5 architect-locked V8-thread defense).
 async function writeJsonl(file, records) {
-    await fs.writeFile(file, records.map(r => JSON.stringify(r)).join('\n'));
+    const stream = createWriteStream(file, { encoding: 'utf-8' });
+    for (const r of records) {
+        if (!stream.write(JSON.stringify(r) + '\n')) await once(stream, 'drain');
+    }
+    stream.end();
+    await once(stream, 'finish');
 }
 
 // Skip-if-stamped: a compound is FAERS-enriched once
@@ -86,42 +96,50 @@ async function main() {
     try { cursor = await readCursor(SOURCE); }
     catch (err) { console.warn(`[FAERS-ENRICHER] Cursor read failed (${err.message}) - starting fresh`); }
     const chunkSize = cursor?.chunk_size ?? DEFAULT_CHUNK_SIZE;
-    const { slice, nextCursorId, wrapped, totalEligible } = chunkIterator(eligible, cursor, chunkSize);
+    console.log(`[FAERS-ENRICHER] Cursor: prev=${cursor?.cursor_id ?? '(none)'} | chunk_size=${chunkSize} | budget=${(DRAIN_BUDGET_MS / 60000).toFixed(1)}min | coldStart=${(COLD_START_MS / 60000).toFixed(1)}min`);
 
-    console.log(`[FAERS-ENRICHER] Cursor: prev=${cursor?.cursor_id ?? '(none)'} | chunk_size=${chunkSize} | slice=${slice.length} | wrapped=${wrapped}`);
+    // V5 drain-until-cleared: EWMA gate especially relevant for FAERS because
+    // openFDA 429 backoff creates long-tail p99 latency spikes; recency-
+    // weighted predictor will tighten budget projection within 1-2 chunks
+    // if rate limit kicks in.
+    const drain = await drainAdapterBacklog({
+        eligible, enrichOne, chunkIterator, chunkSize,
+        timeBudgetMs: DRAIN_BUDGET_MS, coldStartEstimateMs: COLD_START_MS,
+        sleepMsBetween: REQUEST_DELAY_MS, initialCursor: cursor,
+        logPrefix: '[FAERS-ENRICHER]', logEveryNRecords: 100,
+    });
+    console.log(`[FAERS-ENRICHER] Drain done | terminatedBy=${drain.terminatedBy} | chunksDrained=${drain.chunksDrained} | processedInRun=${drain.processedInRun} | remainingBacklog=${drain.remainingBacklog}`);
 
     let withFaersData = 0;
     let totalReports = 0;
-    let processed = 0;
-    for (const rec of slice) {
-        await enrichOne(rec);
+    for (const rec of compounds) {
         if (rec.fda_signals?.faers_top_adr_terms?.length > 0) {
             withFaersData++;
             totalReports += rec.fda_signals.faers_total_top_count ?? 0;
         }
-        processed++;
-        if (processed % 100 === 0 || processed === slice.length) {
-            console.log(`[FAERS-ENRICHER] ${processed}/${slice.length} | with FAERS: ${withFaersData}`);
-        }
-        await sleep(REQUEST_DELAY_MS);
     }
 
+    // Terminal atomic commit.
     await writeJsonl(file, compounds);
-
-    const nextCursor = buildNextCursor({
-        source: SOURCE, prev: cursor,
-        chunkResult: { slice, nextCursorId, wrapped, totalEligible },
-        processedCount: processed, totalEligible,
-    });
-    try {
-        await writeCursor(SOURCE, nextCursor);
-        console.log(`[FAERS-ENRICHER] Cursor advanced -> ${nextCursor.cursor_id} | cycles_completed=${nextCursor.cycles_completed}`);
-    } catch (err) {
-        console.error(`[FAERS-ENRICHER] Cursor write failed: ${err.message}`);
-        throw err;
+    if (drain.finalCursorResult) {
+        const nextCursor = buildNextCursor({
+            source: SOURCE, prev: cursor,
+            chunkResult: drain.finalCursorResult,
+            processedCount: drain.processedInRun,
+            totalEligible: drain.finalCursorResult.totalEligible,
+        });
+        try {
+            await writeCursor(SOURCE, nextCursor);
+            console.log(`[FAERS-ENRICHER] Cursor advanced -> ${nextCursor.cursor_id} | cycles_completed=${nextCursor.cycles_completed}`);
+        } catch (err) {
+            console.error(`[FAERS-ENRICHER] Cursor write failed: ${err.message}`);
+            throw err;
+        }
+    } else {
+        console.log('[FAERS-ENRICHER] No chunks drained (empty eligible at entry) -- cursor unchanged');
     }
 
-    console.log(`\n[FAERS-ENRICHER] Complete - ${withFaersData}/${processed} this cycle | ${totalReports.toLocaleString()} reports captured`);
+    console.log(`\n[FAERS-ENRICHER] Complete - cumulative with FAERS: ${withFaersData}/${compounds.length} | ${totalReports.toLocaleString()} reports`);
 }
 
 const isDirectRun = import.meta.url === `file://${process.argv[1]}`
