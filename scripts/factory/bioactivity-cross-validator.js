@@ -26,15 +26,19 @@
  */
 
 import fs from 'fs/promises';
+import { createWriteStream } from 'fs';
+import { once } from 'events';
 import path from 'path';
 import { fetchAssaySummaryByCid, buildAssayIndex, crossValidateBioactivity, REQUEST_DELAY_MS } from '../ingestion/adapters/pubchem-bioassay-adapter.js';
 import {
     readCursor, writeCursor, chunkIterator, buildNextCursor, DEFAULT_CHUNK_SIZE,
 } from './lib/enrichment-cursor.js';
+import { drainAdapterBacklog, DEFAULT_CHUNK_DURATION_ESTIMATE_MS } from './lib/drain-adapter-backlog.js';
 
 const SOURCE = 'pubchem_bioassay';
 const DATA_DIR = './output/linked';
-const sleep = ms => new Promise(r => setTimeout(r, ms));
+const DRAIN_BUDGET_MS = Number(process.env.ADAPTER_DRAIN_BUDGET_MS) || 25 * 60 * 1000;
+const COLD_START_MS = Number(process.env.ADAPTER_DRAIN_COLD_START_MS) || DEFAULT_CHUNK_DURATION_ESTIMATE_MS;
 
 async function loadJsonl(file) {
     try {
@@ -43,8 +47,14 @@ async function loadJsonl(file) {
     } catch { return []; }
 }
 
+// Streaming JSONL writer (V5 architect-locked V8-thread defense).
 async function writeJsonl(file, records) {
-    await fs.writeFile(file, records.map(r => JSON.stringify(r)).join('\n'));
+    const stream = createWriteStream(file, { encoding: 'utf-8' });
+    for (const r of records) {
+        if (!stream.write(JSON.stringify(r) + '\n')) await once(stream, 'drain');
+    }
+    stream.end();
+    await once(stream, 'finish');
 }
 
 function extractCidFromCompoundId(compoundId) {
@@ -100,67 +110,85 @@ async function main() {
     try { cursor = await readCursor(SOURCE); }
     catch (err) { console.warn(`[CROSS-VALIDATOR] Cursor read failed (${err.message}) - starting fresh`); }
     const chunkSize = cursor?.chunk_size ?? DEFAULT_CHUNK_SIZE;
-    const { slice, nextCursorId, wrapped, totalEligible } = chunkIterator(eligibleCids, cursor, chunkSize);
-    console.log(`[CROSS-VALIDATOR] Cursor: prev=${cursor?.cursor_id ?? '(none)'} | chunk_size=${chunkSize} | slice=${slice.length} | wrapped=${wrapped}`);
+    console.log(`[CROSS-VALIDATOR] Cursor: prev=${cursor?.cursor_id ?? '(none)'} | chunk_size=${chunkSize} | budget=${(DRAIN_BUDGET_MS / 60000).toFixed(1)}min | coldStart=${(COLD_START_MS / 60000).toFixed(1)}min`);
 
-    const compoundIdSlice = new Set(slice.map(s => s.id));
-    const cidByCompound = new Map();
-    for (const compoundId of compoundIdSlice) {
-        const numeric = extractCidFromCompoundId(compoundId);
-        if (numeric != null) cidByCompound.set(compoundId, numeric);
+    // Pre-bucket bioactivities by compound_id once (O(N)) so per-compound
+    // enrichOne does O(1) lookup instead of O(N) full-array scan per compound.
+    // Without this bucketing 5000 compounds x 367K bioacts = 1.8B iterations.
+    const bioactsByCompound = new Map();
+    for (const b of bioacts) {
+        if (!b?.compound_id) continue;
+        if (!bioactsByCompound.has(b.compound_id)) bioactsByCompound.set(b.compound_id, []);
+        bioactsByCompound.get(b.compound_id).push(b);
     }
-    console.log(`[CROSS-VALIDATOR] Resolvable to numeric CID: ${cidByCompound.size}`);
 
-    const assayIndexByCompound = new Map();
-    let processed = 0;
-    for (const [compoundId, cid] of cidByCompound) {
-        try {
-            const rows = await fetchAssaySummaryByCid(cid);
-            const idx = buildAssayIndex(rows);
-            assayIndexByCompound.set(compoundId, idx);
-        } catch (err) {
-            console.warn(`[CROSS-VALIDATOR] CID ${cid} fetch failed: ${err.message}`);
+    // Per-compound enricher closure: fetch PubChem assay summary, build
+    // index, then stamp ALL bioactivities for this compound. Mutates
+    // bioacts in-place via shared object refs.
+    const enrichCompound = async ({ id: compoundId }) => {
+        const cid = extractCidFromCompoundId(compoundId);
+        let idx = null;
+        if (cid != null) {
+            try {
+                const rows = await fetchAssaySummaryByCid(cid);
+                idx = buildAssayIndex(rows);
+            } catch (err) {
+                console.warn(`[CROSS-VALIDATOR] CID ${cid} fetch failed: ${err.message}`);
+            }
         }
-        processed++;
-        if (processed % 50 === 0 || processed === cidByCompound.size) {
-            console.log(`[CROSS-VALIDATOR] PubChem: ${processed}/${cidByCompound.size}`);
+        const compoundBioacts = bioactsByCompound.get(compoundId) || [];
+        for (const b of compoundBioacts) {
+            if (b?.cross_source_consensus?.has_pubchem_match != null) continue;
+            if (!idx) {
+                b.cross_source_consensus = { has_pubchem_match: false, pubchem_aid_count: 0, value_agreement: null, n_sources: 1 };
+                continue;
+            }
+            const consensus = crossValidateBioactivity(b, idx);
+            b.cross_source_consensus = consensus;
+            bumpConfidence(b, consensus);
         }
-        await sleep(REQUEST_DELAY_MS);
-    }
+    };
+
+    // V5 drain-until-cleared at compound granularity. Each chunk drains
+    // ~chunkSize compounds; budget gate fires if PubChem assay fetch tail
+    // latency would exceed remaining budget.
+    const drain = await drainAdapterBacklog({
+        eligible: eligibleCids, enrichOne: enrichCompound, chunkIterator, chunkSize,
+        timeBudgetMs: DRAIN_BUDGET_MS, coldStartEstimateMs: COLD_START_MS,
+        sleepMsBetween: REQUEST_DELAY_MS, initialCursor: cursor,
+        logPrefix: '[CROSS-VALIDATOR]', logEveryNRecords: 50,
+    });
+    console.log(`[CROSS-VALIDATOR] Drain done | terminatedBy=${drain.terminatedBy} | chunksDrained=${drain.chunksDrained} | processedInRun=${drain.processedInRun} | remainingBacklog=${drain.remainingBacklog}`);
 
     let stamped = 0, withMatch = 0;
     for (const b of bioacts) {
-        if (!compoundIdSlice.has(b.compound_id)) continue;
-        if (b?.cross_source_consensus?.has_pubchem_match != null) continue;
-        const idx = assayIndexByCompound.get(b.compound_id);
-        if (!idx) {
-            b.cross_source_consensus = { has_pubchem_match: false, pubchem_aid_count: 0, value_agreement: null, n_sources: 1 };
+        if (b?.cross_source_consensus?.has_pubchem_match != null) {
             stamped++;
-            continue;
+            if (b.cross_source_consensus.has_pubchem_match) withMatch++;
         }
-        const consensus = crossValidateBioactivity(b, idx);
-        b.cross_source_consensus = consensus;
-        if (consensus.has_pubchem_match) withMatch++;
-        bumpConfidence(b, consensus);
-        stamped++;
     }
 
+    // Terminal atomic commit (streaming writer for 367K records).
     await writeJsonl(bioFile, bioacts);
-
-    const nextCursor = buildNextCursor({
-        source: SOURCE, prev: cursor,
-        chunkResult: { slice, nextCursorId, wrapped, totalEligible },
-        processedCount: processed, totalEligible,
-    });
-    try {
-        await writeCursor(SOURCE, nextCursor);
-        console.log(`[CROSS-VALIDATOR] Cursor advanced -> ${nextCursor.cursor_id} | cycles_completed=${nextCursor.cycles_completed}`);
-    } catch (err) {
-        console.error(`[CROSS-VALIDATOR] Cursor write failed: ${err.message}`);
-        throw err;
+    if (drain.finalCursorResult) {
+        const nextCursor = buildNextCursor({
+            source: SOURCE, prev: cursor,
+            chunkResult: drain.finalCursorResult,
+            processedCount: drain.processedInRun,
+            totalEligible: drain.finalCursorResult.totalEligible,
+        });
+        try {
+            await writeCursor(SOURCE, nextCursor);
+            console.log(`[CROSS-VALIDATOR] Cursor advanced -> ${nextCursor.cursor_id} | cycles_completed=${nextCursor.cycles_completed}`);
+        } catch (err) {
+            console.error(`[CROSS-VALIDATOR] Cursor write failed: ${err.message}`);
+            throw err;
+        }
+    } else {
+        console.log('[CROSS-VALIDATOR] No chunks drained (empty eligible at entry) -- cursor unchanged');
     }
 
-    console.log(`\n[CROSS-VALIDATOR] Complete - this cycle: ${stamped} bioactivities stamped | ${withMatch} matched PubChem`);
+    console.log(`\n[CROSS-VALIDATOR] Complete - cumulative stamped: ${stamped}/${bioacts.length} | ${withMatch} matched PubChem`);
 }
 
 const isDirectRun = import.meta.url === `file://${process.argv[1]}`
