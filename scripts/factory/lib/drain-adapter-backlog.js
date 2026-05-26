@@ -83,8 +83,17 @@ export async function drainAdapterBacklog({
             };
         }
 
+        // Effective chunkSize cap: prevent chunkIterator's wrap from re-emitting
+        // head records once we've drained the tail. Without this, a corpus of
+        // N records with chunkSize C where N % C != 0 would cause the final
+        // chunk to wrap + re-process the first (C - remainder) records.
+        const effectiveChunkSize = lastChunkResult
+            ? Math.min(chunkSize, Math.max(0, lastChunkResult.totalEligible - processedInRun))
+            : chunkSize;
+        if (effectiveChunkSize === 0) { wrapped = true; break; }
+
         const chunkStart = Date.now();
-        const result = chunkIterator(eligible, cursor, chunkSize);
+        const result = chunkIterator(eligible, cursor, effectiveChunkSize);
         const { slice, nextCursorId, wrapped: w } = result;
         if (slice.length === 0) { wrapped = w; lastChunkResult = result; break; }
 

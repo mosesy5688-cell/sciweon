@@ -68,7 +68,11 @@ describe('backfillOneSource (unichem)', () => {
         expect(fetchByInchiKey).not.toHaveBeenCalled();
     });
 
-    it('enriches eligible records with chunk_size cap', async () => {
+    it('drains all eligible records across multiple chunks (PR-CORE-DRAIN-1d)', async () => {
+        // Post-drain-migration semantics: helper drains until corpus wraps,
+        // not chunk-and-exit. With 3 eligible records and chunk_size=2,
+        // drain processes chunk 1 (records 10+20) then last partial chunk
+        // (record 30) via effectiveChunkSize cap that prevents wrap re-emit.
         vi.mocked(readCursor).mockResolvedValue({ source: 'unichem', cursor_id: null, chunk_size: 2 } as never);
         vi.mocked(fetchByInchiKey).mockResolvedValue({ unii: 'XYZ' });
         const compounds = [
@@ -77,15 +81,22 @@ describe('backfillOneSource (unichem)', () => {
             mkCompound('sciweon::compound::CID:30'),
         ];
         const r = await backfillOneSource('unichem', compounds);
-        expect(r.processed).toBe(2);
-        expect(r.stamped).toBe(2);
-        expect(fetchByInchiKey).toHaveBeenCalledTimes(2);
+        expect(r.processed).toBe(3);
+        expect(r.stamped).toBe(3);
+        expect(fetchByInchiKey).toHaveBeenCalledTimes(3);
         expect(writeCursor).toHaveBeenCalled();
-        const [, cursor] = vi.mocked(writeCursor).mock.calls[0];
-        expect(cursor.cursor_id).toBe('sciweon::compound::CID:20');
     });
 
-    it('writes cursor even on mid-chunk adapter failure (D8)', async () => {
+    it('reports partial progress on mid-drain adapter failure (D8 contract)', async () => {
+        // Post-drain-migration: drain helper bubbles up on enrichOne throw.
+        // wrappedEnrichOne increments processedAttempts post-await so r.processed
+        // accurately counts records the adapter finished BEFORE the failure.
+        // The drain helper does NOT persist cursor when it throws (no
+        // finalCursorResult on the error path); cursor advance happens only
+        // on successful completion. This is a deliberate V5 contract change
+        // from the original D8 "write cursor even on partial failure" -- in
+        // V5 the cursor stays at prior value so next cycle resumes the
+        // same slice idempotently via isEligible filter.
         vi.mocked(readCursor).mockResolvedValue({ source: 'unichem', cursor_id: null, chunk_size: 5 } as never);
         vi.mocked(fetchByInchiKey)
             .mockResolvedValueOnce({ unii: 'A' })
@@ -99,9 +110,8 @@ describe('backfillOneSource (unichem)', () => {
         ];
         const r = await backfillOneSource('unichem', compounds);
         expect(r.error).toMatch(/rate limit/);
-        expect(r.processed).toBe(2);
-        // Cursor must be written even though chunk aborted
-        expect(writeCursor).toHaveBeenCalled();
+        expect(r.processed).toBe(2);  // records 1 + 2 succeeded; record 3 threw
+        expect(r.stamped).toBe(2);
     });
 
     it('throws on unknown source id', async () => {
