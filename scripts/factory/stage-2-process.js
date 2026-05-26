@@ -134,6 +134,11 @@ async function main() {
         // drug_status is available; and before fda/faers which gate on UNII.
         { name: 'chembl-compound', fn: () => runScript('chembl-compound-enricher.js') },
         { name: 'compound-id-resolver', fn: () => runScript('compound-id-resolver.js') },
+        // PR-FDA-SRS-2: secondary UNII source from FDA Substance Registration
+        // System. Runs AFTER id-resolver so UniChem first-wins on overlap;
+        // adds fda_srs source membership + fills unii on UniChem-misses
+        // (~120K InChIKey-keyed lookup map; expected ceiling lift vs 32286).
+        { name: 'compound-fda-srs', fn: () => runScript('compound-fda-srs-enricher.js') },
         // PR-CORE-2 (cycle 22): RxNorm extracted from compound-id-resolver's
         // chained UNI->RxNorm hop into its own cursor-driven enricher. The
         // chain only ran on freshly-resolved UNIIs in the same pass, so the
