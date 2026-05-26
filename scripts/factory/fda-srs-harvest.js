@@ -74,14 +74,19 @@ async function streamTsvToJsonl(zipPath, jsonlPath, targetEntryName) {
             delimiter: '\t', columns: true, trim: true, relax_quotes: true, skip_empty_lines: true,
         }));
         for await (const row of parser) {
-            const cleanKey = normalizeInChIKey(row.InChIKey);
+            // PR-FDA-SRS-1b column-name fix: real FDA SRS columns verified
+            // 2026-05-26 via local unzip probe of UNII_Records_26Feb2026.txt
+            // -- column names are INCHIKEY (upper) + Display Name (spaced) + RN.
+            // First dispatch run 26455059938 surfaced the bug: 168046/168046
+            // records dropped because row.InChIKey === undefined.
+            const cleanKey = normalizeInChIKey(row.INCHIKEY);
             if (!cleanKey) { dropped++; continue; }
             const unii = typeof row.UNII === 'string' ? row.UNII.trim() : null;
             if (!unii) { dropped++; continue; }
             const record = {
                 inchi_key: cleanKey,
                 unii,
-                preferred_name: typeof row.PT === 'string' ? row.PT.trim() : null,
+                preferred_name: typeof row['Display Name'] === 'string' ? row['Display Name'].trim() : null,
                 cas_rn: typeof row.RN === 'string' ? row.RN.trim() : null,
             };
             if (!outStream.write(JSON.stringify(record) + '\n')) await once(outStream, 'drain');
