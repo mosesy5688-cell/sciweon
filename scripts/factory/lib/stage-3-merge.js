@@ -64,6 +64,13 @@ export async function executeCumulativeMerge(runId) {
                 console.log('[STAGE-3] Merge stats per file:');
                 for (const [fname, stats] of Object.entries(mergeResult.perFile)) {
                     console.log(`  ${fname.padEnd(35)} total=${stats.total} (cur=${stats.from_current} prev_kept=${stats.from_previous_kept} replaced=${stats.replaced_by_current})`);
+                    if (typeof stats.merged_deep_total === 'number') {
+                        // PR-CORE-MERGE-LEAK telemetry: deep-merge per-file forensic counters.
+                        console.log(`    deep_merge: total=${stats.merged_deep_total} preserved_ext_id=${stats.merged_deep_preserved_external_id_fields} unioned_sources=${stats.merged_deep_unioned_sources_count} preserved_structural=${stats.merged_deep_preserved_structural_fields} preserved_f3=${stats.merged_deep_preserved_f3_fields}`);
+                        if (Array.isArray(stats.merged_deep_sample) && stats.merged_deep_sample.length > 0) {
+                            console.log(`    deep_merge_sample (first ${stats.merged_deep_sample.length} CIDs that gained preserved fields): ${stats.merged_deep_sample.join(', ')}`);
+                        }
+                    }
                 }
                 console.log(`[STAGE-3] Cumulative records across all files: ${mergeResult.totalMergedRecords}`);
                 return;

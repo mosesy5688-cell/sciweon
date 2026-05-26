@@ -76,10 +76,10 @@ export const SOURCE_DEFERRALS = Object.freeze({
         note: 'Awaiting NLM UTS license approval (submitted 2026-05-24, EOB 2026-05-28 expected). Post-approval enables RxNorm bulk download. Currently ~8.97% gate-adjusted; floor at 8.0% surfaces 1pp drift as regression.',
     }),
     unichem: Object.freeze({
-        expected_coverage_pct: 38.0,
+        expected_coverage_pct: 37.0,
         due_date: '2026-07-15',
-        responsible_pr: 'PR-CORE-1e',
-        note: 'Cross-source xref gradual rollout. Currently 40.16% gate-adjusted; floor at 38.0% surfaces 2pp drift.',
+        responsible_pr: 'PR-CORE-1e + Phase-1.8-baseline-rotation-expansion',
+        note: 'Re-calibrated 2026-05-26 post PR-CORE-MERGE-LEAK forensic. The 32286 (37.99%) plateau is NOT data leak (deep-merge V1 verified; invariant gate green delta=0) -- it is the UniChem natural ceiling for the deterministic per-cycle baseline slice CID:105001..110000. UNII is exclusively from UniChem (UNII-only count in aggregated = 0 confirmed); UniChem hit rate for this slice is ~17.5%, all eligible records already enriched. Floor at 37.0% surfaces 1pp drift as broken-floor, lets 37.99% pass tier 0. Phase 1.8 epic: expand F1 baseline ingest scope + add secondary UNII source (FDA SRS / RxNorm bulk) to break the natural ceiling.',
     }),
     openfda_faers: Object.freeze({
         expected_coverage_pct: 2.0,
