@@ -38,6 +38,7 @@ import { buildIndex as buildSearchIndex, OUTPUT_FILE as SEARCH_INDEX_FILE } from
 import { buildIndex as buildTargetIndex, OUTPUT_FILE as TARGET_INDEX_FILE } from './lib/target-index-builder.js';
 import { writeFirstRunSentinel } from './lib/aggregated-sentinel.js';
 import { AGGREGATED_FILES, ENRICHED_FILES } from './lib/aggregated-files.js';
+import { enforceCompletenessInvariant } from './lib/aggregated-invariant.js';
 
 const SCRIPT_DIR = 'scripts/factory';
 
@@ -94,14 +95,8 @@ async function main() {
         process.exit(2);
     }
 
-    // V0.5.x: trial scripts run sequentially — trial-linker + trial-results-enricher
-    // both writeFile trials.jsonl (last-writer-wins) so trial-linker (slowest) would
-    // overwrite enricher's serious_events_count, starving neg-evidence-builder of
-    // serious_adverse_event_per_trial (cycle 1: 0 vs V0.4.3-local 161). ctis-trial-
-    // linker appendFiles (safe) but ordered after trial-linker keeps base aligned.
-    // Papers writes a different file; trial-group + paper-group run in parallel.
-    // PR 1.4-pre.1b targets-linker + PR 1.6b-pre.1b disease-linker each own
-    // disjoint output files so all four groups parallel-safe.
+    // V0.5.x: trial scripts run sequentially (last-writer-wins on trials.jsonl);
+    // papers/targets/diseases each own disjoint output files so parallel-safe.
     const [trialResults, paperResults, targetResults, diseaseResults] = await Promise.all([
         runSequential('Trials', [
             { name: 'trial-linker', fn: () => runScript('trial-linker.js') },
@@ -204,6 +199,10 @@ async function main() {
     } catch (err) {
         console.error(`[STAGE-3] Target index build failed (non-fatal): ${err.message}`);
     }
+
+    // PR-CORE-MERGE-LEAK pre-upload invariant guard (hard-fails on unichem regression).
+    console.log('\n[STAGE-3] === Pre-upload invariant guard ===');
+    await enforceCompletenessInvariant({ localCompoundsPath: path.join('./output/linked', 'compounds-enriched.jsonl'), label: '[STAGE-3 INVARIANT]' });
 
     console.log('\n[STAGE-3] === Upload aggregated bundle to R2 ===');
     try {

@@ -78,6 +78,14 @@ const KEY_FN_PER_FILE = {
     'paper-links.jsonl': linkKey,
 };
 
+// PR-CORE-MERGE-LEAK (cycle 23): per-file deep-merge strategy. See
+// aggregated-deep-merge.js for the deepMergeCompound contract + rationale.
+import { deepMergeCompound } from './aggregated-deep-merge.js';
+
+const MERGE_STRATEGY_PER_FILE = Object.freeze({
+    'compounds-enriched.jsonl': deepMergeCompound,
+});
+
 function parseJsonl(text) {
     const out = [];
     for (const line of text.split('\n')) {
@@ -97,14 +105,17 @@ function serializeJsonl(records) {
  * Replace-by-key: when same key in both, current wins.
  * No-key records (where keyFn returns null): pass through from both.
  */
-export function mergeRecords(currentRecords, previousRecords, keyFn) {
+export function mergeRecords(currentRecords, previousRecords, keyFn, strategyFn) {
     const byKey = new Map();
     const noKeyRecords = [];
     let fromPrevious = 0;
     let fromCurrent = 0;
     let replaced = 0;
+    const deepCounters = strategyFn ? {
+        total: 0, preservedExternalIdFields: 0, unionedSources: 0,
+        preservedStructuralFields: 0, preservedF3Fields: 0, sample: [],
+    } : null;
 
-    // Stage 1: previous first (older, will be overwritten by current)
     for (const rec of previousRecords) {
         const k = keyFn(rec);
         if (k === null) { noKeyRecords.push(rec); continue; }
@@ -112,15 +123,20 @@ export function mergeRecords(currentRecords, previousRecords, keyFn) {
         fromPrevious++;
     }
 
-    // Stage 2: current overrides
     for (const rec of currentRecords) {
         const k = keyFn(rec);
         if (k === null) { noKeyRecords.push(rec); continue; }
         if (byKey.has(k)) {
             replaced++;
             fromPrevious--;
+            if (strategyFn) {
+                byKey.set(k, strategyFn(byKey.get(k), rec, deepCounters));
+            } else {
+                byKey.set(k, rec);
+            }
+        } else {
+            byKey.set(k, rec);
         }
-        byKey.set(k, rec);
         fromCurrent++;
     }
 
@@ -132,6 +148,14 @@ export function mergeRecords(currentRecords, previousRecords, keyFn) {
             replaced_by_current: replaced,
             no_key_passthrough: noKeyRecords.length,
             total: byKey.size + noKeyRecords.length,
+            ...(deepCounters ? {
+                merged_deep_total: deepCounters.total,
+                merged_deep_preserved_external_id_fields: deepCounters.preservedExternalIdFields,
+                merged_deep_unioned_sources_count: deepCounters.unionedSources,
+                merged_deep_preserved_structural_fields: deepCounters.preservedStructuralFields,
+                merged_deep_preserved_f3_fields: deepCounters.preservedF3Fields,
+                merged_deep_sample: deepCounters.sample,
+            } : {}),
         },
     };
 }
@@ -182,7 +206,8 @@ export async function mergeLocalAggregatedWithPrevious(previousBuffers) {
         // TODO V0.6+: at ~200K cumulative compounds this in-memory merge
         // hits GHA runner GC pressure; replace with streaming chunk merge
         // when total cumulative compound count crosses 100K.
-        const { merged, stats } = mergeRecords(currentRecords, previousRecords, keyFn);
+        const strategyFn = MERGE_STRATEGY_PER_FILE[fname] || null;
+        const { merged, stats } = mergeRecords(currentRecords, previousRecords, keyFn, strategyFn);
 
         await writeLocalFile(fname, serializeJsonl(merged));
         perFile[fname] = stats;
@@ -192,4 +217,4 @@ export async function mergeLocalAggregatedWithPrevious(previousBuffers) {
     return { perFile, totalMergedRecords };
 }
 
-export { MERGE_FILES, KEY_FN_PER_FILE };
+export { MERGE_FILES, KEY_FN_PER_FILE, MERGE_STRATEGY_PER_FILE };
