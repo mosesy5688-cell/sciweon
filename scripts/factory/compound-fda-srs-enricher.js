@@ -26,7 +26,7 @@ import path from 'path';
 import {
     readCursor, writeCursor, chunkIterator, buildNextCursor, DEFAULT_CHUNK_SIZE,
 } from './lib/enrichment-cursor.js';
-import { drainAdapterBacklog, DEFAULT_CHUNK_DURATION_ESTIMATE_MS } from './lib/drain-adapter-backlog.js';
+import { drainAdapterBacklog } from './lib/drain-adapter-backlog.js';
 import { loadLookupFromR2, lookupByInchiKey } from '../ingestion/adapters/fda-srs-adapter.js';
 
 const SOURCE = 'fda_srs';
@@ -35,7 +35,13 @@ const DATA_DIR = './output/linked';
 // Realistic worst-case full-corpus drain < 30s; 5min is 10x safety margin.
 // Faster anomaly detection (OOM / hang / loop) than the 25min cross-adapter default.
 const DRAIN_BUDGET_MS = Number(process.env.ADAPTER_DRAIN_BUDGET_MS) || 5 * 60 * 1000;
-const COLD_START_MS = Number(process.env.ADAPTER_DRAIN_COLD_START_MS) || DEFAULT_CHUNK_DURATION_ESTIMATE_MS;
+// PR-FDA-SRS-2b: cold-start MUST be calibrated for local-lookup adapter, NOT
+// the 17-min DEFAULT_CHUNK_DURATION_ESTIMATE_MS network-API global. The
+// drain helper's pre-chunk-1 gate check `elapsed(0) + projected(17min*1.1)
+// > budget(5min)` would always fire -> 0 chunks ever drained. 30s estimate
+// (* 1.1 = 33s) safely below the 5min budget while still defensive for
+// realistic chunk wall <1s.
+const COLD_START_MS = Number(process.env.ADAPTER_DRAIN_COLD_START_MS) || 30 * 1000;
 const MAX_CONFLICT_WARN = 10;  // Rail 10b truncation ceiling per F2 run
 
 async function loadJsonl(file) {
