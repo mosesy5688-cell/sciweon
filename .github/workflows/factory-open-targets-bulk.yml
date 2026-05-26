@@ -1,17 +1,22 @@
 name: Factory Open Targets Bulk
 
-# Cycle 23 PR-OT-1 (probe-only infra) + PR-OT-3 (quarterly ingest).
-# Manual dispatch only. Cron deferred to PR-OT-5.
+# Cycle 23 PR-OT-1 (probe infra) + PR-OT-3 (ingest) + PR-OT-5 (cron automation).
 #
-# Two jobs:
-#   probe   - PR-OT-1 release discovery + DuckDB DESCRIBE smoke test
-#   ingest  - PR-OT-3 drug_molecule full extract + zstd + R2 upload
+# Three jobs:
+#   probe          - PR-OT-1 release discovery + DuckDB DESCRIBE (manual only)
+#   check-version  - PR-OT-5 pre-flight release-changed gate (cron + manual)
+#   ingest         - PR-OT-3 drug + target + disease extracts (gated by check-version)
 #
-# The probe job validated the parquet-duckdb-bulk pipeline pattern and
-# corrected two foundation-doc assumptions (GCS endpoint requester-pays,
-# OT 25.03+ drug-table split). PR-OT-3 ingest reuses release discovery
-# and DuckDB install logic but extracts the full corpus instead of a
-# single partition.
+# PR-OT-5 automation locks 3 architect hard rails:
+#   Rail 1 (no-broken-windows): check-version exits clean success on unchanged
+#     release; ingest job skipped via `if`. No red CI noise on idle Sundays.
+#   Rail 2 (bidirectional convergence): cursor write at end of ingest covers
+#     BOTH schedule-triggered AND workflow_dispatch (manual override) paths,
+#     so subsequent Sunday probes see the just-stamped release and short-circuit.
+#   Rail 3 (defensive mirror handling): check-version verifies EBI drug_molecule
+#     directory has actual Parquet part files (not 404 / empty) before
+#     declaring release ready. Mirror-still-syncing case treated as
+#     changed=false; re-attempt next Sunday rather than crash mid-ingest.
 
 on:
   workflow_dispatch:
@@ -26,6 +31,11 @@ on:
         default: 'false'
         type: choice
         options: ['false', 'true']
+  schedule:
+    # Sunday 03:00 UTC. Frequency: weekly check; idempotent if release unchanged.
+    # Captures new OT release within 7 days of EBI mirror availability;
+    # ~89/90 weekly checks are O(1) text-compare no-ops.
+    - cron: '0 3 * * 0'
 
 permissions:
   contents: read
@@ -38,6 +48,10 @@ env:
 
 jobs:
   probe:
+    # PR-OT-1 probe is dev/debug only. Skip on automated schedule to keep
+    # cron run noise minimal; operators trigger manually for OT release
+    # foundation-doc-correction work.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -81,7 +95,7 @@ jobs:
         # PR-OT-3b2/3b3: clinical_* family (clinical_indication / clinical_report /
         # clinical_target) that replaced drug_indication + known_drug in OT 26.03
         # PR-OT-3b4 (this PR): adds `target` to discover OT's native target table
-        # schema. Required for Phase 1.4 target SID stamping infrastructure — OT
+        # schema. Required for Phase 1.4 target SID stamping infrastructure -- OT
         # target carries UniProt accessions in proteinIds STRUCT array, removing
         # the need for an external Ensembl->UniProt bridge. The probe DESCRIBE
         # output is used to write the Phase 1.4-pre SQL extraction (subsequent PR).
@@ -126,7 +140,83 @@ jobs:
           cat /tmp/ot-probe.json >> $GITHUB_STEP_SUMMARY || echo '{"error": "probe did not run"}' >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
+  check-version:
+    # PR-OT-5 Rail 1+2+3: pre-flight version gate. Compares EBI latest
+    # release against R2 cursor's stored release_version. Outputs
+    # `changed=true|false` consumed by ingest job's `if` conditional.
+    # Manual override: if workflow_dispatch.inputs.release_version is
+    # non-empty, bypass comparison + force changed=true (Rail 2 convergence
+    # still holds since ingest writes cursor at end regardless of trigger).
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
+      release: ${{ steps.compare.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install deps
+        run: npm ci
+      - name: Compare EBI vs R2 cursor release (PR-OT-5)
+        id: compare
+        env:
+          MANUAL_RELEASE: ${{ github.event.inputs.release_version }}
+        run: |
+          set -e
+          # Rail 2 manual override branch
+          if [ -n "$MANUAL_RELEASE" ]; then
+            echo "Manual dispatch with release=${MANUAL_RELEASE} -- bypassing version check"
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "release=${MANUAL_RELEASE}" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          # Auto detect EBI latest
+          node scripts/factory/open-targets-probe.js > /tmp/ot-probe.json
+          LATEST=$(node -e "console.log(require('/tmp/ot-probe.json').latest_release)")
+          echo "EBI latest release: ${LATEST}"
+          # Rail 3 defensive upstream-ready probe: ensure drug_molecule Parquet
+          # files actually present (not mid-sync 404 / empty directory)
+          BASE="https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/${LATEST}/output"
+          PARQUET_COUNT=$(curl -sL "${BASE}/drug_molecule/" | grep -cE '(part-[a-z0-9-]+-c000\.snappy\.parquet|[a-z][a-zA-Z0-9_]*\.parquet)' || true)
+          if [ "$PARQUET_COUNT" -eq 0 ]; then
+            echo "::warning::Upstream release ${LATEST} listed but drug_molecule Parquet files not yet present (mirror sync incomplete). Treating as changed=false; retry next Sunday."
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "release=${LATEST}" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "Upstream readiness verified: ${PARQUET_COUNT} Parquet file(s) in drug_molecule directory"
+          # Fetch R2 cursor stored release_version
+          PRIOR_RELEASE=$(node -e "
+            const {S3Client, GetObjectCommand} = require('@aws-sdk/client-s3');
+            const s3 = new S3Client({region:'auto', endpoint:process.env.R2_ENDPOINT, credentials:{accessKeyId:process.env.R2_ACCESS_KEY_ID, secretAccessKey:process.env.R2_SECRET_ACCESS_KEY}});
+            s3.send(new GetObjectCommand({Bucket:process.env.R2_BUCKET, Key:'state/open-targets-cursor.json'})).then(async r => {
+              const text = await new Promise((res, rej) => { let buf=''; r.Body.on('data',c=>buf+=c); r.Body.on('end',()=>res(buf)); r.Body.on('error',rej); });
+              const cursor = JSON.parse(text);
+              console.log(cursor.release_version || '');
+            }).catch(() => console.log(''));
+          ")
+          echo "R2 cursor release_version: ${PRIOR_RELEASE:-<none>}"
+          if [ "$LATEST" = "$PRIOR_RELEASE" ]; then
+            echo "No new release. R2 cursor at ${PRIOR_RELEASE}; skipping ingest (Rail 1 clean success)."
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "Release transition: ${PRIOR_RELEASE:-<none>} -> ${LATEST}. Triggering ingest."
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+          echo "release=${LATEST}" >> $GITHUB_OUTPUT
+      - name: Summary
+        if: always()
+        run: |
+          echo "## PR-OT-5 check-version" >> $GITHUB_STEP_SUMMARY
+          echo "- changed: ${{ steps.compare.outputs.changed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- release: ${{ steps.compare.outputs.release }}" >> $GITHUB_STEP_SUMMARY
+
   ingest:
+    needs: check-version
+    if: needs.check-version.outputs.changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -141,15 +231,9 @@ jobs:
         id: release
         run: |
           set -e
-          INPUT="${{ github.event.inputs.release_version }}"
-          if [ -n "$INPUT" ]; then
-            RELEASE="$INPUT"
-            echo "Using provided release: ${RELEASE}"
-          else
-            node scripts/factory/open-targets-probe.js > /tmp/ot-probe.json
-            RELEASE=$(node -e "console.log(require('/tmp/ot-probe.json').latest_release)")
-            echo "Auto-detected latest release: ${RELEASE}"
-          fi
+          # PR-OT-5: prefer check-version output to avoid re-probing EBI.
+          RELEASE="${{ needs.check-version.outputs.release }}"
+          echo "Using release from check-version: ${RELEASE}"
           echo "release=${RELEASE}" >> $GITHUB_OUTPUT
       - name: Install DuckDB CLI + zstd
         run: |
