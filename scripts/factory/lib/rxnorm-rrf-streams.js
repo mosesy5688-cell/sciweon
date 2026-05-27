@@ -16,7 +16,11 @@ import { normalizeNdcTo11Digit } from './ndc-normalize.js';
 import { buildProductToIngredientsMap } from './rxnorm-rel-projector.js';
 
 export const RXNCONSO_COLUMNS = ['RXCUI', 'LAT', 'TS', 'LUI', 'STT', 'SUI', 'ISPREF', 'RXAUI', 'SAUI', 'SCUI', 'SDUI', 'SAB', 'TTY', 'CODE', 'STR', 'SRL', 'SUPPRESS', 'CVF'];
-export const RXNSAT_COLUMNS = ['RXCUI', 'LUI', 'SUI', 'RXAUI', 'STYPE', 'CODE', 'ATUI', 'SATUI', 'ATN', 'ATV', 'SAB', 'SUPPRESS', 'CVF'];
+// PR-RXN-1 column-order hotfix 2026-05-27: empirical row-dump from run
+// 26506247880 proved actual RXNSAT.RRF order is ... ATN, SAB, ATV, ...
+// (SAB precedes ATV), contradicting the UMLS Metathesaurus MRSAT column
+// doc and pre-empirical Phase 1 research notes. Locked from real data.
+export const RXNSAT_COLUMNS = ['RXCUI', 'LUI', 'SUI', 'RXAUI', 'STYPE', 'CODE', 'ATUI', 'SATUI', 'ATN', 'SAB', 'ATV', 'SUPPRESS', 'CVF'];
 export const RXNREL_COLUMNS = ['RXCUI1', 'RXAUI1', 'STYPE1', 'REL', 'RXCUI2', 'RXAUI2', 'STYPE2', 'RELA', 'RUI', 'SRUI', 'SAB', 'SL', 'DIR', 'RG', 'SUPPRESS', 'CVF'];
 
 function makeRrfParser(columns) {
@@ -101,13 +105,8 @@ export async function loadIngredientAttributes(zip, productToIngredients, droppe
 
     // Diagnostic: distribution of SABs observed on NDC rows, for ops visibility.
     const ndcSabCounts = new Map();
-    let rowDumpRemaining = 5;  // ULTRA-DIAGNOSTIC dump of first N raw row objects
 
     for await (const row of parser) {
-        if (rowDumpRemaining > 0) {
-            console.log(`[RXNORM-HARVEST-RAWDUMP] row=${JSON.stringify(row)}`);
-            rowDumpRemaining--;
-        }
         if (row.SUPPRESS && row.SUPPRESS !== 'N') continue;
         if (row.ATN !== 'UNII' && row.ATN !== 'NDC') continue;
         const rxcui = row.RXCUI;
