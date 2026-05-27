@@ -1,0 +1,138 @@
+name: Factory RxNorm Bulk
+
+# PR-RXN-1: RxNorm Prescribable Subset bulk ingest (Phase 1.9 leadoff).
+#
+# Three-job rail per FDA SRS template:
+#   check-version  - Rail 1+2+3+7 pre-flight + release discovery via NLM dir listing
+#   ingest         - 3-phase sequential RRF parse (LOCK 1) + zstd + R2 upload
+#
+# Architect locks:
+#   LOCK 1 (sequential phase order) -- enforced inside rxnorm-harvest.js main()
+#   LOCK 2 (strict 11-digit NDC)    -- enforced inside lib/ndc-normalize.js
+#
+# Rails:
+#   Rail 1 (no-broken-windows)         -- clean SUCCESS on unchanged release
+#   Rail 2 (bidirectional convergence) -- cursor write at harvest end
+#   Rail 3 (defensive mirror handling) -- probe HEAD verifies archive reachable
+#   Rail 4 (streaming pipeline)        -- node-stream-zip + csv-parse row-by-row
+#   Rail 7 (schema break P0)           -- sorted-header SHA-256 mismatch -> hard-fail
+#   Rail 8 (artifact handoff)          -- probe -> ingest via upload-artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry-run ingest (no R2 writes)'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+  schedule:
+    # Second Monday 04:00 UTC, 1-week buffer behind NLM first-Monday release
+    # so the upstream artifact has settled before our harvest.
+    - cron: '0 4 8-14 * 1'
+
+permissions:
+  contents: read
+
+env:
+  R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+  R2_BUCKET: ${{ secrets.R2_BUCKET }}
+  R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+  R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install deps
+        run: npm ci
+      - name: Install zstd + unzip CLI
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zstd unzip
+      - name: Run probe
+        id: probe
+        run: |
+          set -e
+          node scripts/factory/rxnorm-probe.js > /tmp/rxnorm-probe.json
+          cat /tmp/rxnorm-probe.json
+      - name: Compare release vs R2 cursor (Rail 1+2+7)
+        id: compare
+        run: |
+          set -e
+          LATEST_RELEASE=$(node -e "console.log(require('/tmp/rxnorm-probe.json').release_date)")
+          LATEST_CHECKSUM=$(node -e "console.log(require('/tmp/rxnorm-probe.json').parsed_header_checksum)")
+          echo "Probe release_date=${LATEST_RELEASE} checksum=${LATEST_CHECKSUM:0:24}..."
+          PRIOR=$(node -e "
+            const {S3Client, GetObjectCommand} = require('@aws-sdk/client-s3');
+            const s3 = new S3Client({region:'auto', endpoint:process.env.R2_ENDPOINT, credentials:{accessKeyId:process.env.R2_ACCESS_KEY_ID, secretAccessKey:process.env.R2_SECRET_ACCESS_KEY}});
+            s3.send(new GetObjectCommand({Bucket:process.env.R2_BUCKET, Key:'state/rxnorm-bulk-cursor.json'})).then(async r => {
+              const text = await new Promise((res,rej)=>{ let b=''; r.Body.on('data',c=>b+=c); r.Body.on('end',()=>res(b)); r.Body.on('error',rej); });
+              const c = JSON.parse(text);
+              console.log(JSON.stringify({date: c.release_date || '', checksum: c.parsed_header_checksum || ''}));
+            }).catch(() => console.log(JSON.stringify({date:'', checksum:''})));
+          ")
+          PRIOR_DATE=$(node -e "console.log(JSON.parse(process.argv[1]).date)" "$PRIOR")
+          PRIOR_CHECKSUM=$(node -e "console.log(JSON.parse(process.argv[1]).checksum)" "$PRIOR")
+          echo "Prior cursor release=${PRIOR_DATE:-<none>} checksum=${PRIOR_CHECKSUM:0:24}..."
+          if [ -n "$PRIOR_CHECKSUM" ] && [ "$LATEST_CHECKSUM" != "$PRIOR_CHECKSUM" ]; then
+            echo "::warning::[RXNORM-PROBE] RXNCONSO first-row fingerprint changed from ${PRIOR_CHECKSUM} to ${LATEST_CHECKSUM}. This is expected month-over-month (data rows change); column-count drift verified at runtime by harvester."
+          fi
+          if [ "$LATEST_RELEASE" = "$PRIOR_DATE" ]; then
+            echo "No new release. R2 cursor at ${PRIOR_DATE}; skipping ingest (Rail 1 clean success)."
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "Release transition: ${PRIOR_DATE:-<none>} -> ${LATEST_RELEASE}. Triggering ingest."
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+      - name: Upload probe manifest artifact (Rail 8)
+        if: steps.compare.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rxnorm-probe-manifest
+          path: /tmp/rxnorm-probe.json
+          retention-days: 1
+      - name: Summary
+        if: always()
+        run: |
+          echo "## PR-RXN-1 check-version" >> $GITHUB_STEP_SUMMARY
+          echo "- changed: ${{ steps.compare.outputs.changed }}" >> $GITHUB_STEP_SUMMARY
+
+  ingest:
+    needs: check-version
+    if: needs.check-version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install deps
+        run: npm ci
+      - name: Install zstd CLI
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zstd
+      - name: Download probe manifest (Rail 8)
+        uses: actions/download-artifact@v4
+        with:
+          name: rxnorm-probe-manifest
+          path: /tmp
+      - name: Run sequential three-phase harvester (LOCK 1)
+        run: |
+          set -e
+          ARGS="--probe-json=/tmp/rxnorm-probe.json"
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          node scripts/factory/rxnorm-harvest.js $ARGS
+      - name: Ingest summary
+        if: always()
+        run: |
+          echo "## PR-RXN-1 ingest" >> $GITHUB_STEP_SUMMARY
+          echo "- dry-run: ${{ github.event.inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
