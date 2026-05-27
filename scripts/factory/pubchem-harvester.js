@@ -77,12 +77,25 @@ async function processOneCid(cid, state) {
         return;
     }
 
-    // gate() throws in REJECT mode (default) and returns {passed: true} in
-    // WARN mode. There is no {passed: false} branch — the legacy
-    // `if (!result.passed) return` guard was unreachable dead code and was
-    // removed in V0.5.6 to avoid keeping a silent-loss template in the
-    // harvester (Pattern A defense).
+    // gate() in REJECT mode:
+    //   - throws on primary violations (chain halts; bad primary data
+    //     must NEVER pollute production R2).
+    //   - returns {passed: false, excluded: true, exclusion_reason} on
+    //     scope-tier violations (intentional out-of-domain exclusions
+    //     like macromolecules > 10000 Da). Caller skips + telemetry-buckets.
+    //     Added 2026-05-27 PR-HARVEST-SCOPE-TIER after F1 run 26512200020
+    //     halted the entire 5000-CID range on a single CID:111615 macromolecule
+    //     (18657 Da) -- batch of 1600 successful records lost to halt-before-commit.
+    //   - returns {passed: true} otherwise (derived-only warnings allowed).
     const result = gate(entity, COMPOUND_SCHEMA, `CID:${cid}`);
+    if (result.excluded) {
+        state.excludedOutOfScope.push({
+            cid,
+            reason: result.exclusion_reason,
+            exclusions: result.exclusions?.map(e => ({ path: e.path, error: e.error })) ?? [],
+        });
+        return;
+    }
     state.entities.push(entity);
     state.valid++;
     if (result.warnings) {
@@ -124,6 +137,7 @@ async function main() {
         noPropertyRecord: [],
         retrySuccesses: [],
         retryFailures: [],
+        excludedOutOfScope: [],  // PR-HARVEST-SCOPE-TIER: scope-tier exclusions (macromolecules etc.)
     };
 
     if (RETRY_CIDS.length > 0) {
@@ -145,7 +159,7 @@ async function main() {
     for (let cid = START_CID; cid < START_CID + LIMIT; cid++) {
         await processOneCid(cid, state);
         if (state.attempted % 50 === 0) {
-            console.log(`[HARVESTER] Progress: ${state.attempted} attempted | ${state.fetched} fetched | ${state.valid} valid | ${state.warned} warned | ${state.failedFetches.length} fetch_failed | ${state.noPropertyRecord.length} no_record`);
+            console.log(`[HARVESTER] Progress: ${state.attempted} attempted | ${state.fetched} fetched | ${state.valid} valid | ${state.warned} warned | ${state.excludedOutOfScope.length} excluded_scope | ${state.failedFetches.length} fetch_failed | ${state.noPropertyRecord.length} no_record`);
         }
         await sleep(BATCH_DELAY_MS);
     }
@@ -178,16 +192,18 @@ async function main() {
             warned: state.warned,
             fetch_failed_count: state.failedFetches.length,
             no_property_record_count: state.noPropertyRecord.length,
+            excluded_out_of_scope_count: state.excludedOutOfScope.length,
         },
         failed_fetches: state.failedFetches,
         no_property_record_cids: state.noPropertyRecord,
+        excluded_out_of_scope: state.excludedOutOfScope,
         retry_successes: state.retrySuccesses,
         retry_failures: state.retryFailures,
     };
     const manifestFile = path.join(OUTPUT_DIR, `harvest-manifest-${rangeTag}.json`);
     await fs.writeFile(manifestFile, JSON.stringify(manifest, null, 2));
 
-    console.log(`[HARVESTER] ✅ Complete: ${state.attempted} attempted | ${state.fetched} fetched | ${state.valid} valid | ${state.warned} warned | ${state.failedFetches.length} fetch_failed | ${state.noPropertyRecord.length} no_record`);
+    console.log(`[HARVESTER] Complete: ${state.attempted} attempted | ${state.fetched} fetched | ${state.valid} valid | ${state.warned} warned | ${state.excludedOutOfScope.length} excluded_scope | ${state.failedFetches.length} fetch_failed | ${state.noPropertyRecord.length} no_record`);
     console.log(`[HARVESTER] Output:   ${outputFile} (${state.entities.length} entities)`);
     console.log(`[HARVESTER] Manifest: ${manifestFile}`);
 

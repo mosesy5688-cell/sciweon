@@ -24,14 +24,45 @@ export const DERIVED_PATH_PATTERNS = [
     /\.is_negative_outcome(\.|\[|$)/,     // trial computed
 ];
 
-export function classifyViolations(errors, derivedPatterns = DERIVED_PATH_PATTERNS) {
+// 2026-05-27 (PR-HARVEST-SCOPE-TIER): scope violations are intentional
+// out-of-domain exclusions, not data quality regressions. They should
+// SKIP the record + telemetry-bucket the exclusion, NOT halt the chain.
+//
+// Each rule pairs a path pattern (which field) with an error pattern (which
+// violation kind). Path-only match would over-trigger (e.g. molecular_weight.value
+// missing-required should still be a primary violation; only > max triggers
+// scope-exclusion semantics).
+//
+// Triggered by F1 run 26512200020 PubChem Harvest cron halt on CID:111615
+// molecular_weight.value=18657 > max 10000 -- a known macromolecule outside
+// Sciweon's small-molecule drug-graph scope, not a data quality regression.
+export const SCOPE_VIOLATION_RULES = [
+    {
+        pathPattern: /\.molecular_weight\.value$/,
+        errorPattern: /^[\d.]+ > max \d/,
+        exclusion_reason: 'macromolecule_out_of_scope',
+    },
+];
+
+export function classifyViolations(
+    errors,
+    derivedPatterns = DERIVED_PATH_PATTERNS,
+    scopeRules = SCOPE_VIOLATION_RULES,
+) {
     const primary = [];
     const derived = [];
-    if (!Array.isArray(errors)) return { primary, derived };
+    const scope = [];
+    if (!Array.isArray(errors)) return { primary, derived, scope };
     for (const err of errors) {
         const path = err?.path ?? '';
+        const errStr = err?.error ?? '';
+        const scopeHit = scopeRules.find(r => r.pathPattern.test(path) && r.errorPattern.test(errStr));
+        if (scopeHit) {
+            scope.push({ ...err, exclusion_reason: scopeHit.exclusion_reason });
+            continue;
+        }
         const isDerived = derivedPatterns.some(p => p.test(path));
         (isDerived ? derived : primary).push(err);
     }
-    return { primary, derived };
+    return { primary, derived, scope };
 }
