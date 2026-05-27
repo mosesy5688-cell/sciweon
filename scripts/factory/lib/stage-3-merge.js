@@ -71,6 +71,11 @@ export async function executeCumulativeMerge(runId) {
                             console.log(`    deep_merge_sample (first ${stats.merged_deep_sample.length} CIDs that gained preserved fields): ${stats.merged_deep_sample.join(', ')}`);
                         }
                     }
+                    if (typeof stats.prev_bootstrap_count === 'number') {
+                        // PR-FDA-SRS-3c telemetry: prev-load mass-backfill (Option E unichem_matched).
+                        const sampleStr = Array.isArray(stats.prev_bootstrap_sample) ? stats.prev_bootstrap_sample.slice(0, 5).join(',') : '';
+                        console.log(`    prev_bootstrap: count=${stats.prev_bootstrap_count} sample=${sampleStr}`);
+                    }
                 }
                 console.log(`[STAGE-3] Cumulative records across all files: ${mergeResult.totalMergedRecords}`);
                 return;

@@ -217,4 +217,16 @@ describe('mergeRecords backward compat (non-compound files)', () => {
         expect(merged[0].sid_s).toBe('abc123');  // preserved
         expect(stats.merged_deep_total).toBe(1);
     });
+
+    it('ANTI-REGRESSION: deepMergeCompound no longer mutates unichem_matched (PR-FDA-SRS-3c divorce)', () => {
+        // After PR-FDA-SRS-3c, prev-load mass-backfill is the sole owner of
+        // the unichem_matched flag (via bootstrapPrevRecords in the merger
+        // prev-load boundary). deepMergeCompound must NOT touch this field;
+        // any future drift back into intersection-scope mutation surfaces here.
+        const prev = { id: 'sciweon::compound::CID:DIVORCE', external_ids: { sources: ['unichem'], unii: '8MJB9HSC8Q' } };
+        const current = { id: 'sciweon::compound::CID:DIVORCE', external_ids: { sources: ['unichem'] } };
+        const merged = deepMergeCompound(prev, current);
+        expect(merged.external_ids.unichem_matched).toBeUndefined();
+        expect(prev.external_ids.unichem_matched).toBeUndefined();
+    });
 });

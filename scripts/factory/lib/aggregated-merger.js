@@ -80,7 +80,7 @@ const KEY_FN_PER_FILE = {
 
 // PR-CORE-MERGE-LEAK (cycle 23): per-file deep-merge strategy. See
 // aggregated-deep-merge.js for the deepMergeCompound contract + rationale.
-import { deepMergeCompound } from './aggregated-deep-merge.js';
+import { deepMergeCompound, bootstrapPrevRecords } from './aggregated-deep-merge.js';
 
 const MERGE_STRATEGY_PER_FILE = Object.freeze({
     'compounds-enriched.jsonl': deepMergeCompound,
@@ -203,11 +203,25 @@ export async function mergeLocalAggregatedWithPrevious(previousBuffers) {
             : (typeof prevRaw === 'string' ? prevRaw : '');
         const previousRecords = parseJsonl(prevText);
 
+        // PR-FDA-SRS-3c: prev-load boundary mass-backfill for compounds.
+        // Runs on the FULL prev array (including prev-only records that never
+        // enter deepMergeCompound). The misplaced PR-FDA-SRS-3 call inside
+        // deepMergeCompound silent-skipped 28,097 prev-only records.
+        let bootstrapStats = null;
+        if (fname === 'compounds-enriched.jsonl') {
+            bootstrapStats = bootstrapPrevRecords(previousRecords);
+        }
+
         // TODO V0.6+: at ~200K cumulative compounds this in-memory merge
         // hits GHA runner GC pressure; replace with streaming chunk merge
         // when total cumulative compound count crosses 100K.
         const strategyFn = MERGE_STRATEGY_PER_FILE[fname] || null;
         const { merged, stats } = mergeRecords(currentRecords, previousRecords, keyFn, strategyFn);
+
+        if (bootstrapStats) {
+            stats.prev_bootstrap_count = bootstrapStats.count;
+            stats.prev_bootstrap_sample = bootstrapStats.sample;
+        }
 
         await writeLocalFile(fname, serializeJsonl(merged));
         perFile[fname] = stats;
