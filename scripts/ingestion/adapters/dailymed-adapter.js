@@ -15,20 +15,24 @@ import { scoreDataPoint } from '../../factory/lib/confidence-scorer.js';
 import {
     sleep, todayIso, bootstrapSince,
     normalizeDailyMedDate, buildNullSections,
-    fetchJson, fetchSections, listSplPage,
+    fetchJson, fetchSections, fetchNdcs, listSplPage,
     DAILYMED_BASE, DELAY_MS, LIST_PAGE_SIZE,
 } from './dailymed-fetcher.js';
 
 export const supportsIncremental     = true;
 export const fallbackFullRefreshDays = 90;
 
-export function normalize(meta, sections) {
+export function normalize(meta, sections, ndcs) {
     if (!meta?.setid) return null;
     const timestamp = new Date().toISOString();
     const rxcuiRaw = meta.rxcui;
     const rxcui = Array.isArray(rxcuiRaw)
         ? rxcuiRaw.map(String).filter(Boolean)
         : rxcuiRaw ? [String(rxcuiRaw)] : [];
+    // PR-RXN-1b-pre: ndcs parameter sourced from fetchNdcs(setid). Always
+    // an array; null from fetcher (network failure / 429-exhausted retries)
+    // collapses to []. Defends consumer-side from TypeError on undefined.
+    const normalizedNdcs = Array.isArray(ndcs) ? ndcs.map(String).filter(Boolean) : [];
     const resolvedSections = sections ?? buildNullSections();
     return {
         id: `sciweon::drug_label::setid::${meta.setid}`,
@@ -37,6 +41,7 @@ export function normalize(meta, sections) {
         title: (meta.title ?? '').slice(0, 500),
         label_type: meta.label_type ?? null,
         rxcui,
+        ndcs: normalizedNdcs,
         application_numbers: Array.isArray(meta.application_numbers)
             ? meta.application_numbers.map(String).filter(Boolean)
             : [],
@@ -155,7 +160,13 @@ export async function fetchIncremental(sinceToken, limit = Infinity) {
                 const sections = await fetchSections(setid);
                 await sleep(DELAY_MS);
 
-                const entity = normalize(meta, sections);
+                // PR-RXN-1b-pre: hydrate NDC array per setid (separate endpoint).
+                // fetchNdcs handles 429 / 5xx retry + exponential backoff; null
+                // result on exhausted retries collapses to [] in normalize().
+                const ndcs = await fetchNdcs(setid);
+                await sleep(DELAY_MS);
+
+                const entity = normalize(meta, sections, ndcs);
                 if (!entity) { skipped++; continue; }
 
                 records.push(entity);

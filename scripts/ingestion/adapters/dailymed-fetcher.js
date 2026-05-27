@@ -125,6 +125,64 @@ export async function fetchLabelMeta(setid) {
     return data.data ?? null;
 }
 
+// PR-RXN-1b-pre: per-setid NDC retrieval via dedicated NDC endpoint.
+// Endpoint: /v2/spls/{setid}/ndcs.json
+// Response shape (verified 2026-05-28 via WebFetch probe):
+//   { data: { ndcs: [{ ndc: "0002-0152-01" }, ...] | [] }, metadata: {...} }
+//   - 0-element ndcs[] arrays are common (biologic/special labels).
+// Returns deduplicated string array of NDC values (HIPAA-format-agnostic at
+// fetcher layer; normalization deferred to ndc-normalize.js at consumer).
+//
+// Rate-limit defense (architect 2026-05-28 spec): respects existing DELAY_MS
+// (350ms ~ 2.8 req/sec, well under NIH 10 req/sec safe envelope). On 429 or
+// 5xx, retry with exponential backoff + jitter (1s / 2s / 4s base + +/-25%
+// jitter), max 3 retries. Final failure surfaces as null + structured warn
+// log (caller buckets to telemetry, never throws -- per
+// [[scope_vs_quality_validation_segregation]] consumer-side fail-soft).
+export async function fetchNdcs(setid) {
+    const url = `${DAILYMED_BASE}/spls/${encodeURIComponent(setid)}/ndcs.json`;
+    const baseBackoffMs = [1000, 2000, 4000];
+    for (let attempt = 0; attempt <= baseBackoffMs.length; attempt++) {
+        try {
+            const res = await fetch(url, {
+                headers: { 'User-Agent': 'Sciweon/0.5 (+https://sciweon.com; scientific data infrastructure)' },
+                signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+            });
+            if (res.status === 429 || (res.status >= 500 && res.status < 600)) {
+                if (attempt < baseBackoffMs.length) {
+                    const jitter = (Math.random() * 0.5 - 0.25) * baseBackoffMs[attempt];
+                    const wait = Math.max(0, baseBackoffMs[attempt] + jitter);
+                    console.warn(`[DAILYMED-NDC] ${setid}: HTTP ${res.status}; retry ${attempt + 1}/3 in ${Math.round(wait)}ms`);
+                    await sleep(wait);
+                    continue;
+                }
+                console.warn(`[DAILYMED-NDC] ${setid}: HTTP ${res.status} after ${attempt} retries; giving up`);
+                return null;
+            }
+            if (!res.ok) {
+                console.warn(`[DAILYMED-NDC] ${setid}: HTTP ${res.status} (non-retryable)`);
+                return null;
+            }
+            const data = await res.json();
+            const ndcs = Array.isArray(data?.data?.ndcs)
+                ? data.data.ndcs.map(r => typeof r === 'string' ? r : r?.ndc).filter(Boolean)
+                : [];
+            return [...new Set(ndcs)];
+        } catch (e) {
+            if (attempt < baseBackoffMs.length) {
+                const jitter = (Math.random() * 0.5 - 0.25) * baseBackoffMs[attempt];
+                const wait = Math.max(0, baseBackoffMs[attempt] + jitter);
+                console.warn(`[DAILYMED-NDC] ${setid}: ${e.message}; retry ${attempt + 1}/3 in ${Math.round(wait)}ms`);
+                await sleep(wait);
+                continue;
+            }
+            console.warn(`[DAILYMED-NDC] ${setid}: ${e.message} after ${attempt} retries; giving up`);
+            return null;
+        }
+    }
+    return null;
+}
+
 // Cycle 21 PR #7 — detect ZIP magic (PK\x03\x04) so a future endpoint
 // drift surfaces as an explicit error instead of EOCD parser noise.
 // HTML/empty responses (the symptom of the /archives/{setid}.zip 302) get

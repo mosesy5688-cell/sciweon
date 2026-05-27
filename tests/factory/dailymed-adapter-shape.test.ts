@@ -26,6 +26,7 @@ vi.mock('../../scripts/ingestion/adapters/dailymed-fetcher.js', async (importOri
         listSplPage: vi.fn(),
         fetchLabelMeta: vi.fn(),
         fetchSections: vi.fn(),
+        fetchNdcs: vi.fn(),
         sleep: vi.fn(async () => {}),
     };
 });
@@ -117,6 +118,9 @@ describe('dailymed fetchIncremental — meta from list item (no fetchLabelMeta)'
         // Stage-A: rxcui/application_numbers/dosage_forms intentionally empty
         // (Stage-B will extract from SPL XML in cycle 22)
         expect(records[0].rxcui).toEqual([]);
+        // PR-RXN-1b-pre: ndcs hydrated via fetchNdcs(setid). Mock returns
+        // null by default (vi.fn() unbound) -> normalize collapses to [].
+        expect(records[0].ndcs).toEqual([]);
         expect(records[0].application_numbers).toEqual([]);
         expect(records[0].dosage_forms).toEqual([]);
         // sections still come from ZIP — C2-7's adverse_reactions text preserved
@@ -176,4 +180,7 @@ describe('dailymed archive URL + ZIP magic guard', () => {
 // Cycle 21 PR #8 incremental-slim cases moved to
 // dailymed-adapter-incremental.test.ts per constitution Art 5.1
 // (≤250 lines/file).
+//
+// PR-RXN-1b-pre NDC hydration cases moved to dailymed-adapter-ndc.test.ts
+// for the same reason (this file was at the 250-line ceiling).
 
