@@ -27,6 +27,12 @@ on:
         default: 'false'
         type: choice
         options: ['false', 'true']
+      force_reingest:
+        description: 'Force re-ingest of same release (bypasses Rail 1 no-op gate; for debug + degenerate-cursor recovery)'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
   schedule:
     # Second Monday 04:00 UTC, 1-week buffer behind NLM first-Monday release
     # so the upstream artifact has settled before our harvest.
@@ -85,7 +91,10 @@ jobs:
           if [ -n "$PRIOR_CHECKSUM" ] && [ "$LATEST_CHECKSUM" != "$PRIOR_CHECKSUM" ]; then
             echo "::warning::[RXNORM-PROBE] RXNCONSO first-row fingerprint changed from ${PRIOR_CHECKSUM} to ${LATEST_CHECKSUM}. This is expected month-over-month (data rows change); column-count drift verified at runtime by harvester."
           fi
-          if [ "$LATEST_RELEASE" = "$PRIOR_DATE" ]; then
+          if [ "${{ github.event.inputs.force_reingest }}" = "true" ]; then
+            echo "force_reingest=true; bypassing Rail 1 no-op gate."
+            echo "changed=true" >> $GITHUB_OUTPUT
+          elif [ "$LATEST_RELEASE" = "$PRIOR_DATE" ]; then
             echo "No new release. R2 cursor at ${PRIOR_DATE}; skipping ingest (Rail 1 clean success)."
             echo "changed=false" >> $GITHUB_OUTPUT
           else
