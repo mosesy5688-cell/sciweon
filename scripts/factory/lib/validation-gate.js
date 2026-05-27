@@ -100,22 +100,39 @@ export function gate(entity, schema, context = 'entity') {
         return { passed: true, entity, warnings: errors };
     }
 
-    // REJECT mode (V0.5.7 H2b-5): partition violations by tier. Primary-source
-    // failures (identifiers, raw upstream fields, provenance) still halt the
-    // chain — bad primary data must NEVER pollute production R2. Derived-field
-    // failures (confidence, mentioned_*, stats, is_negative_outcome) are
-    // Sciweon-computed and become warnings: an internal scoring drift should
-    // not abort an entire stage when the upstream data is intact.
-    const { primary, derived } = classifyViolations(errors);
-    if (primary.length === 0) {
+    // REJECT mode: partition violations by tier.
+    //
+    // Primary-source failures (identifiers, raw upstream fields, provenance):
+    //   halt the chain. Bad primary data must NEVER pollute production R2.
+    //
+    // Derived-field failures (confidence, mentioned_*, stats, is_negative_outcome):
+    //   Sciweon-computed; become warnings. Internal scoring drift should not
+    //   abort an entire stage when upstream data is intact. (V0.5.7 H2b-5)
+    //
+    // Scope violations (molecular_weight > 10000 etc.): intentional out-of-domain
+    // exclusions, NOT data quality regressions. Return non-passed + excluded so
+    // caller skips the record + telemetry-buckets the exclusion. Do NOT halt.
+    // (PR-HARVEST-SCOPE-TIER 2026-05-27, F1 run 26512200020 CID:111615 halt)
+    const { primary, derived, scope } = classifyViolations(errors);
+    if (primary.length > 0) {
+        const detail = primary.slice(0, 10).map(e => `  - ${e.path}: ${e.error}`).join('\n');
+        const truncated = primary.length > 10 ? `\n  ... (${primary.length - 10} more)` : '';
+        const derivedNote = derived.length > 0 ? `\n  (+ ${derived.length} derived-field warnings suppressed)` : '';
+        const scopeNote = scope.length > 0 ? `\n  (+ ${scope.length} scope-exclusion violations co-present; halt prioritizes primary)` : '';
+        throw new Error(
+            `[VALIDATION] ${context}: ${primary.length} primary violations — chain halted (REJECT mode)\n${detail}${truncated}${derivedNote}${scopeNote}`
+        );
+    }
+    if (scope.length > 0) {
+        const reason = scope[0].exclusion_reason ?? 'out_of_scope';
+        const summary = scope.map(s => `${s.path}: ${s.error}`).slice(0, 3).join(' | ');
+        console.warn(`[VALIDATION] ${context}: SCOPE EXCLUSION (${reason}) -- ${summary}${scope.length > 3 ? ` (+${scope.length - 3} more)` : ''}`);
+        return { passed: false, entity, excluded: true, exclusion_reason: reason, exclusions: scope, warnings: derived };
+    }
+    // Derived-only or fully clean.
+    if (derived.length > 0) {
         console.warn(`[VALIDATION] ${context}: ${derived.length} derived-field warnings (REJECT mode, accepting)`);
         for (const e of derived.slice(0, 5)) console.warn(`  - [derived] ${e.path}: ${e.error}`);
-        return { passed: true, entity, warnings: derived };
     }
-    const detail = primary.slice(0, 10).map(e => `  - ${e.path}: ${e.error}`).join('\n');
-    const truncated = primary.length > 10 ? `\n  ... (${primary.length - 10} more)` : '';
-    const derivedNote = derived.length > 0 ? `\n  (+ ${derived.length} derived-field warnings suppressed)` : '';
-    throw new Error(
-        `[VALIDATION] ${context}: ${primary.length} primary violations — chain halted (REJECT mode)\n${detail}${truncated}${derivedNote}`
-    );
+    return { passed: true, entity, warnings: derived };
 }

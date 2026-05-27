@@ -14,6 +14,7 @@ import { describe, it, expect } from 'vitest';
 import {
     classifyViolations,
     DERIVED_PATH_PATTERNS,
+    SCOPE_VIOLATION_RULES,
 } from '../../scripts/factory/lib/schema-tier.js';
 
 describe('classifyViolations', () => {
@@ -21,11 +22,12 @@ describe('classifyViolations', () => {
         const r = classifyViolations([]);
         expect(r.primary).toEqual([]);
         expect(r.derived).toEqual([]);
+        expect(r.scope).toEqual([]);
     });
 
     it('non-array input -> empty partitions (no crash)', () => {
-        expect(classifyViolations(null)).toEqual({ primary: [], derived: [] });
-        expect(classifyViolations(undefined)).toEqual({ primary: [], derived: [] });
+        expect(classifyViolations(null)).toEqual({ primary: [], derived: [], scope: [] });
+        expect(classifyViolations(undefined)).toEqual({ primary: [], derived: [], scope: [] });
     });
 
     it('single primary violation goes to primary', () => {
@@ -94,5 +96,77 @@ describe('classifyViolations', () => {
         expect(Array.isArray(DERIVED_PATH_PATTERNS)).toBe(true);
         expect(DERIVED_PATH_PATTERNS.length).toBeGreaterThan(0);
         for (const p of DERIVED_PATH_PATTERNS) expect(p).toBeInstanceOf(RegExp);
+    });
+});
+
+describe('classifyViolations -- scope tier (PR-HARVEST-SCOPE-TIER)', () => {
+    it('molecular_weight > max routes to scope bucket with exclusion_reason', () => {
+        const errors = [{
+            path: 'CID:111615.molecular_weight.value',
+            error: '18657 > max 10000',
+        }];
+        const r = classifyViolations(errors);
+        expect(r.scope).toHaveLength(1);
+        expect(r.primary).toHaveLength(0);
+        expect(r.derived).toHaveLength(0);
+        expect(r.scope[0].exclusion_reason).toBe('macromolecule_out_of_scope');
+        expect(r.scope[0].path).toBe('CID:111615.molecular_weight.value');
+    });
+
+    it('molecular_weight required-missing stays primary (not scope)', () => {
+        // Scope rule requires both path AND error pattern. A required-missing
+        // error is a real data quality issue, not an out-of-scope macromolecule.
+        const errors = [{
+            path: 'CID:42.molecular_weight.value',
+            error: 'required field missing',
+        }];
+        const r = classifyViolations(errors);
+        expect(r.primary).toHaveLength(1);
+        expect(r.scope).toHaveLength(0);
+    });
+
+    it('molecular_weight at exact max boundary does not trigger scope', () => {
+        // No violation produced at the boundary; nothing reaches the classifier.
+        // But if some other rule emitted a non-scope error on the path it stays primary.
+        const errors = [{
+            path: 'CID:42.molecular_weight.value',
+            error: 'expected finite number',
+        }];
+        const r = classifyViolations(errors);
+        expect(r.primary).toHaveLength(1);
+        expect(r.scope).toHaveLength(0);
+    });
+
+    it('ANTI-REGRESSION: mixed primary + scope -- scope is captured separately', () => {
+        const errors = [
+            { path: 'CID:99.inchi_key', error: 'pattern mismatch' },
+            { path: 'CID:99.molecular_weight.value', error: '15000 > max 10000' },
+        ];
+        const r = classifyViolations(errors);
+        expect(r.primary).toHaveLength(1);
+        expect(r.scope).toHaveLength(1);
+        expect(r.primary[0].path).toBe('CID:99.inchi_key');
+    });
+
+    it('custom scopeRules override default for tests / future scope tiers', () => {
+        const errors = [{ path: 'X.foo', error: '5 > max 1' }];
+        const customRules = [{
+            pathPattern: /\.foo$/,
+            errorPattern: /> max/,
+            exclusion_reason: 'custom_scope',
+        }];
+        const r = classifyViolations(errors, undefined, customRules);
+        expect(r.scope).toHaveLength(1);
+        expect(r.scope[0].exclusion_reason).toBe('custom_scope');
+    });
+
+    it('SCOPE_VIOLATION_RULES is a non-empty exported array', () => {
+        expect(Array.isArray(SCOPE_VIOLATION_RULES)).toBe(true);
+        expect(SCOPE_VIOLATION_RULES.length).toBeGreaterThan(0);
+        for (const rule of SCOPE_VIOLATION_RULES) {
+            expect(rule.pathPattern).toBeInstanceOf(RegExp);
+            expect(rule.errorPattern).toBeInstanceOf(RegExp);
+            expect(typeof rule.exclusion_reason).toBe('string');
+        }
     });
 });
