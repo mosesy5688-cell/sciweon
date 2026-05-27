@@ -202,7 +202,7 @@ async function main() {
 
     // PR-CORE-MERGE-LEAK pre-upload invariant guard (hard-fails on unichem regression).
     console.log('\n[STAGE-3] === Pre-upload invariant guard ===');
-    await enforceCompletenessInvariant({ localCompoundsPath: path.join('./output/linked', 'compounds-enriched.jsonl'), label: '[STAGE-3 INVARIANT]' });
+    await enforceCompletenessInvariant({ localCompoundsPath: path.join('./output/linked', 'compounds-enriched.jsonl'), runId, label: '[STAGE-3 INVARIANT]' });
 
     console.log('\n[STAGE-3] === Upload aggregated bundle to R2 ===');
     try {
