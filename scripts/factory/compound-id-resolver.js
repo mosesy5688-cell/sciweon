@@ -80,8 +80,39 @@ export async function enrichOne(record) {
         if (k === 'chembl_id' || k === 'pubchem_cid') continue; // already on entity
         if (external[k] == null) external[k] = v;
     }
+    // PR-FDA-SRS-2c Option E (architect V6 lock): explicit provenance flag.
+    // Set ONLY when UniChem REST API returned non-null xrefs (i.e., adapter
+    // actually got data from the source). Decouples Layer 3 unichem validator
+    // from external_ids.unii which FDA SRS now also writes -- prevents
+    // false-credit metric pollution.
+    external.unichem_matched = true;
     record.external_ids = external;
     return record;
+}
+
+// PR-FDA-SRS-2c bootstrap idempotency: at main() entry, auto-stamp
+// unichem_matched=true on all historical records that already have
+// sources includes 'unichem' AND unii non-null. These records were
+// previously enriched by UniChem (UNII is exclusively UniChem-sourced
+// per cont 43 forensic UNII-only count = 0); the flag backfill avoids
+// re-running 84K historical fetchByInchiKey calls. Returns backfill count.
+//
+// One-time idempotent: subsequent runs find the flag already set + skip.
+// Architect V6 spec: false-positives possible only on records FDA SRS
+// has touched after #168 ship (~875 records); negligible vs 32K legit
+// historical UniChem hits.
+export function bootstrapUnichemMatchedFlag(compounds) {
+    let backfilled = 0;
+    for (const rec of compounds) {
+        const ext = rec?.external_ids;
+        if (!ext) continue;
+        if (ext.unichem_matched === true) continue;
+        if (Array.isArray(ext.sources) && ext.sources.includes('unichem') && ext.unii != null) {
+            ext.unichem_matched = true;
+            backfilled++;
+        }
+    }
+    return backfilled;
 }
 
 async function main() {
@@ -90,6 +121,11 @@ async function main() {
     const file = path.join(DATA_DIR, 'compounds-enriched.jsonl');
     const compounds = await loadJsonl(file);
     console.log(`[ID-RESOLVER] Loaded ${compounds.length} compounds`);
+
+    // PR-FDA-SRS-2c one-time bootstrap: backfill unichem_matched on existing
+    // records with prior UniChem evidence. Subsequent cycles skip already-flagged.
+    const bootstrapped = bootstrapUnichemMatchedFlag(compounds);
+    if (bootstrapped > 0) console.log(`[ID-RESOLVER] Bootstrap backfilled unichem_matched=true on ${bootstrapped} historical records (Option E PR-FDA-SRS-2c)`);
 
     const eligible = compounds.filter(isEligible);
     console.log(`[ID-RESOLVER] Eligible (inchi_key present, not yet UniChem-stamped): ${eligible.length}`);
