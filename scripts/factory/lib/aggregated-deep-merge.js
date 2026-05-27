@@ -38,32 +38,43 @@ export function makeDeepMergeCounters() {
         unionedSources: 0,
         preservedStructuralFields: 0,
         preservedF3Fields: 0,
-        bootstrappedUnichemMatched: 0,
         sample: [],
     };
 }
 
-// PR-FDA-SRS-3 mass bootstrap (architect V6 spec 2026-05-27): historical
-// records with sources includes 'unichem' AND unii !== null but no
-// unichem_matched flag get auto-backfilled at F3 cumulative-merge boundary.
-// Replaces the architecturally-rejected per-script bootstrap (PR-FDA-SRS-2d
-// SRP violation) with deep-merge-layer one-shot O(N) inline alignment.
-// Idempotent: records already flagged skip; runs once per cycle on prev
-// only (current records are fresh-stamped by compound-id-resolver enrichOne).
-function bootstrapUnichemMatchedOnPrev(prev, counters) {
-    if (!prev?.external_ids) return;
-    const ext = prev.external_ids;
-    if (ext.unichem_matched === true) return;
-    if (!Array.isArray(ext.sources) || !ext.sources.includes('unichem')) return;
-    if (ext.unii == null) return;
-    ext.unichem_matched = true;
-    if (counters) counters.bootstrappedUnichemMatched++;
+/**
+ * PR-FDA-SRS-3c mass-bootstrap historical prev records to align with
+ * Option E schema (external_ids.unichem_matched = true). Operates at the
+ * true prev-load boundary with O(N) in-place scalar mutation.
+ *
+ * Decoupled from deepMergeCompound, which has intersection semantics
+ * (per-record cur AND prev) and a prev-only early-return guard that
+ * silent-skipped 28,097 prev-only records in PR-FDA-SRS-3 (F3 run
+ * 26490754894). This function MUST flag every eligible prev record
+ * regardless of whether a cur-cycle counterpart exists.
+ *
+ * Idempotent: records already flagged are skipped.
+ */
+export function bootstrapPrevRecords(prevRecords) {
+    if (!Array.isArray(prevRecords)) return { count: 0, sample: [] };
+    let count = 0;
+    const sample = [];
+    for (const rec of prevRecords) {
+        const ext = rec?.external_ids;
+        if (!ext) continue;
+        if (ext.unichem_matched === true) continue;
+        if (!Array.isArray(ext.sources) || !ext.sources.includes('unichem')) continue;
+        if (ext.unii == null) continue;
+        ext.unichem_matched = true;
+        count++;
+        if (sample.length < 10) sample.push(rec.id);
+    }
+    return { count, sample };
 }
 
 export function deepMergeCompound(prev, current, counters) {
     if (!prev) return current;
     if (!current) return prev;
-    bootstrapUnichemMatchedOnPrev(prev, counters);
     const merged = { ...prev, ...current };
     counters && counters.total++;
 
