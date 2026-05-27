@@ -11,45 +11,56 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { countFullyEnrichedUnichem } from '../../scripts/factory/lib/aggregated-invariant.js';
+import { countFullyEnrichedUnii, countFullyEnrichedUnichem } from '../../scripts/factory/lib/aggregated-invariant.js';
 
-describe('countFullyEnrichedUnichem (matches source-required-fields.unichem predicate)', () => {
-    it('counts records with both external_ids.unii AND sources contains "unichem"', () => {
+describe('countFullyEnrichedUnii (PR-FDA-SRS-3 universal UNII guard)', () => {
+    it('counts records with external_ids.unii non-null regardless of source', () => {
         const records = [
             { external_ids: { unii: 'A', sources: ['unichem'] } },        // counted
-            { external_ids: { unii: 'B', sources: ['unichem', 'faers'] } }, // counted
-            { external_ids: { unii: 'C', sources: ['rxnorm'] } },          // no unichem
-            { external_ids: { unii: null, sources: ['unichem'] } },        // no unii
-            { external_ids: { sources: ['unichem'] } },                    // missing unii field
-            { external_ids: { unii: 'D' } },                               // no sources array
-            { external_ids: { unii: '', sources: ['unichem'] } },          // empty-string unii
-            {},                                                            // empty record
-            { external_ids: null },                                        // null external_ids
+            { external_ids: { unii: 'B', sources: ['unichem', 'fda_srs'] } }, // counted
+            { external_ids: { unii: 'C', sources: ['fda_srs'] } },         // counted (source-agnostic)
+            { external_ids: { unii: 'D' } },                               // counted (no sources requirement)
+            { external_ids: { unii: null, sources: ['unichem'] } },        // not counted (no unii)
+            { external_ids: { sources: ['unichem'] } },                    // not counted (no unii)
+            { external_ids: { unii: '', sources: ['unichem'] } },          // not counted (empty-string unii)
+            {},                                                            // not counted (empty)
+            { external_ids: null },                                        // not counted (null)
         ];
-        expect(countFullyEnrichedUnichem(records)).toBe(2);
+        expect(countFullyEnrichedUnii(records)).toBe(4);
     });
 
     it('empty array returns 0', () => {
-        expect(countFullyEnrichedUnichem([])).toBe(0);
+        expect(countFullyEnrichedUnii([])).toBe(0);
     });
 
     it('handles null/undefined records defensively', () => {
-        expect(countFullyEnrichedUnichem([null, undefined, { external_ids: { unii: 'X', sources: ['unichem'] } }])).toBe(1);
+        expect(countFullyEnrichedUnii([null, undefined, { external_ids: { unii: 'X' } }])).toBe(1);
     });
 
-    it('does NOT count records where unichem appears only in provenance.sources (not external_ids.sources)', () => {
-        // The validator's external_ids.sources~~"unichem" is strict: it does
-        // NOT look at provenance.sources. Mirror that here.
+    it('counts records with unii regardless of which source provided it (Option E decoupling)', () => {
+        // Post-PR-FDA-SRS-3 semantic shift: invariant is source-agnostic.
+        // Records with unii from fda_srs alone (no unichem source) count too.
         const records = [
-            { external_ids: { unii: 'X' }, provenance: { sources: ['unichem'] } },  // not counted
-            { external_ids: { unii: 'X', sources: ['unichem'] } },                  // counted
+            { external_ids: { unii: 'X', sources: ['fda_srs'] } },         // counted
+            { external_ids: { unii: 'Y', sources: ['unichem'] } },         // counted
+            { external_ids: { unii: 'Z', sources: ['unichem', 'fda_srs'] } }, // counted
         ];
-        expect(countFullyEnrichedUnichem(records)).toBe(1);
+        expect(countFullyEnrichedUnii(records)).toBe(3);
+    });
+});
+
+describe('countFullyEnrichedUnichem (backward-compat alias of countFullyEnrichedUnii)', () => {
+    it('exists as alias for legacy callers', () => {
+        expect(typeof countFullyEnrichedUnichem).toBe('function');
+        // Same behavior as countFullyEnrichedUnii post-PR-FDA-SRS-3
+        const records = [{ external_ids: { unii: 'A' } }, { external_ids: { unii: null } }];
+        expect(countFullyEnrichedUnichem(records)).toBe(countFullyEnrichedUnii(records));
     });
 });
 
 describe('Invariant guard contract (documented for ops)', () => {
-    it('exports the predicate so source-completeness.js and stage-3 stay in sync', () => {
+    it('exports both new universal predicate + back-compat alias', () => {
+        expect(typeof countFullyEnrichedUnii).toBe('function');
         expect(typeof countFullyEnrichedUnichem).toBe('function');
     });
 });

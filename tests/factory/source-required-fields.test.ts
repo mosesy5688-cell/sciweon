@@ -23,13 +23,14 @@ import {
 } from '../../scripts/factory/lib/source-completeness-helpers.js';
 
 describe('SOURCE_REQUIRED_FIELDS registry shape', () => {
-    it('has exactly 9 source keys (8 cycle 22 baseline + 1 PR-OT-2 open_targets)', () => {
+    it('has exactly 10 source keys (8 cycle 22 baseline + 1 PR-OT-2 open_targets + 1 PR-FDA-SRS-3 fda_srs)', () => {
         const keys = Object.keys(SOURCE_REQUIRED_FIELDS);
-        expect(keys).toHaveLength(9);
+        expect(keys).toHaveLength(10);
         expect(keys.sort()).toEqual([
             'chembl',
             'chembl_bioactivity',
             'dailymed',
+            'fda_srs',
             'open_targets',
             'openfda_faers',
             'pubchem',
@@ -50,14 +51,15 @@ describe('SOURCE_REQUIRED_FIELDS registry shape', () => {
         }
     });
 
-    it('gated sources: chembl (drug_status) + rxnorm + openfda_faers (UNII) + open_targets (chembl_id)', () => {
+    it('gated sources: chembl (drug_status) + rxnorm + openfda_faers (UNII) + open_targets (chembl_id) + fda_srs (inchi_key)', () => {
         const gated = Object.entries(SOURCE_REQUIRED_FIELDS)
             .filter(([, e]) => e.denominator_gate !== null)
             .map(([id]) => id)
             .sort();
-        expect(gated).toEqual(['chembl', 'open_targets', 'openfda_faers', 'rxnorm']);
+        expect(gated).toEqual(['chembl', 'fda_srs', 'open_targets', 'openfda_faers', 'rxnorm']);
         expect(SOURCE_REQUIRED_FIELDS.chembl.denominator_gate).toBe('drug_status');
         expect((SOURCE_REQUIRED_FIELDS as any).open_targets.denominator_gate).toBe('chembl_id');
+        expect((SOURCE_REQUIRED_FIELDS as any).fda_srs.denominator_gate).toBe('inchi_key');
     });
 
     it('filesNeeded returns the 3 distinct bundle files sorted', () => {
@@ -187,11 +189,22 @@ describe('isFullyEnriched per-source semantics', () => {
         }, e.denominator_gate)).toBe(true);
     });
 
-    it('UniChem entry requires both unii AND sources contains "unichem"', () => {
+    it('UniChem entry (PR-FDA-SRS-3 Option E) requires unichem_matched=true flag only -- decoupled from unii field', () => {
         const e = SOURCE_REQUIRED_FIELDS.unichem;
-        expect(isFullyEnriched({ external_ids: { unii: 'X', sources: ['unichem'] } }, e)).toBe(true);
-        expect(isFullyEnriched({ external_ids: { unii: 'X', sources: ['chembl'] } }, e)).toBe(false);
-        expect(isFullyEnriched({ external_ids: { unii: null, sources: ['unichem'] } }, e)).toBe(false);
+        expect(isFullyEnriched({ external_ids: { unichem_matched: true } }, e)).toBe(true);
+        expect(isFullyEnriched({ external_ids: { unichem_matched: true, sources: ['unichem', 'fda_srs'] } }, e)).toBe(true);
+        // Field decoupled: presence of unii alone no longer credits unichem
+        expect(isFullyEnriched({ external_ids: { unii: 'X', sources: ['fda_srs'] } }, e)).toBe(false);
+        // Flag absent or false -> fails
+        expect(isFullyEnriched({ external_ids: { unichem_matched: false } }, e)).toBe(false);
+        expect(isFullyEnriched({ external_ids: { sources: ['unichem'] } }, e)).toBe(false);
+    });
+
+    it('FDA SRS entry (PR-FDA-SRS-3) requires both unii AND sources contains "fda_srs"', () => {
+        const e = (SOURCE_REQUIRED_FIELDS as any).fda_srs;
+        expect(isFullyEnriched({ external_ids: { unii: 'X', sources: ['fda_srs'] } }, e)).toBe(true);
+        expect(isFullyEnriched({ external_ids: { unii: 'X', sources: ['unichem'] } }, e)).toBe(false);
+        expect(isFullyEnriched({ external_ids: { unii: null, sources: ['fda_srs'] } }, e)).toBe(false);
     });
 
     it('PubChem BioAssay requires has_pubchem_match === true', () => {

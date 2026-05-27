@@ -110,20 +110,25 @@ export const SOURCE_REQUIRED_FIELDS = Object.freeze({
     }),
 
     unichem: Object.freeze({
+        // PR-FDA-SRS-3 Option E: anchors on explicit unichem_matched flag
+        // (stamped by compound-id-resolver enrichOne when fetchByInchiKey
+        // returns non-null). Decoupled from external_ids.unii which FDA SRS
+        // now also writes -- prevents false-credit pollution. Mass bootstrap
+        // of historical records: aggregated-merger.js deepMergeCompound.
         file: 'compounds-enriched.jsonl',
         denominator_gate: null,
-        required_paths: Object.freeze([
-            'external_ids.unii',
-            'external_ids.sources~~"unichem"',
-        ]),
-        // PR-CORE-1d (2026-05-23): per-source threshold override. Probed
-        // value 40.4% (run 26332865197). UniChem natural ceiling still
-        // climbing via PR-CORE-3 backfill (+0.8k stamps/cycle observed);
-        // conservative hardfail at 25% catches catastrophic regression
-        // (e.g. UniChem API down) but allows the natural ~50% ceiling
-        // room to climb. Cycle 23 PR-CORE-1e refines after >=7 daily
-        // cycles per [[pipeline_auto_cron]].
+        required_paths: Object.freeze(['external_ids.unichem_matched===true']),
         severity_thresholds: Object.freeze({ hardfail: 25, warn: 35, info: 45 }),
+    }),
+
+    fda_srs: Object.freeze({
+        // PR-FDA-SRS-3 cascade closer: SECONDARY UNII source independent of
+        // UniChem. 5000-slice prod measurement 2026-05-27: 893/5000 reach +
+        // 25 UNII vertical-depth fills for UniChem-non-UNII records.
+        file: 'compounds-enriched.jsonl',
+        denominator_gate: 'inchi_key',
+        required_paths: Object.freeze(['external_ids.unii', 'external_ids.sources~~"fda_srs"']),
+        severity_thresholds: Object.freeze({ hardfail: 30, warn: 60, info: 90 }),
     }),
 
     openfda_faers: Object.freeze({
