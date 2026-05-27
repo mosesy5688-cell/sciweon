@@ -183,13 +183,14 @@ describe('scanFile streaming aggregation', () => {
             {
                 id: 'r1', pubchem_cid: 1, inchi_key: 'K1', smiles_canonical: 'C', molecular_formula: 'C',
                 molecular_weight: { value: 1 },
-                external_ids: { unii: 'U1', rxcui: '111', sources: ['unichem'] },
+                // PR-FDA-SRS-3: unichem now requires unichem_matched flag (not unii+source pair)
+                external_ids: { unii: 'U1', rxcui: '111', sources: ['unichem', 'fda_srs'], unichem_matched: true },
                 drug_labels: [{ setid: 'X' }],
             },
             {
                 id: 'r2', pubchem_cid: 2, inchi_key: 'K2', smiles_canonical: 'C', molecular_formula: 'C',
                 molecular_weight: { value: 2 },
-                external_ids: { unii: 'U2', rxcui: null, sources: ['unichem'] },
+                external_ids: { unii: 'U2', rxcui: null, sources: ['unichem', 'fda_srs'], unichem_matched: true },
             },
             {
                 id: 'r3', pubchem_cid: 3, inchi_key: 'K3', smiles_canonical: 'C', molecular_formula: 'C',
@@ -221,7 +222,11 @@ describe('scanFile streaming aggregation', () => {
 
         const byId = Object.fromEntries(sources.map(([id, e]) => [id, e._stat]));
         expect(byId.pubchem).toEqual({ total: 3, gate_pass: 3, fully_enriched: 3 });
+        // PR-FDA-SRS-3: unichem now anchors on unichem_matched flag (r1+r2 = 2 records with flag=true)
         expect(byId.unichem.fully_enriched).toBe(2);
+        // NEW PR-FDA-SRS-3 fda_srs source: requires unii AND sources∋fda_srs
+        expect(byId.fda_srs.fully_enriched).toBe(2);  // r1+r2 have unii AND fda_srs source
+        expect(byId.fda_srs.gate_pass).toBe(3);  // gate=inchi_key, all 3 records have K1/K2/K3
         expect(byId.rxnorm.gate_pass).toBe(2);
         expect(byId.rxnorm.fully_enriched).toBe(1);
         expect(byId.openfda_faers.gate_pass).toBe(2);

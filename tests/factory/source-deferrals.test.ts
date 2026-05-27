@@ -11,9 +11,9 @@ const TEST_DEFERRALS = Object.freeze({
 });
 
 describe('SOURCE_DEFERRALS SSoT shape', () => {
-    it('has 5 first-class entries matching production R2 probe', () => {
+    it('has 6 first-class entries (PR-FDA-SRS-3 adds fda_srs)', () => {
         expect(Object.keys(SOURCE_DEFERRALS).sort()).toEqual(
-            ['open_targets', 'openfda_faers', 'pubchem_bioassay', 'rxnorm', 'unichem']
+            ['fda_srs', 'open_targets', 'openfda_faers', 'pubchem_bioassay', 'rxnorm', 'unichem']
         );
     });
     it('every entry has expected_coverage_pct + due_date + responsible_pr + note', () => {

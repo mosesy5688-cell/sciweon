@@ -79,7 +79,19 @@ export const SOURCE_DEFERRALS = Object.freeze({
         expected_coverage_pct: 37.0,
         due_date: '2026-07-15',
         responsible_pr: 'PR-CORE-1e + Phase-1.8-baseline-rotation-expansion',
-        note: 'Re-calibrated 2026-05-26 post PR-CORE-MERGE-LEAK forensic. The 32286 (37.99%) plateau is NOT data leak (deep-merge V1 verified; invariant gate green delta=0) -- it is the UniChem natural ceiling for the deterministic per-cycle baseline slice CID:105001..110000. UNII is exclusively from UniChem (UNII-only count in aggregated = 0 confirmed); UniChem hit rate for this slice is ~17.5%, all eligible records already enriched. Floor at 37.0% surfaces 1pp drift as broken-floor, lets 37.99% pass tier 0. Phase 1.8 epic: expand F1 baseline ingest scope + add secondary UNII source (FDA SRS / RxNorm bulk) to break the natural ceiling.',
+        note: 'Re-calibrated 2026-05-27 PR-FDA-SRS-3 semantic shift: validator now anchors on external_ids.unichem_matched=true (Option E architect V6 lock) instead of (unii AND unichem-source). Numerically equivalent post-bootstrap (aggregated-merger mass-backfill flips all historical 32,311 records to unichem_matched=true); 37.99% baseline preserved. Floor 37.0% surfaces UniChem-side regression independently of FDA SRS contribution. Phase 1.8 epic continues: expand F1 baseline ingest scope to break the natural ceiling.',
+    }),
+    fda_srs: Object.freeze({
+        // PR-FDA-SRS-3 cascade closer 2026-05-27: grayscale launch with
+        // conservative initial floor. First cycle measured 893/84975 =
+        // 1.05% (only the 5K F2 baseline slice processed). Will climb as
+        // multi-cycle drain covers more slices + cumulative-merge stamps
+        // accumulate. PR-FDA-SRS-4 refines floor after 4+ cycles of empirical
+        // trajectory.
+        expected_coverage_pct: 1.0,
+        due_date: '2026-07-30',
+        responsible_pr: 'PR-FDA-SRS-4 + Phase-1.8-baseline-rotation-expansion',
+        note: 'Grayscale floor for cycle-23 Phase 1.8 cascade closer. Validator hardfail at 30% per source-required-fields.js severity_thresholds is the LONG-TERM target. Deferral floor at 1.0% is the SHORT-TERM bootstrap reality (single-cycle coverage in 5K F2 slice = 17.86% of slice = 1.05% of 84K cumulative). Climbs +1-2pp per cycle.',
     }),
     openfda_faers: Object.freeze({
         expected_coverage_pct: 2.0,

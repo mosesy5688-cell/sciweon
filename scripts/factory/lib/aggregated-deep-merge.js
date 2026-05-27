@@ -38,13 +38,32 @@ export function makeDeepMergeCounters() {
         unionedSources: 0,
         preservedStructuralFields: 0,
         preservedF3Fields: 0,
+        bootstrappedUnichemMatched: 0,
         sample: [],
     };
+}
+
+// PR-FDA-SRS-3 mass bootstrap (architect V6 spec 2026-05-27): historical
+// records with sources includes 'unichem' AND unii !== null but no
+// unichem_matched flag get auto-backfilled at F3 cumulative-merge boundary.
+// Replaces the architecturally-rejected per-script bootstrap (PR-FDA-SRS-2d
+// SRP violation) with deep-merge-layer one-shot O(N) inline alignment.
+// Idempotent: records already flagged skip; runs once per cycle on prev
+// only (current records are fresh-stamped by compound-id-resolver enrichOne).
+function bootstrapUnichemMatchedOnPrev(prev, counters) {
+    if (!prev?.external_ids) return;
+    const ext = prev.external_ids;
+    if (ext.unichem_matched === true) return;
+    if (!Array.isArray(ext.sources) || !ext.sources.includes('unichem')) return;
+    if (ext.unii == null) return;
+    ext.unichem_matched = true;
+    if (counters) counters.bootstrappedUnichemMatched++;
 }
 
 export function deepMergeCompound(prev, current, counters) {
     if (!prev) return current;
     if (!current) return prev;
+    bootstrapUnichemMatchedOnPrev(prev, counters);
     const merged = { ...prev, ...current };
     counters && counters.total++;
 

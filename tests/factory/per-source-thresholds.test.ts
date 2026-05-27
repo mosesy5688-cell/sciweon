@@ -13,11 +13,11 @@ import { describe, it, expect } from 'vitest';
 import { SOURCE_REQUIRED_FIELDS } from '../../scripts/factory/lib/source-required-fields.js';
 
 describe('Per-source severity_thresholds overrides (PR-CORE-1d)', () => {
-    it('the per-source overrides (4 PR-CORE-1d + 1 PR-OT-2) carry calibrated thresholds', () => {
+    it('the per-source overrides (4 PR-CORE-1d + 1 PR-OT-2 + 1 PR-FDA-SRS-3) carry calibrated thresholds', () => {
         const withOverride = Object.entries(SOURCE_REQUIRED_FIELDS)
             .filter(([, e]) => e.severity_thresholds != null)
             .map(([id]) => id).sort();
-        expect(withOverride).toEqual(['open_targets', 'openfda_faers', 'pubchem_bioassay', 'rxnorm', 'unichem']);
+        expect(withOverride).toEqual(['fda_srs', 'open_targets', 'openfda_faers', 'pubchem_bioassay', 'rxnorm', 'unichem']);
     });
 
     it('every override respects hardfail < warn < info ordering', () => {

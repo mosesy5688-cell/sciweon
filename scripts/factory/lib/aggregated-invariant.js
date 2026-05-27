@@ -41,19 +41,27 @@ async function streamToBuffer(stream) {
     return Buffer.concat(chunks);
 }
 
-// Predicate matches source-required-fields.js:115-118 unichem required_paths:
-// external_ids.unii non-null AND external_ids.sources includes "unichem".
-export function countFullyEnrichedUnichem(records) {
+// PR-FDA-SRS-3 universal UNII guard (architect V6 spec 2026-05-27):
+// source-agnostic counter -- counts ANY record with canonical UNII,
+// regardless of which source (UniChem OR FDA SRS OR future RxNorm bulk).
+// Aligns invariant with [[researcher_needs_anchor]]: researcher cares
+// about "compound has canonical UNII" not "UNII came from specific source".
+// Replaces single-source countFullyEnrichedUnichem which would inflate
+// after FDA SRS shipped (false-credit for FDA-filled UNII).
+export function countFullyEnrichedUnii(records) {
     let count = 0;
     for (const r of records) {
         const ext = r?.external_ids;
         if (!ext) continue;
         if (ext.unii == null || ext.unii === '') continue;
-        if (!Array.isArray(ext.sources) || !ext.sources.includes('unichem')) continue;
         count++;
     }
     return count;
 }
+
+// Backward-compat alias for any external caller; new code uses
+// countFullyEnrichedUnii directly.
+export const countFullyEnrichedUnichem = countFullyEnrichedUnii;
 
 async function loadLocalCompounds(localPath) {
     const content = await fs.readFile(localPath, 'utf-8');
@@ -100,18 +108,25 @@ export async function enforceCompletenessInvariant({ localCompoundsPath, label =
         console.warn(`${label} Prior completeness state not found on R2 (${STATE_KEY}) -- bootstrap or first-run; skipping invariant check`);
         return { checked: false, reason: 'prev_state_missing' };
     }
+    // PR-FDA-SRS-3 universal UNII guard: prev count read from unichem source
+    // for backward compat with existing state JSON shape; in the transition
+    // cycle this approximates global UNII count (since UNII was UniChem-only
+    // pre-Phase-1.8). Going forward, prev_unichem_matched_count = floor of
+    // current global UNII (UniChem subset), so invariant correctly catches
+    // catastrophic regression (current < prev would mean global UNII dropped
+    // below even the UniChem subset).
     const prevCount = Number(prevState?.sources?.unichem?.fully_enriched) || 0;
 
     const finalCompounds = await loadLocalCompounds(localCompoundsPath);
-    const currentCount = countFullyEnrichedUnichem(finalCompounds);
+    const currentCount = countFullyEnrichedUnii(finalCompounds);
 
     const delta = currentCount - prevCount;
     if (currentCount < prevCount) {
         throw new Error(
-            `${label} CRITICAL REGRESSION DETECTED: unichem fully_enriched dropped ${prevCount} -> ${currentCount} (delta=${delta}). ` +
-            `Cumulative-merge data leak suspected (PR-CORE-MERGE-LEAK class). Halting R2 publish per [[cross_cycle_silent_data_loss]] zero-tolerance.`
+            `${label} CRITICAL REGRESSION DETECTED: global UNII count dropped ${prevCount} -> ${currentCount} (delta=${delta}). ` +
+            `Cumulative-merge data leak suspected (PR-CORE-MERGE-LEAK class) OR multi-source UNII pipeline broke. Halting R2 publish per [[cross_cycle_silent_data_loss]] zero-tolerance.`
         );
     }
-    console.log(`${label} Invariant verified green | unichem fully_enriched: ${prevCount} -> ${currentCount} (delta=${delta > 0 ? '+' : ''}${delta}) | total_compounds=${finalCompounds.length}`);
+    console.log(`${label} Invariant verified green | global UNII count: ${prevCount} -> ${currentCount} (delta=${delta > 0 ? '+' : ''}${delta}) | total_compounds=${finalCompounds.length}`);
     return { checked: true, prev: prevCount, current: currentCount, delta, totalCompounds: finalCompounds.length };
 }
