@@ -101,8 +101,13 @@ export async function loadIngredientAttributes(zip, productToIngredients, droppe
 
     // Diagnostic: distribution of SABs observed on NDC rows, for ops visibility.
     const ndcSabCounts = new Map();
+    let rowDumpRemaining = 5;  // ULTRA-DIAGNOSTIC dump of first N raw row objects
 
     for await (const row of parser) {
+        if (rowDumpRemaining > 0) {
+            console.log(`[RXNORM-HARVEST-RAWDUMP] row=${JSON.stringify(row)}`);
+            rowDumpRemaining--;
+        }
         if (row.SUPPRESS && row.SUPPRESS !== 'N') continue;
         if (row.ATN !== 'UNII' && row.ATN !== 'NDC') continue;
         const rxcui = row.RXCUI;
