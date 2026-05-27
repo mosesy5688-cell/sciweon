@@ -1,0 +1,64 @@
+name: Factory DailyMed NDC Promote
+
+# PR-RXN-1b-pre-promote: atomic swap of live aggregated drug-labels.jsonl
+# with hydrated staging payload. Three invariant assertions enforced before
+# any R2 mutation; chronological guard aborts if aggregated has business
+# increment newer than staging.
+#
+# Architect 2026-05-28 spec: manual workflow_dispatch only. No cron.
+# Operator runs once after backfill workflow has completed + manifest review.
+
+on:
+  workflow_dispatch:
+    inputs:
+      staging_date:
+        description: 'Backfill staging date (YYYY-MM-DD); blank = today'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Skip R2 PUT; assertions + manifest still run'
+        required: false
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
+
+permissions:
+  contents: read
+
+env:
+  R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+  R2_BUCKET: ${{ secrets.R2_BUCKET }}
+  R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+  R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install deps
+        run: npm ci
+      - name: Install zstd CLI
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zstd
+      - name: Run promote
+        run: |
+          set -e
+          ARGS=""
+          if [ -n "${{ github.event.inputs.staging_date }}" ]; then
+            ARGS="$ARGS --staging-date=${{ github.event.inputs.staging_date }}"
+          fi
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          node scripts/factory/promote-dailymed-ndc-staging.js $ARGS
+      - name: Summary
+        if: always()
+        run: |
+          echo "## PR-RXN-1b-pre-promote DailyMed NDC swap" >> $GITHUB_STEP_SUMMARY
+          echo "- staging_date: ${{ github.event.inputs.staging_date || 'today' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- dry_run: ${{ github.event.inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
