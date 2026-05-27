@@ -117,7 +117,13 @@ async function main() {
         }
 
         const records = composeRecords(meta, attrs);
-        console.log(`[RXNORM-HARVEST] composed ${records.length} ingredient records; dropped malformed NDCs=${droppedCounts.malformed_ndc}`);
+        console.log(`[RXNORM-HARVEST] composed ${records.length} ingredient records; dropped malformed NDCs=${droppedCounts.malformed_ndc}; skipped non-RXNORM SAB=${droppedCounts.skipped_nonrxnorm_sab ?? 0}`);
+        if (droppedCounts.ndc_sab_distribution) {
+            console.log(`[RXNORM-HARVEST] NDC SAB distribution: ${JSON.stringify(droppedCounts.ndc_sab_distribution)}`);
+        }
+        if (droppedCounts.malformed_ndc_samples?.length) {
+            console.log(`[RXNORM-HARVEST] sample rejected NDC ATV values: ${JSON.stringify(droppedCounts.malformed_ndc_samples)}`);
+        }
 
         const licenseMetadata = {
             upstream_source: 'rxnorm_prescribable',
