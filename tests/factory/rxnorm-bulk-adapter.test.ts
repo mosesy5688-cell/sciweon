@@ -107,6 +107,21 @@ describe('PR-RXN-1: parseRxcuiIndexJsonl + lookup APIs', () => {
         }
     });
 
+    it('5c. PR-RXN-1d: parseRxcuiIndexJsonl canonicalizes UNII keys (uppercase + trim); lookup tolerates dirty input', () => {
+        const parsed = parseRxcuiIndexJsonl(makeJsonl([
+            { rxcui: 'IN_U', preferred_str: 'Naproxen', tty: 'IN', sab: 'RXNORM', unii: '  8mjb9hsc8q  ', ndcs: [] },
+        ]));
+        // Map key is canonical regardless of dirty source input
+        expect(parsed.uniiToRxcui.has('8MJB9HSC8Q')).toBe(true);
+        expect(parsed.uniiToRxcui.has('  8mjb9hsc8q  ')).toBe(false);
+        // Lookup with original dirty form still hits via lookupByUnii canonicalization
+        const hit = lookupByUnii(parsed, '  8mjb9hsc8q  ');
+        expect(hit?.rxcui).toBe('IN_U');
+        // Also lowercase-only and uppercase-clean both hit
+        expect(lookupByUnii(parsed, '8mjb9hsc8q')?.rxcui).toBe('IN_U');
+        expect(lookupByUnii(parsed, '8MJB9HSC8Q')?.rxcui).toBe('IN_U');
+    });
+
     it('5. malformed lines skipped without throwing; valid records still indexed', () => {
         const jsonl = [
             '#{"license_metadata":{"upstream_source":"rxnorm_prescribable"}}',
