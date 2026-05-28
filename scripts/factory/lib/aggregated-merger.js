@@ -80,10 +80,14 @@ const KEY_FN_PER_FILE = {
 
 // PR-CORE-MERGE-LEAK (cycle 23): per-file deep-merge strategy. See
 // aggregated-deep-merge.js for the deepMergeCompound contract + rationale.
-import { deepMergeCompound, bootstrapPrevRecords } from './aggregated-deep-merge.js';
+// PR-CORE-DRUG-LABEL-LEAK (2026-05-28): adds drug-labels axis to prevent
+// F2 emit of unhydrated cur from reverse-erasing PR-RXN-1b-pre-promote
+// hydrated ndcs[]/rxcui[] in prev.
+import { deepMergeCompound, deepMergeDrugLabel, bootstrapPrevRecords } from './aggregated-deep-merge.js';
 
 const MERGE_STRATEGY_PER_FILE = Object.freeze({
     'compounds-enriched.jsonl': deepMergeCompound,
+    'drug-labels.jsonl': deepMergeDrugLabel,
 });
 
 function parseJsonl(text) {
