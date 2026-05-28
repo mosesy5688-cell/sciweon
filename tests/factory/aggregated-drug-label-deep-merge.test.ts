@@ -18,7 +18,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { deepMergeDrugLabel } from '../../scripts/factory/lib/aggregated-deep-merge.js';
-import { mergeRecords } from '../../scripts/factory/lib/aggregated-merger.js';
+import { mergeRecords, MERGE_FILES, MERGE_STRATEGY_PER_FILE } from '../../scripts/factory/lib/aggregated-merger.js';
 
 describe('PR-CORE-DRUG-LABEL-LEAK: deepMergeDrugLabel invariant matrix', () => {
     it('1. Architect lock: cur lacking ndcs/rxcui MUST preserve prev historical hydrated values', () => {
@@ -86,6 +86,14 @@ describe('PR-CORE-DRUG-LABEL-LEAK: deepMergeDrugLabel invariant matrix', () => {
         expect(merged.ndcs).toBeUndefined();
         expect(merged.rxcui).toBeUndefined();
         expect(merged.title).toBe('B');
+    });
+
+    it('8b. ANTI-REGRESSION: drug-labels.jsonl must be in MERGE_FILES (else strategy is deadcode)', () => {
+        // PR-CORE-DRUG-LABEL-LEAK followup: deepMergeDrugLabel registration alone
+        // is insufficient -- the file must also be in MERGE_FILES so that
+        // mergeLocalAggregatedWithPrevious actually iterates it.
+        expect(MERGE_FILES).toContain('drug-labels.jsonl');
+        expect(MERGE_STRATEGY_PER_FILE['drug-labels.jsonl']).toBe(deepMergeDrugLabel);
     });
 
     it('8. ANTI-REGRESSION: mergeRecords full integration with deepMergeDrugLabel strategy preserves prev fields', () => {
