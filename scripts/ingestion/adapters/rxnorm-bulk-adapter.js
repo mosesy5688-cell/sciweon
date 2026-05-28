@@ -7,6 +7,11 @@
  *   uniiToRxcui:  Map<unii, { rxcui, preferred_str, tty, sab }>   -- 1:1
  *   ndcToRxcuis:  Map<ndc,  Set<{ rxcui, preferred_str, tty, sab }>> -- 1:N
  *
+ * UNII key canonicalization (PR-RXN-1d): keys are uppercase + trimmed at
+ * parse so consumer lookups tolerate lower-case / whitespace-padded input
+ * without silent hash miss. NLM canonical UNII is 10-char alphanumeric
+ * uppercase; case-folding at ingest matches that authority.
+ *
  * 1:N for NDC preserves combination-product semantics: one NDC routinely
  * maps to multiple ingredient RxCUIs (e.g., Combivent ipratropium + albuterol).
  * Callers iterate the Set to backlink the label to every active ingredient
@@ -81,7 +86,11 @@ export function parseRxcuiIndexJsonl(jsonlText) {
         const meta = { rxcui: rec.rxcui, preferred_str: rec.preferred_str, tty: rec.tty, sab: rec.sab };
 
         if (typeof rec.unii === 'string' && rec.unii.length > 0) {
-            uniiToRxcui.set(rec.unii, meta);
+            // PR-RXN-1d canonicalize: NLM UNII is uppercase 10-char alnum;
+            // case-fold + trim at ingest so consumer lookups (compound-side
+            // bulk fast-path) tolerate dirty input without silent miss.
+            const canonicalUnii = rec.unii.trim().toUpperCase();
+            if (canonicalUnii.length > 0) uniiToRxcui.set(canonicalUnii, meta);
         }
         if (Array.isArray(rec.ndcs)) {
             for (const ndc of rec.ndcs) {
@@ -121,10 +130,20 @@ export async function loadRxnormBulkMaps() {
     }
 }
 
-/** O(1) UNII -> ingredient RxCUI meta lookup. Returns null on miss. */
+/**
+ * O(1) UNII -> ingredient RxCUI meta lookup.
+ *
+ * Input is canonicalized (trim + uppercase) before map .get() so callers
+ * pass raw `rec.external_ids.unii` directly without remembering the
+ * case-fold rule. Map keys are also canonical per parseRxcuiIndexJsonl.
+ * Returns null on (a) non-string/empty input, (b) post-trim empty, or
+ * (c) canonical key not in map.
+ */
 export function lookupByUnii(maps, unii) {
     if (typeof unii !== 'string' || unii.length === 0) return null;
-    return maps?.uniiToRxcui?.get(unii) ?? null;
+    const canonical = unii.trim().toUpperCase();
+    if (canonical.length === 0) return null;
+    return maps?.uniiToRxcui?.get(canonical) ?? null;
 }
 
 /**

@@ -27,6 +27,7 @@ import { createWriteStream } from 'fs';
 import { once } from 'events';
 import path from 'path';
 import { resolveByUnii } from '../ingestion/adapters/rxnorm-adapter.js';
+import { loadRxnormBulkMaps, lookupByUnii } from '../ingestion/adapters/rxnorm-bulk-adapter.js';
 import {
     readCursor, writeCursor, chunkIterator, buildNextCursor, DEFAULT_CHUNK_SIZE,
 } from './lib/enrichment-cursor.js';
@@ -67,6 +68,39 @@ export function isEligible(record) {
     return record?.external_ids?.unii != null && record?.external_ids?.rxcui == null;
 }
 
+/**
+ * PR-RXN-1d bulk fast-path single-record enricher. In-memory O(1) Map
+ * lookup that byte-identically mirrors enrichOne's mutation shape (rxcui,
+ * rxnorm_name, rxnorm_tty, sources[]) but uses the pre-loaded RxNorm
+ * bulk Map instead of per-UNII HTTP. Field mapping: hit.preferred_str ->
+ * record.rxnorm_name; hit.tty -> record.rxnorm_tty.
+ *
+ * Returns `true` iff a hit occurred AND the raw UNII differed from its
+ * canonical (trim + uppercase) form -- caller buckets to
+ * `unii_format_drift_count` telemetry per [[scope_vs_quality_validation_segregation]]
+ * diagnostic signal. Returns `false` on bulk miss, ineligible record, or
+ * hit-with-already-canonical input.
+ *
+ * Idempotent: records with existing rxcui short-circuit (no overwrite).
+ * Pure: no I/O, no async, no exceptions on shape drift.
+ */
+export function bulkEnrichOne(record, maps) {
+    if (!record?.external_ids?.unii) return false;
+    if (record.external_ids.rxcui) return false;
+    const raw = record.external_ids.unii;
+    if (typeof raw !== 'string') return false;
+    const canonical = raw.trim().toUpperCase();
+    if (canonical.length === 0) return false;
+    const hit = lookupByUnii(maps, canonical);
+    if (!hit) return false;
+    record.external_ids.rxcui = hit.rxcui;
+    if (hit.preferred_str) record.external_ids.rxnorm_name = hit.preferred_str;
+    if (hit.tty) record.external_ids.rxnorm_tty = hit.tty;
+    if (!Array.isArray(record.external_ids.sources)) record.external_ids.sources = [];
+    if (!record.external_ids.sources.includes('rxnorm')) record.external_ids.sources.push('rxnorm');
+    return raw !== canonical;
+}
+
 // Single-record enricher used by chunk iteration. Returns updated record
 // (mutated in place); caller writes back to JSONL. Adapter null result =
 // no RxNorm match for this UNII (genuine negative, not an error).
@@ -104,6 +138,45 @@ async function main() {
         return;
     }
 
+    // PR-RXN-1d bulk fast-path: in-memory O(N) sweep before REST drain.
+    // Replaces the ghost-component half-bridge where compound side was
+    // locked to per-UNII HTTP while label side enjoyed bulk-Map O(1).
+    // Fail-soft: bulk Map load failure -> log warn + skip; REST drain
+    // still runs (degrades to pre-PR-1d behavior, never worse).
+    let bulkMaps = null;
+    try { bulkMaps = await loadRxnormBulkMaps(); }
+    catch (err) {
+        console.warn(`[RXNORM-ENRICHER] Bulk maps unavailable (${err.message}) -- skipping bulk fast-path; REST drain proceeds`);
+    }
+    if (bulkMaps) {
+        let bulk_hits = 0;
+        let unii_format_drift_count = 0;
+        const eligible_entering = eligible.length;
+        for (const rec of eligible) {
+            const wasDrift = bulkEnrichOne(rec, bulkMaps);
+            if (rec.external_ids?.rxcui) {
+                bulk_hits++;
+                if (wasDrift) unii_format_drift_count++;
+            }
+        }
+        const rest_fallback_queued = eligible_entering - bulk_hits;
+        const stampedNow = compounds.filter(r => r.external_ids?.rxcui).length;
+        const coveragePct = ((stampedNow / Math.max(compounds.length, 1)) * 100).toFixed(2);
+        const bulk_map_unii_keys = bulkMaps.uniiToRxcui?.size ?? 0;
+        console.log(`[RXNORM-ENRICHER] Bulk fast-path: eligible_entering=${eligible_entering} bulk_hits=${bulk_hits} rest_fallback_queued=${rest_fallback_queued} unii_format_drift_count=${unii_format_drift_count} bulk_map_unii_keys=${bulk_map_unii_keys} coverage_after_bulk=${coveragePct}%`);
+    }
+
+    // Re-filter eligible after bulk pass: records stamped by bulkEnrichOne
+    // are no longer isEligible, so the REST drain only processes long-tail
+    // UNIIs not present in the RxNorm bulk map.
+    const remainingEligible = eligible.filter(isEligible);
+    if (remainingEligible.length === 0) {
+        console.log(`[RXNORM-ENRICHER] Bulk fast-path cleared all eligible -- REST drain skipped; writing back and exiting.`);
+        await writeJsonl(file, compounds);
+        return;
+    }
+    console.log(`[RXNORM-ENRICHER] REST drain target: ${remainingEligible.length} long-tail UNIIs (not in bulk map)`);
+
     let cursor = null;
     try { cursor = await readCursor(SOURCE); }
     catch (err) { console.warn(`[RXNORM-ENRICHER] Cursor read failed (${err.message}) - starting fresh`); }
@@ -112,8 +185,9 @@ async function main() {
 
     // V5 drain-until-cleared: keep consuming chunks until corpus wraps,
     // EWMA budget gate fires, or eligible empty. Terminal commit AFTER drain.
+    // Post-PR-RXN-1d: receives long-tail (bulk-map-missed) UNIIs only.
     const drain = await drainAdapterBacklog({
-        eligible, enrichOne, chunkIterator, chunkSize,
+        eligible: remainingEligible, enrichOne, chunkIterator, chunkSize,
         timeBudgetMs: DRAIN_BUDGET_MS, coldStartEstimateMs: COLD_START_MS,
         sleepMsBetween: REQUEST_DELAY_MS, initialCursor: cursor,
         logPrefix: '[RXNORM-ENRICHER]', logEveryNRecords: 100,
