@@ -122,3 +122,41 @@ export function deepMergeCompound(prev, current, counters) {
 
     return merged;
 }
+
+/**
+ * PR-CORE-DRUG-LABEL-LEAK 2026-05-28 (architect lock): deep-merge for
+ * drug-labels.jsonl to prevent the same destructive replace-by-id class of
+ * bug that PR-CORE-MERGE-LEAK fixed for compounds-enriched.jsonl.
+ *
+ * Without this strategy, F3 stage-3-merger would use default replace-by-id
+ * semantics. Result: F2's local drug-labels.jsonl (which lacks ndcs[] + rxcui[]
+ * when fan-in cumulative is not yet hydrated by the new PR-RXN-1b-pre
+ * normalize() shape) would silently REVERSE the PR-RXN-1b-pre-promote
+ * SHA256-verified hydration on next F3 cycle. Caught live by the cancelled
+ * F3 run 26549696523 mid-flight.
+ *
+ * Field policy:
+ *   - Top-level scalars (title, label_type, published_date etc.): current
+ *     wins, per default merger (latest cycle's freshest text).
+ *   - ndcs[]: preserve prev when current is empty/missing. The NLM /spls/
+ *     {setid}/ndcs.json hop only runs on F1 re-harvest; absence in current
+ *     does NOT mean absence in source.
+ *   - rxcui[]: preserve prev when current is empty/missing. Result of
+ *     cross-linker's PR-RXN-1b hydration; durable across cycles until a
+ *     re-harvest legitimately advances the field.
+ *
+ * Symmetric to STRUCTURAL_PRESERVE_FIELDS guard in deepMergeCompound but
+ * scoped to the drug_label entity axis.
+ */
+export function deepMergeDrugLabel(prev, current) {
+    if (!prev) return current;
+    if (!current) return prev;
+    const merged = { ...prev, ...current };
+    if ((current.ndcs == null || (Array.isArray(current.ndcs) && current.ndcs.length === 0)) && prev.ndcs != null) {
+        merged.ndcs = prev.ndcs;
+    }
+    if ((current.rxcui == null || (Array.isArray(current.rxcui) && current.rxcui.length === 0)) && prev.rxcui != null) {
+        merged.rxcui = prev.rxcui;
+    }
+    return merged;
+}
