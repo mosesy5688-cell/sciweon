@@ -41,6 +41,16 @@ const LINKED_DIR = './output/linked';
 
 // Files to merge from previous aggregated bundle. Mirrors Stage 3's
 // AGGREGATED_FILES list.
+//
+// PR-CORE-DRUG-LABEL-LEAK followup 2026-05-28: drug-labels.jsonl added.
+// Previously NOT in MERGE_FILES even though it was published in
+// AGGREGATED_FILES; F3 stage-3-merger only iterates MERGE_FILES so prev
+// cycle's drug-labels.jsonl never participated in the merge, making the
+// file effectively REPLACE-per-cycle. F2 cur (unhydrated) overwrote prev
+// (hydrated post-promote) silently. Adding drug-labels.jsonl here makes
+// it cumulative + activates the deepMergeDrugLabel strategy registered
+// in MERGE_STRATEGY_PER_FILE below. Verified inert via F3 26552377679
+// (Path Y merged but deadcode -- merger never invoked deepMergeDrugLabel).
 const MERGE_FILES = [
     'compounds-enriched.jsonl',
     'bioactivities.jsonl',
@@ -50,6 +60,7 @@ const MERGE_FILES = [
     'paper-links.jsonl',
     'negative-evidence-raw.jsonl',
     'neg-evidence.jsonl',
+    'drug-labels.jsonl',
 ];
 
 // Per-file key extractor. Entity files use `id`; link files use a
