@@ -79,20 +79,28 @@ async function streamToBuffer(stream) {
 export async function hydrateOneLine(rawLine, fetchNdcsImpl) {
     const stats = { hydrated: 0, skipped_already: 0, skipped_other_type: 0, fetcher_failed: 0, failed_setid: null };
     if (!rawLine.trim()) return { line: '', stats };
+    // PR-RXN-1b-fanin-patch-2 (newline fix): readline strips the trailing
+    // newline from each yielded line. Every return-path must re-append '\n'
+    // so the gzip writer reconstructs separable JSONL output. The original
+    // bug shipped passthrough returns as `rawLine` (no newline) and ONLY the
+    // hydrated path explicit-appended; result: all ~37K passthrough records
+    // concatenated into ONE mega-line. Caught by atomic parity guard
+    // (input=38567 vs output=916), no R2 PUT damage.
+    const withNewline = s => s.endsWith('\n') ? s : s + '\n';
     let rec;
     try { rec = JSON.parse(rawLine); }
-    catch { return { line: rawLine, stats }; }  // malformed line passthrough (defensive)
+    catch { return { line: withNewline(rawLine), stats }; }  // malformed line passthrough
     if (typeof rec?.id !== 'string' || !rec.id.startsWith('sciweon::drug_label::')) {
         stats.skipped_other_type = 1;
-        return { line: rawLine, stats };
+        return { line: withNewline(rawLine), stats };
     }
     if (Array.isArray(rec.ndcs) && rec.ndcs.length > 0) {
         stats.skipped_already = 1;
-        return { line: rawLine, stats };
+        return { line: withNewline(rawLine), stats };
     }
     if (!rec.setid) {
         stats.fetcher_failed = 1;
-        return { line: rawLine, stats };
+        return { line: withNewline(rawLine), stats };
     }
     const ndcs = await fetchNdcsImpl(rec.setid);
     if (ndcs === null) {

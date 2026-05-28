@@ -36,12 +36,13 @@ describe('PR-RXN-1b-fanin-patch: hydrateOneLine', () => {
         expect(stats.hydrated).toBe(0);
     });
 
-    it('3. non-drug-label record (atc_class) passes through unchanged (type isolation)', async () => {
+    it('3. non-drug-label record (atc_class) passes through with trailing newline (type isolation + JSONL parity)', async () => {
         const rec = { id: 'sciweon::atc_class::C01AB', level5: 'C01AB', who_name: 'X' };
         const fetcher = vi.fn();
         const { line, stats } = await hydrateOneLine(JSON.stringify(rec), fetcher);
         expect(fetcher).not.toHaveBeenCalled();
-        expect(line).toBe(JSON.stringify(rec));
+        // Byte-identity preservation of payload + appended '\n' for JSONL separability.
+        expect(line).toBe(JSON.stringify(rec) + '\n');
         expect(stats.skipped_other_type).toBe(1);
         expect(stats.hydrated).toBe(0);
     });
@@ -64,11 +65,11 @@ describe('PR-RXN-1b-fanin-patch: hydrateOneLine', () => {
         expect(stats.fetcher_failed).toBe(1);
     });
 
-    it('6. malformed JSON line passes through unchanged (defensive)', async () => {
+    it('6. malformed JSON line passes through with newline (defensive + JSONL parity)', async () => {
         const fetcher = vi.fn();
         const { line, stats } = await hydrateOneLine('not-json-at-all', fetcher);
         expect(fetcher).not.toHaveBeenCalled();
-        expect(line).toBe('not-json-at-all');
+        expect(line).toBe('not-json-at-all\n');
         expect(stats.hydrated).toBe(0);
     });
 
@@ -93,6 +94,31 @@ describe('PR-RXN-1b-fanin-patch: hydrateOneLine', () => {
         expect(line).toBe('');
         expect(stats.hydrated).toBe(0);
         expect(stats.skipped_other_type).toBe(0);
+    });
+
+    it('9. ANTI-REGRESSION (PR-RXN-1b-fanin-patch-2): EVERY non-empty return path ends with newline (parity-guard precondition)', async () => {
+        // Caught live by atomic parity guard: PR-RXN-1b-fanin-patch first
+        // dispatch had input=38567 lines vs output=916 because passthrough
+        // returns lacked '\n' -- readline strips it, gzip writer concatenated
+        // all ~37K passthroughs into one mega-line. Without explicit
+        // newline at every return, the bytes ARE preserved but JSONL
+        // structure collapses.
+        const fetcher = vi.fn().mockResolvedValue(['001']);
+        // drug_label hydration path
+        const { line: l1 } = await hydrateOneLine(JSON.stringify({ id: 'sciweon::drug_label::setid::A', setid: 'A' }), fetcher);
+        expect(l1.endsWith('\n')).toBe(true);
+        // non-drug-label passthrough path
+        const { line: l2 } = await hydrateOneLine(JSON.stringify({ id: 'sciweon::atc_class::C01' }), fetcher);
+        expect(l2.endsWith('\n')).toBe(true);
+        // idempotency passthrough path
+        const { line: l3 } = await hydrateOneLine(JSON.stringify({ id: 'sciweon::drug_label::setid::B', setid: 'B', ndcs: ['existing'] }), fetcher);
+        expect(l3.endsWith('\n')).toBe(true);
+        // malformed JSON passthrough
+        const { line: l4 } = await hydrateOneLine('not-json-at-all', fetcher);
+        expect(l4.endsWith('\n')).toBe(true);
+        // drug_label without setid (fetcher_failed path)
+        const { line: l5 } = await hydrateOneLine(JSON.stringify({ id: 'sciweon::drug_label::setid::C' }), fetcher);
+        expect(l5.endsWith('\n')).toBe(true);
     });
 });
 
