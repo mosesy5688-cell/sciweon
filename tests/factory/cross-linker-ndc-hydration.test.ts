@@ -44,7 +44,7 @@ describe('PR-RXN-1b: hydrateLabelRxcuisFromNdcs', () => {
         expect(records[0].rxcui).toEqual(['IN_A', 'IN_B', 'IN_C', 'IN_D']);
         expect(tele.labels_hydrated).toBe(1);
         expect(tele.excluded_unmapped_ndc_count).toBe(1);
-        expect(tele.sample_unmapped_ndcs).toContain('00001000099');
+        expect(tele.sample_unmapped_ndcs.some(s => s.includes('00001000099'))).toBe(true);
     });
 
     it('2. Architect B: 3 NDCs (1 mapped + 2 unmapped) -> 1 RxCUI + 2 excluded', () => {
@@ -139,5 +139,42 @@ describe('PR-RXN-1b: hydrateLabelRxcuisFromNdcs', () => {
         const tele = hydrateLabelRxcuisFromNdcs(records, makeMaps([]));
         expect(tele.labels_with_ndcs).toBe(0);
         expect(tele.labels_hydrated).toBe(0);
+    });
+
+    it('11. PR-RXN-1b-ndc-normalize: HIPAA-segmented label NDCs hydrate against 11-digit map keys', () => {
+        // DailyMed v2 fetcher emits 5-3-2 / 5-4-1 segmented NDCs (e.g.
+        // "70771-1953-1"); RxNorm bulk map keys are 11-digit. Without
+        // normalization at the lookup boundary 100% miss -> 0% cross-link
+        // floor. This test locks the fix.
+        const maps = makeMaps([
+            ['70771195301', ['IN_SEG_541']],    // matches "70771-1953-1" 5-4-1
+            ['82046060901', ['IN_SEG_532']],    // matches "82046-609-01" 5-3-2
+            ['00042022001', ['IN_SEG_442']],    // matches "0042-0220-01" 4-4-2
+        ]);
+        const records = [makeLabel('lbl_segmented', ['70771-1953-1', '82046-609-01', '0042-0220-01'])];
+        const tele = hydrateLabelRxcuisFromNdcs(records, maps);
+        expect(records[0].rxcui).toEqual(['IN_SEG_442', 'IN_SEG_532', 'IN_SEG_541']);
+        expect(tele.labels_hydrated).toBe(1);
+        expect(tele.malformed_ndc_count).toBe(0);
+        expect(tele.unmapped_ndc_count).toBe(0);
+        expect(tele.excluded_unmapped_ndc_count).toBe(0);
+    });
+
+    it('12. PR-RXN-1b-ndc-normalize: telemetry distinguishes malformed (bad shape) vs unmapped (good shape, no hit)', () => {
+        const maps = makeMaps([['00012000001', ['IN_OK']]]);
+        const records = [
+            // 1 valid (normalizes + hits) + 1 unmapped (normalizes, no hit) + 2 malformed (cannot normalize)
+            makeLabel('lbl_mixed', ['00012000001', '99999-999-99', 'NOT-AN-NDC', '00012']),
+        ];
+        const tele = hydrateLabelRxcuisFromNdcs(records, maps);
+        expect(records[0].rxcui).toEqual(['IN_OK']);
+        expect(tele.labels_hydrated).toBe(1);
+        expect(tele.malformed_ndc_count).toBe(2);   // 'NOT-AN-NDC' + '00012'
+        expect(tele.unmapped_ndc_count).toBe(1);    // '99999-999-99' normalizes to '99999099999' but not in map
+        expect(tele.excluded_unmapped_ndc_count).toBe(3);  // back-compat sum
+        // Samples carry tags for downstream diagnostic loop
+        const tagged = tele.sample_unmapped_ndcs;
+        expect(tagged.some(s => s.startsWith('[MALFORMED]'))).toBe(true);
+        expect(tagged.some(s => s.startsWith('[UNMAPPED]'))).toBe(true);
     });
 });

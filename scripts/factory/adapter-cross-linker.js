@@ -22,6 +22,7 @@
 
 import fs from 'fs/promises';
 import { loadRxnormBulkMaps, lookupByNdc } from '../ingestion/adapters/rxnorm-bulk-adapter.js';
+import { normalizeNdcTo11Digit } from './lib/ndc-normalize.js';
 
 const COMPOUNDS    = './output/linked/compounds-enriched.jsonl';
 const ADAPTER      = './output/linked/adapter-cumulative.jsonl';
@@ -62,6 +63,14 @@ export function hydrateLabelRxcuisFromNdcs(adapterRecords, maps) {
         labels_hydrated: 0,
         labels_zero_match: 0,
         labels_skipped_already_populated: 0,
+        // PR-RXN-1b-ndc-normalize: split exclusion bucket into malformed
+        // (normalizer null -- bad shape) vs unmapped (normalized OK but
+        // not in RxNorm map -- Prescribable subset boundary attrition or
+        // genuine historical / discontinued labeler). Preserves
+        // excluded_unmapped_ndc_count = malformed + unmapped for log
+        // backward-compat.
+        malformed_ndc_count: 0,
+        unmapped_ndc_count: 0,
         excluded_unmapped_ndc_count: 0,
         sample_unmapped_ndcs: [],
     };
@@ -77,17 +86,28 @@ export function hydrateLabelRxcuisFromNdcs(adapterRecords, maps) {
         const resolved = new Set();
         for (const ndc of r.ndcs) {
             if (typeof ndc !== 'string' || ndc.length === 0) {
+                telemetry.malformed_ndc_count++;
                 telemetry.excluded_unmapped_ndc_count++;
                 if (telemetry.sample_unmapped_ndcs.length < 10) {
-                    telemetry.sample_unmapped_ndcs.push(String(ndc));
+                    telemetry.sample_unmapped_ndcs.push(`[MALFORMED] ${String(ndc)}`);
                 }
                 continue;
             }
-            const hits = lookupByNdc(maps, ndc);
-            if (hits.size === 0) {
+            const normalized = normalizeNdcTo11Digit(ndc);
+            if (!normalized) {
+                telemetry.malformed_ndc_count++;
                 telemetry.excluded_unmapped_ndc_count++;
                 if (telemetry.sample_unmapped_ndcs.length < 10) {
-                    telemetry.sample_unmapped_ndcs.push(ndc);
+                    telemetry.sample_unmapped_ndcs.push(`[MALFORMED] ${ndc}`);
+                }
+                continue;
+            }
+            const hits = lookupByNdc(maps, normalized);
+            if (hits.size === 0) {
+                telemetry.unmapped_ndc_count++;
+                telemetry.excluded_unmapped_ndc_count++;
+                if (telemetry.sample_unmapped_ndcs.length < 10) {
+                    telemetry.sample_unmapped_ndcs.push(`[UNMAPPED] ${ndc} (${normalized})`);
                 }
                 continue;
             }
@@ -130,7 +150,7 @@ export async function runCrossLinker({ compoundsPath = COMPOUNDS, adapterPath = 
     }
     if (bulkMaps) {
         const tele = hydrateLabelRxcuisFromNdcs(adapterRecords, bulkMaps);
-        console.log(`[ADAPTER-LINKER] NDC->RxCUI hydration: labels_hydrated=${tele.labels_hydrated} excluded_unmapped_ndc=${tele.excluded_unmapped_ndc_count} zero_match=${tele.labels_zero_match} already_populated=${tele.labels_skipped_already_populated}`);
+        console.log(`[ADAPTER-LINKER] NDC->RxCUI hydration: labels_hydrated=${tele.labels_hydrated} excluded_unmapped_ndc=${tele.excluded_unmapped_ndc_count} (malformed=${tele.malformed_ndc_count} unmapped=${tele.unmapped_ndc_count}) zero_match=${tele.labels_zero_match} already_populated=${tele.labels_skipped_already_populated}`);
         if (tele.sample_unmapped_ndcs.length > 0) {
             console.log(`[ADAPTER-LINKER] sample unmapped NDCs (first ${tele.sample_unmapped_ndcs.length}): ${tele.sample_unmapped_ndcs.join(',')}`);
         }

@@ -63,6 +63,50 @@ describe('PR-RXN-1: parseRxcuiIndexJsonl + lookup APIs', () => {
         expect(hit.size).toBe(0);
     });
 
+    it('5a. lookupByNdc accepts HIPAA-segmented input (5-3-2 / 5-4-1 / 4-4-2) -> same Set as 11-digit form', () => {
+        // PR-RXN-1b-ndc-normalize: deferred-normalization contract enforced at lookup.
+        // Uses the three canonical HIPAA-padded examples baked into ndc-normalize.js JSDoc.
+        // 5-3-2: "50242-040-62" -> "50242004062" (pad product 3 -> 4 via inserted "0")
+        const parsed532 = parseRxcuiIndexJsonl(makeJsonl([
+            { rxcui: 'IN_532', preferred_str: 'Drug-532', tty: 'IN', sab: 'RXNORM', unii: null, ndcs: ['50242004062'] },
+        ]));
+        const ref532 = lookupByNdc(parsed532, '50242004062');
+        const seg532 = lookupByNdc(parsed532, '50242-040-62');
+        expect(ref532.size).toBe(1);
+        expect(seg532).toEqual(ref532);
+        // 5-4-1: "12345-6789-0" -> "12345678900" (pad package 1 -> 2 via "0"
+        // inserted between product and package per ndc-normalize.js
+        // `labeler + product + '0' + pkg` -- note JSDoc example "12345067890"
+        // is misleading; code-actual output is what RxNorm map keys hold).
+        const parsed541 = parseRxcuiIndexJsonl(makeJsonl([
+            { rxcui: 'IN_541', preferred_str: 'Drug-541', tty: 'IN', sab: 'RXNORM', unii: null, ndcs: ['12345678900'] },
+        ]));
+        const ref541 = lookupByNdc(parsed541, '12345678900');
+        const seg541 = lookupByNdc(parsed541, '12345-6789-0');
+        expect(ref541.size).toBe(1);
+        expect(seg541).toEqual(ref541);
+        // 4-4-2: "0042-0220-01" -> "00042022001" (pad labeler 4 -> 5 via prepended "0")
+        const parsed442 = parseRxcuiIndexJsonl(makeJsonl([
+            { rxcui: 'IN_442', preferred_str: 'Drug-442', tty: 'IN', sab: 'RXNORM', unii: null, ndcs: ['00042022001'] },
+        ]));
+        const ref442 = lookupByNdc(parsed442, '00042022001');
+        const seg442 = lookupByNdc(parsed442, '0042-0220-01');
+        expect(ref442.size).toBe(1);
+        expect(seg442).toEqual(ref442);
+    });
+
+    it('5b. lookupByNdc with malformed input returns empty Set without throwing', () => {
+        const parsed = parseRxcuiIndexJsonl(makeJsonl([
+            { rxcui: 'IN1', preferred_str: 'X', tty: 'IN', sab: 'RXNORM', unii: 'U1', ndcs: ['00088115033'] },
+        ]));
+        // Non-numeric chars, wrong segment count, non-HIPAA shape -> all return empty Set
+        for (const bad of ['INVALID-NDC-STRING', '00088', '00088-115', '00088-115-033-extra', 'abc-def-gh', '']) {
+            const hit = lookupByNdc(parsed, bad);
+            expect(hit instanceof Set).toBe(true);
+            expect(hit.size).toBe(0);
+        }
+    });
+
     it('5. malformed lines skipped without throwing; valid records still indexed', () => {
         const jsonl = [
             '#{"license_metadata":{"upstream_source":"rxnorm_prescribable"}}',
