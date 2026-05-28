@@ -1,0 +1,58 @@
+name: Factory DailyMed Fan-in NDC Backfill
+
+# PR-RXN-1b-fanin-patch: one-shot operator-dispatched backfill of fan-in
+# cumulative all-records.jsonl.gz with ndcs[] on drug_label records.
+#
+# This is the COMPANION to factory-dailymed-ndc-backfill.yml (which targets
+# F3 aggregated drug-labels.jsonl). The fan-in path is consumed by F2
+# cross-linker via adapter-bridge.js; only this path's hydration activates
+# compound.drug_labels[] backlink generation.
+#
+# Architect 2026-05-28 spec: manual workflow_dispatch only (no cron).
+# dry_run defaults TRUE for safety -- operator must explicitly authorize
+# the write dispatch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Skip R2 PUT (verify parity, emit manifest preview)'
+        required: false
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
+
+permissions:
+  contents: read
+
+env:
+  R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+  R2_BUCKET: ${{ secrets.R2_BUCKET }}
+  R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+  R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install deps
+        run: npm ci
+      - name: Run fan-in NDC backfill
+        run: |
+          set -e
+          ARGS=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          node scripts/factory/backfill-dailymed-fanin-ndcs.js $ARGS
+      - name: Summary
+        if: always()
+        run: |
+          echo "## PR-RXN-1b-fanin-patch DailyMed fan-in NDC hydration" >> $GITHUB_STEP_SUMMARY
+          echo "- dry_run: ${{ github.event.inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
