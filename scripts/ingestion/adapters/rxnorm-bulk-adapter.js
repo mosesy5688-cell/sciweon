@@ -22,6 +22,7 @@ import { writeFileSync, readFileSync, unlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
+import { normalizeNdcTo11Digit } from '../../factory/lib/ndc-normalize.js';
 
 const CURSOR_KEY = 'state/rxnorm-bulk-cursor.json';
 const REQUIRED_ENV = ['R2_ENDPOINT', 'R2_BUCKET', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'];
@@ -126,8 +127,22 @@ export function lookupByUnii(maps, unii) {
     return maps?.uniiToRxcui?.get(unii) ?? null;
 }
 
-/** O(1) NDC -> Set of ingredient RxCUI metas lookup. Returns empty Set on miss. */
+/**
+ * O(1) NDC -> Set of ingredient RxCUI metas lookup.
+ *
+ * Input is normalized via normalizeNdcTo11Digit before map lookup so callers
+ * may pass either HIPAA-segmented (4-4-2 / 5-3-2 / 5-4-1) or already-11-digit
+ * forms -- map keys are always 11-digit numeric per rxnorm-harvest LOCK 2.
+ * Pre-PR-RXN-1b-ndc-normalize the deferred normalization contract
+ * (dailymed-fetcher.js:133) was never enforced, so all segmented-input
+ * lookups silently missed and DailyMed cross-link sat at 0%.
+ *
+ * Returns empty Set on (a) non-string/empty input, (b) malformed NDC the
+ * normalizer cannot resolve, or (c) normalized key not in map.
+ */
 export function lookupByNdc(maps, ndc) {
     if (typeof ndc !== 'string' || ndc.length === 0) return new Set();
-    return maps?.ndcToRxcuis?.get(ndc) ?? new Set();
+    const normalized = normalizeNdcTo11Digit(ndc);
+    if (!normalized) return new Set();
+    return maps?.ndcToRxcuis?.get(normalized) ?? new Set();
 }
