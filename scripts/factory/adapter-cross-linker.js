@@ -21,6 +21,7 @@
  */
 
 import fs from 'fs/promises';
+import { loadRxnormBulkMaps, lookupByNdc } from '../ingestion/adapters/rxnorm-bulk-adapter.js';
 
 const COMPOUNDS    = './output/linked/compounds-enriched.jsonl';
 const ADAPTER      = './output/linked/adapter-cumulative.jsonl';
@@ -28,6 +29,78 @@ const DRUG_LABELS  = './output/linked/drug-labels.jsonl';
 
 function parseJsonl(text) {
     return text.split('\n').filter(Boolean).map(l => JSON.parse(l));
+}
+
+/**
+ * PR-RXN-1b: hydrate drug_label.rxcui[] from drug_label.ndcs[] via RxNorm
+ * bulk Map lookup. Pre-step for downstream dailymedByRxcui builder (which
+ * iterates r.rxcui[]). DailyMed v2 API never emits rxcui on label metadata;
+ * this function activates the cross-link path by resolving NDC -> ingredient
+ * RxCUI through the architecturally graph-flattened RxNorm bulk index.
+ *
+ * Fail-soft per-NDC (architect lock 2026-05-28 +
+ * [[scope_vs_quality_validation_segregation]]): a single unmapped NDC in a
+ * multi-NDC label MUST NOT nuke parent label backlinks; bucket-counted in
+ * excluded_unmapped_ndc_count telemetry.
+ *
+ * Combination-product 1:N: lookupByNdc returns Set<{rxcui,...}> per the
+ * concept-level-graph design in PR-RXN-1. Combo NDC (e.g., Combivent =
+ * ipratropium + albuterol) maps to 2 ingredient RxCUIs; label.rxcui[] gets
+ * the dedup union across all NDCs in the label.
+ *
+ * Idempotent: r.rxcui[] already non-empty -> treat as already hydrated.
+ *
+ * Deterministic: [...resolved].sort() ensures byte-identical output across
+ * runs on identical input (Constitution Art 7).
+ *
+ * Pure function: no I/O, mutates only r.rxcui on matching records, returns
+ * telemetry by value.
+ */
+export function hydrateLabelRxcuisFromNdcs(adapterRecords, maps) {
+    const telemetry = {
+        labels_with_ndcs: 0,
+        labels_hydrated: 0,
+        labels_zero_match: 0,
+        labels_skipped_already_populated: 0,
+        excluded_unmapped_ndc_count: 0,
+        sample_unmapped_ndcs: [],
+    };
+    if (!Array.isArray(adapterRecords)) return telemetry;
+    for (const r of adapterRecords) {
+        if (!r?.id?.startsWith?.('sciweon::drug_label::')) continue;
+        if (!Array.isArray(r.ndcs) || r.ndcs.length === 0) continue;
+        if (Array.isArray(r.rxcui) && r.rxcui.length > 0) {
+            telemetry.labels_skipped_already_populated++;
+            continue;
+        }
+        telemetry.labels_with_ndcs++;
+        const resolved = new Set();
+        for (const ndc of r.ndcs) {
+            if (typeof ndc !== 'string' || ndc.length === 0) {
+                telemetry.excluded_unmapped_ndc_count++;
+                if (telemetry.sample_unmapped_ndcs.length < 10) {
+                    telemetry.sample_unmapped_ndcs.push(String(ndc));
+                }
+                continue;
+            }
+            const hits = lookupByNdc(maps, ndc);
+            if (hits.size === 0) {
+                telemetry.excluded_unmapped_ndc_count++;
+                if (telemetry.sample_unmapped_ndcs.length < 10) {
+                    telemetry.sample_unmapped_ndcs.push(ndc);
+                }
+                continue;
+            }
+            for (const meta of hits) resolved.add(meta.rxcui);
+        }
+        if (resolved.size === 0) {
+            telemetry.labels_zero_match++;
+            continue;
+        }
+        r.rxcui = [...resolved].sort();
+        telemetry.labels_hydrated++;
+    }
+    return telemetry;
 }
 
 export async function runCrossLinker({ compoundsPath = COMPOUNDS, adapterPath = ADAPTER, drugLabelsPath = DRUG_LABELS } = {}) {
@@ -42,6 +115,26 @@ export async function runCrossLinker({ compoundsPath = COMPOUNDS, adapterPath = 
         throw e;
     }
     console.log(`[ADAPTER-LINKER] ${adapterRecords.length} adapter records loaded`);
+
+    // PR-RXN-1b: NDC->RxCUI hydration pre-step. Loads RxNorm bulk Map from R2
+    // and populates drug_label.rxcui[] for records that have ndcs[] but lack
+    // rxcui[] (the universal pre-PR-RXN-1b state because DailyMed v2 API
+    // never emits rxcui on label metadata). Graceful degradation: if bulk
+    // map unavailable (R2 transient / bootstrap), log warn + skip hydration;
+    // cross-link falls back to pre-PR-RXN-1b empty-rxcui behavior (existing
+    // 0% baseline) rather than halting F3.
+    let bulkMaps = null;
+    try { bulkMaps = await loadRxnormBulkMaps(); }
+    catch (err) {
+        console.warn(`[ADAPTER-LINKER] RxNorm bulk maps unavailable (${err.message}) -- skipping NDC->RxCUI hydration; cross-link will degrade to prior empty-rxcui behavior`);
+    }
+    if (bulkMaps) {
+        const tele = hydrateLabelRxcuisFromNdcs(adapterRecords, bulkMaps);
+        console.log(`[ADAPTER-LINKER] NDC->RxCUI hydration: labels_hydrated=${tele.labels_hydrated} excluded_unmapped_ndc=${tele.excluded_unmapped_ndc_count} zero_match=${tele.labels_zero_match} already_populated=${tele.labels_skipped_already_populated}`);
+        if (tele.sample_unmapped_ndcs.length > 0) {
+            console.log(`[ADAPTER-LINKER] sample unmapped NDCs (first ${tele.sample_unmapped_ndcs.length}): ${tele.sample_unmapped_ndcs.join(',')}`);
+        }
+    }
 
     // Build lookup maps — only WHO-ATC and DailyMed entities are consumed here;
     // other adapter types (chembl, clinicaltrials, etc.) have dedicated enrichers.
