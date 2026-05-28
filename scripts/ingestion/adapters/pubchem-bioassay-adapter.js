@@ -50,15 +50,53 @@ function fetchJson(url) {
     return fetchJsonWithRetry(url, { timeoutMs: REQUEST_TIMEOUT_MS, allow404: true });
 }
 
+// PR-CORE-PUBCHEM-BIOASSAY-DRAIN 2026-05-28 (architect lock): 503-storm
+// circuit breaker. PubChem PUG REST goes 503 during NCBI maintenance
+// windows; without short-circuit each CID burns ~5s on 3-retry exponential
+// backoff before throwing -- thousands of CIDs cascade into multi-hour
+// F2 black-hole (F2 run 26567469567 stuck 2.5h pre-cancel).
+//
+// Pattern: per-CID `fetchAssaySummaryByCid` checks the module-level
+// breaker at entry. Tripped -> instant return [] without HTTP. Caller's
+// drainAdapterBacklog iteration then sweeps remaining CIDs at near-zero
+// latency, advances cursor normally, F2 stage exits gracefully.
+//
+// Reset semantics: F2 spawns each enricher in a fresh `node` process via
+// runScript() -> module state does not leak across enrichers OR cron
+// cycles. Each new F2 cycle gets a clean breaker; PubChem recovery
+// surfaces immediately on next run.
+const CIRCUIT_503_THRESHOLD = 3;
+const breakerState = {
+    consecutive503: 0,
+    tripped: false,
+    trippedAt: null,
+    tripCount: 0,
+};
+
+export function getCircuitBreakerState() {
+    return { ...breakerState };
+}
+
+export function resetCircuitBreaker() {
+    breakerState.consecutive503 = 0;
+    breakerState.tripped = false;
+    breakerState.trippedAt = null;
+    breakerState.tripCount = 0;
+}
+
 /**
  * Fetch all bioassay summary rows for one compound (CID).
  * Returns parsed array of assay records (PRIMARY-only fields).
  */
 export async function fetchAssaySummaryByCid(cid) {
     if (!cid) return [];
+    // PR-CORE-PUBCHEM-BIOASSAY-DRAIN circuit breaker: short-circuit on
+    // 503-storm. caller treats [] as "no assay summary" (existing semantics).
+    if (breakerState.tripped) return [];
     const url = `${PUBCHEM_BASE}/compound/cid/${cid}/assaysummary/JSON`;
     try {
         const data = await fetchJson(url);
+        breakerState.consecutive503 = 0;  // reset on any success
         if (!data?.Table?.Row) return [];
         const cols = (data.Table.Columns?.Column ?? []).map(c => c);
         const idx = {
@@ -78,6 +116,20 @@ export async function fetchAssaySummaryByCid(cid) {
             .map(r => parseAssayRow(r.Cell, idx))
             .filter(Boolean);
     } catch (e) {
+        // Detect 503 (fetchJsonWithRetry exhausts its own 3 retries before
+        // throwing -> one exception here == 3 PubChem requests already
+        // failed for this CID). Each failing CID burns ~3-15s on retry
+        // backoff. Tripping after 3 consecutive == ~9-45s tolerance,
+        // then all remaining CIDs short-circuit in <1ms each.
+        if (e?.message?.includes('HTTP 503')) {
+            breakerState.consecutive503++;
+            if (!breakerState.tripped && breakerState.consecutive503 >= CIRCUIT_503_THRESHOLD) {
+                breakerState.tripped = true;
+                breakerState.trippedAt = new Date().toISOString();
+                breakerState.tripCount++;
+                console.warn(`[PUBCHEM-BIOASSAY] 503-storm circuit-breaker TRIPPED after ${CIRCUIT_503_THRESHOLD} consecutive 503 exhaustions; remaining CIDs short-circuit to [] until process restart`);
+            }
+        }
         console.warn(`[PUBCHEM-BIOASSAY] CID ${cid}: ${e.message}`);
         return [];
     }
