@@ -6,25 +6,17 @@
  * cumulative) and BEFORE buildSearchIndex (so downstream indices see
  * the backfilled records).
  *
- * Closes the wiring arc that PR-CORE-2 missed: PR-CORE-2's cursor
- * enrichers operate on the F1 increment in F2 (4999 records), never
- * touching the ~70k cumulative backlog. PR-CORE-3 walks the cumulative
- * via the SAME enricher.enrichOne functions + skip-if-stamped predicates,
- * with a separate cursor namespace at state/aggregated-cursor/<source>.json.
+ * Closes the wiring arc PR-CORE-2 missed: its F2 cursor enrichers see only the
+ * F1 increment (~5k), never the ~70k cumulative backlog. PR-CORE-3 walks the
+ * cumulative via the SAME enrichOne + skip-if-stamped predicates, in a separate
+ * cursor namespace state/aggregated-cursor/<source>.json. Triple-lock
+ * ([[no_shortcut_in_science]]): full O(N/chunk) coverage; predicates ==
+ * SOURCE_REQUIRED_FIELDS SSoT; closed PR-CORE-1->3->1 loop. D7/D8: per-source
+ * failure logs explicit, never aborts; cursor persists across partial failure.
  *
- * Triple-lock anchor (per [[no_shortcut_in_science]]):
- *   - scale: lex-sorted cursor advances every cycle; full coverage in
- *     O(N/chunk_size). Conservative chunk_size 2000 (~21 min total
- *     walltime added to F3's 350-min budget).
- *   - quality: skip-if-stamped predicates are byte-identical to
- *     SOURCE_REQUIRED_FIELDS SSoT - no drift between PR-CORE-1 audit
- *     and PR-CORE-3 remediation.
- *   - relational structure: forms the PR-CORE-1 -> PR-CORE-3 -> PR-CORE-1
- *     closed feedback loop (audit drives backfill drives next audit).
- *
- * Failure containment (D7): per-source failure logs explicit, does NOT
- * abort the script. Cursor is written before exit even on partial-chunk
- * failure (D8) so the next cycle does not re-attempt the same records.
+ * PR-RXN-1g adds two F3-cumulative bridges: (Fix A) a RxNorm bulk fast-path
+ * pre-pass so the bulk Map UNII supply reaches the backlog; (Fix B) a terminal
+ * cumulative DailyMed re-link on the resident array before writeback.
  */
 
 import fs from 'fs/promises';
@@ -42,14 +34,18 @@ import {
 import {
     isEligible as isEligibleRxnorm,
     enrichOne as enrichOneRxnorm,
+    bulkEnrichOne as bulkEnrichOneRxnorm,
 } from './compound-rxnorm-enricher.js';
 import {
     isEligible as isEligibleFaers,
     enrichOne as enrichOneFaers,
 } from './compound-faers-enricher.js';
+import { loadRxnormBulkMaps } from '../ingestion/adapters/rxnorm-bulk-adapter.js';
+import { relinkCumulativeDailymed } from './lib/dailymed-crosslink.js';
 
 const DATA_DIR = './output/linked';
 const COMPOUNDS_FILE = path.join(DATA_DIR, 'compounds-enriched.jsonl');
+const DRUG_LABELS_FILE = path.join(DATA_DIR, 'drug-labels.jsonl');
 const CURSOR_PREFIX = 'state/aggregated-cursor/';
 const DEFAULT_BACKFILL_CHUNK = 2000;
 const DRAIN_BUDGET_MS = Number(process.env.ADAPTER_DRAIN_BUDGET_MS) || 25 * 60 * 1000;
@@ -58,7 +54,7 @@ const COLD_START_MS = Number(process.env.ADAPTER_DRAIN_COLD_START_MS) || DEFAULT
 // Conservative per-source rate limits matching the underlying adapters.
 const SOURCE_CONFIG = Object.freeze({
     unichem:       { delayMs: 250, enrichOne: enrichOneUnichem, isEligible: isEligibleUnichem },
-    rxnorm:        { delayMs: 150, enrichOne: enrichOneRxnorm,  isEligible: isEligibleRxnorm  },
+    rxnorm:        { delayMs: 150, enrichOne: enrichOneRxnorm,  isEligible: isEligibleRxnorm, bulkEnrichOne: bulkEnrichOneRxnorm },
     openfda_faers: { delayMs: 250, enrichOne: enrichOneFaers,   isEligible: isEligibleFaers   },
 });
 
@@ -86,7 +82,7 @@ async function writeJsonl(file, records) {
 // Mutates compounds in place via shared object refs through eligible filter.
 // Per architect Lock 1: drainAdapterBacklog scopes runStart per-call so
 // sequential sources never inherit a polluted shared clock.
-export async function backfillOneSource(sourceId, compounds) {
+export async function backfillOneSource(sourceId, compounds, bulkMaps = null) {
     const cfg = SOURCE_CONFIG[sourceId];
     if (!cfg) throw new Error(`Unknown source: ${sourceId}`);
 
@@ -96,10 +92,27 @@ export async function backfillOneSource(sourceId, compounds) {
         console.warn(`[BACKFILL/${sourceId}] Cursor read failed (${err.message}) - starting fresh`);
     }
 
-    const eligible = compounds.filter(cfg.isEligible);
+    let eligible = compounds.filter(cfg.isEligible);
     if (eligible.length === 0) {
         console.log(`[BACKFILL/${sourceId}] Nothing eligible - all records already stamped or gate-fail.`);
         return { source: sourceId, processed: 0, stamped: 0, error: null };
+    }
+
+    // PR-RXN-1g Fix A: bulk fast-path pre-pass before the per-record REST drain
+    // so the RxNorm bulk Map (7234 UNII keys) reaches the ~70k cumulative
+    // backlog. Fail-soft (no bulk path / maps unavailable -> REST drain runs).
+    // Re-filter so REST drains only the bulk-map-missed long tail.
+    let bulkStamped = 0;
+    if (cfg.bulkEnrichOne && bulkMaps) {
+        for (const rec of eligible) cfg.bulkEnrichOne(rec, bulkMaps);
+        const after = eligible.filter(cfg.isEligible);
+        bulkStamped = eligible.length - after.length;
+        console.log(`[BACKFILL/${sourceId}] bulk pre-pass: eligible_entering=${eligible.length} bulk_hits=${bulkStamped} rest_fallback=${after.length} bulk_map_unii_keys=${bulkMaps.uniiToRxcui?.size ?? 0}`);
+        eligible = after;
+        if (eligible.length === 0) {
+            console.log(`[BACKFILL/${sourceId}] bulk pre-pass cleared all eligible - REST drain skipped.`);
+            return { source: sourceId, processed: bulkStamped, stamped: bulkStamped, error: null };
+        }
     }
 
     // Forensic sample (1d audit per cont 47): pre-drain log first 10 eligible
@@ -138,7 +151,7 @@ export async function backfillOneSource(sourceId, compounds) {
     } catch (err) {
         errorMsg = err.message;
         console.error(`[BACKFILL/${sourceId}] Drain aborted mid-flight: ${err.message}`);
-        return { source: sourceId, processed: processedAttempts, stamped: stampedThisRun, error: errorMsg };
+        return { source: sourceId, processed: processedAttempts, stamped: stampedThisRun + bulkStamped, error: errorMsg };
     }
 
     // Forensic verdict per-source (1d audit): explicit empirical evidence
@@ -168,7 +181,7 @@ export async function backfillOneSource(sourceId, compounds) {
         console.log(`[BACKFILL/${sourceId}] No chunks drained -- cursor unchanged`);
     }
 
-    return { source: sourceId, processed: drain.processedInRun, stamped: stampedThisRun, error: errorMsg };
+    return { source: sourceId, processed: drain.processedInRun, stamped: stampedThisRun + bulkStamped, error: errorMsg };
 }
 
 async function main() {
@@ -181,11 +194,18 @@ async function main() {
     }
     console.log(`[BACKFILL] Loaded cumulative ${compounds.length} compounds`);
 
+    // PR-RXN-1g: load RxNorm bulk maps ONCE - shared by Fix A (rxnorm bulk
+    // pre-pass) and Fix B (DailyMed re-link label rehydration). Fail-soft:
+    // null maps degrade both to prior behavior, never crash the backfill.
+    let bulkMaps = null;
+    try { bulkMaps = await loadRxnormBulkMaps(); }
+    catch (err) { console.warn(`[BACKFILL] RxNorm bulk maps unavailable (${err.message}) - Fix A + Fix B degrade to prior behavior`); }
+
     const summaries = [];
     let anySuccess = false;
     for (const sourceId of Object.keys(SOURCE_CONFIG)) {
         try {
-            const r = await backfillOneSource(sourceId, compounds);
+            const r = await backfillOneSource(sourceId, compounds, bulkMaps);
             summaries.push(r);
             if (r.error == null) anySuccess = true;
         } catch (err) {
@@ -198,6 +218,11 @@ async function main() {
     // sources errored) is suspicious - keep the prior local file intact so
     // F3's upload step uses the unchanged-but-not-wrong merged cumulative.
     if (anySuccess) {
+        // PR-RXN-1g Fix B: cumulative DailyMed re-link on the resident array,
+        // after Fix A filled rxcui and before the single writeback.
+        const labels = await loadJsonl(DRUG_LABELS_FILE);
+        const rl = relinkCumulativeDailymed(compounds, labels, bulkMaps);
+        console.log(`[BACKFILL/dailymed-relink] labels_rehydrated=${rl.labelsRehydrated} dailymed_by_rxcui=${rl.dmByRxcuiSize} cumulative_dm_linked=${rl.dmLinked}`);
         await writeJsonl(COMPOUNDS_FILE, compounds);
         console.log(`[BACKFILL] Wrote back ${compounds.length} compounds to ${COMPOUNDS_FILE}`);
     } else {
