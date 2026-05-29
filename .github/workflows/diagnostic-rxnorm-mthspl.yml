@@ -1,0 +1,50 @@
+name: Diagnostic RxNorm MTHSPL UNII Probe
+
+# PR-RXN-1e: one-shot diagnostic probe to verify whether RxNorm
+# Prescribable Subset RXNCONSO.RRF rows with SAB='MTHSPL' carry FDA UNII
+# codes in the CODE column. If confirmed, follow-up PR will repoint the
+# bulk harvester's uniiToRxcui projection at this source, reviving the
+# compound-side bulk fast-path (currently bulk_map_unii_keys=0 because
+# Prescribable subset omits RXNSAT UNII attributes).
+#
+# Diagnostic-only (per [[external_dataset_diagnostic_first]]):
+#   - no R2 writes
+#   - no cursor mutation
+#   - no schema change
+# Reuses production probe script for archive URL + production csv-parse
+# RRF column SSoT for boundary safety.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe-and-diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install deps
+        run: npm ci
+      - name: Install unzip CLI
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq unzip
+      - name: Run probe (resolve latest archive URL)
+        run: |
+          set -e
+          node scripts/factory/rxnorm-probe.js > /tmp/rxnorm-probe.json
+          cat /tmp/rxnorm-probe.json
+      - name: Run MTHSPL UNII diagnostic
+        run: |
+          set -e
+          node scripts/factory/diagnostic-rxnorm-mthspl.js --probe-json=/tmp/rxnorm-probe.json
+      - name: Summary
+        if: always()
+        run: |
+          echo "## PR-RXN-1e diagnostic" >> $GITHUB_STEP_SUMMARY
+          echo "Probe archive + sampled first 100 MTHSPL rows; UNII shape match % in workflow log." >> $GITHUB_STEP_SUMMARY
