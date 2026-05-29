@@ -1,23 +1,23 @@
 /**
  * RxNorm FULL RRF + UMLS-auth diagnostic probe (PR-RXN-2a, diagnostic-only).
  *
- * De-risks the two unverifiable externals before any production switch
- * (PR-RXN-2b) per [[external_dataset_diagnostic_first]]:
+ * De-risks the Full-RRF switch (PR-RXN-2b) per [[external_dataset_diagnostic_first]].
  *   1. UMLS auth -- probes BOTH download paths head-to-head in one run:
  *      (A) the API-key download proxy
  *          https://uts-ws.nlm.nih.gov/download?url=<inner>&apiKey=<key>
- *      (B) the legacy CAS TGT/Service-Ticket flow (utslogin -> ticket -> GET).
- *      HTTP 200/206 is the SOLE verdict; reports which path won. Do NOT trust
- *      the doc -- empirical status only.
- *   2. UNII payoff -- streams RXNSAT.RRF from the Full archive and dumps the
- *      ATN='UNII' row count, canonical-shape pct (re-confirms the locked
- *      ...ATN,SAB,ATV... column order survives the Full release), distinct
- *      UNII->ingredient-RXCUI count (vs today's narrow 7234 MTHSPL keys), the
- *      SAB distribution of UNII rows, and the archive size.
+ *      (B) the legacy CAS TGT/Service-Ticket flow.
+ *      HTTP 200/206 is the SOLE verdict; reports which path won. (Run 26667631988:
+ *      BOTH returned 200; apiKey-proxy locked.)
+ *   2. UNII payoff -- measures the CORRECT source. PR-RXN-2a-1 scanned RXNSAT
+ *      ATN='UNII' and found 0 of 7.6M rows: RxNorm carries UNII NOT in RXNSAT but
+ *      in RXNCONSO under SAB='MTHSPL' TTY='SU' CODE (the PR-RXN-1f axis). So this
+ *      probe streams RXNCONSO.RRF and counts the Full release's MTHSPL/SU canonical
+ *      UNII keys vs today's narrow Prescribable-subset baseline of 7234.
  *
  * Telemetry-only: no R2 writes, no cursor mutation, no schema change.
- * Reuses production RXNSAT_COLUMNS + isCanonicalUnii SSoT (column boundary
- * identical to rxnorm-harvest.js) + release-discovery date helpers.
+ * Reuses production RXNCONSO_COLUMNS + isCanonicalUnii SSoT (csv-parse named
+ * columns, NOT positional line.split -- column boundary identical to the
+ * harvester, immune to the PR-RXN-1 column-order trap) + release-discovery helpers.
  *
  * Exit: 0 OK / 1 args (no UMLS_API_KEY) / 2 auth (both paths failed) / 3 download-or-parse
  */
@@ -29,24 +29,25 @@ import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 import StreamZip from 'node-stream-zip';
 import { parse as parseCsv } from 'csv-parse';
-import { RXNSAT_COLUMNS, findRrfEntry, isCanonicalUnii } from './lib/rxnorm-rrf-streams.js';
+import { RXNCONSO_COLUMNS, findRrfEntry, isCanonicalUnii } from './lib/rxnorm-rrf-streams.js';
 import { firstMondayOfMonth, formatMMDDYYYY, formatIsoDate } from './lib/rxnorm-release-discovery.js';
 
 const SAMPLE_LIMIT = 100;
 const FULL_RRF_BASE = 'https://download.nlm.nih.gov/umls/kss/rxnorm/';
 const DOWNLOAD_PROXY = 'https://uts-ws.nlm.nih.gov/download';
 const CAS_APIKEY_URL = 'https://utslogin.nlm.nih.gov/cas/v1/api-key';
+const PRESCRIBABLE_BASELINE = 7234;
 
 /**
- * Pure classifier for one RXNSAT row. is_unii_attr iff ATN==='UNII';
- * unii_shape iff the ATV value is a canonical NLM UNII (trim+upper).
- * Non-object / missing fields -> both false. Locked under unit test so the
- * column boundary cannot drift from the harvester.
+ * Pure classifier for one RXNCONSO row on the UNII axis. is_mthspl_su iff the
+ * row is SAB='MTHSPL' TTY='SU'; unii_shape iff that row's CODE is a canonical
+ * NLM UNII (trim+upper). A non-MTHSPL/SU row never counts as UNII even when its
+ * CODE happens to be UNII-shaped (the column-trap guard). Locked under unit test.
  */
-export function classifyRxnsatUniiRow(row) {
-    const isUnii = row?.ATN === 'UNII';
-    const atv = typeof row?.ATV === 'string' ? row.ATV.trim().toUpperCase() : '';
-    return { is_unii_attr: isUnii, unii_shape: isUnii && isCanonicalUnii(atv), unii: atv };
+export function classifyMthsplConsoRow(row) {
+    const isMthsplSu = row?.SAB === 'MTHSPL' && row?.TTY === 'SU';
+    const code = typeof row?.CODE === 'string' ? row.CODE.trim().toUpperCase() : '';
+    return { is_mthspl_su: isMthsplSu, unii_shape: isMthsplSu && isCanonicalUnii(code), unii: code };
 }
 
 function defaultFullRrfUrl(now = new Date()) {
@@ -118,25 +119,25 @@ async function resolveAuth(inner, apiKey) {
     return null;
 }
 
-async function dumpRxnsatUnii(tmpZip) {
+// Stream RXNCONSO.RRF; count Full-release MTHSPL/SU canonical UNII keys vs baseline.
+async function dumpMthsplConsoUnii(tmpZip) {
     const zip = new StreamZip.async({ file: tmpZip });
-    let total = 0, uniiRows = 0, shapeOk = 0, sample = 0;
+    let total = 0, mthsplSu = 0, shapeOk = 0, sample = 0;
     const distinctUnii = new Set();
     const uniiByRxcui = new Map();
-    const sabCounts = new Map();
     try {
-        const target = findRrfEntry(await zip.entries(), 'RXNSAT.RRF');
-        if (!target) throw new Error('RXNSAT.RRF entry not found in ZIP');
+        const target = findRrfEntry(await zip.entries(), 'RXNCONSO.RRF');
+        if (!target) throw new Error('RXNCONSO.RRF entry not found in ZIP');
         const parser = (await zip.stream(target.name)).pipe(parseCsv({
-            delimiter: '|', columns: RXNSAT_COLUMNS, trim: false,
+            delimiter: '|', columns: RXNCONSO_COLUMNS, trim: false,
             relax_quotes: true, relax_column_count: true, skip_empty_lines: true,
         }));
         for await (const row of parser) {
             total++;
-            const c = classifyRxnsatUniiRow(row);
-            if (!c.is_unii_attr) continue;
-            uniiRows++;
-            sabCounts.set(row.SAB, (sabCounts.get(row.SAB) || 0) + 1);
+            if (row.SUPPRESS && row.SUPPRESS !== 'N') continue;
+            const c = classifyMthsplConsoRow(row);
+            if (!c.is_mthspl_su) continue;
+            mthsplSu++;
             if (c.unii_shape) {
                 shapeOk++;
                 distinctUnii.add(c.unii);
@@ -144,13 +145,12 @@ async function dumpRxnsatUnii(tmpZip) {
             }
             if (sample < SAMPLE_LIMIT) {
                 sample++;
-                console.log(`[RXNSAT-UNII-${sample}] RXCUI=${row.RXCUI} ATN=${row.ATN} SAB=${row.SAB} ATV='${row.ATV}' shape=${c.unii_shape}`);
+                console.log(`[MTHSPL-SU-${sample}] RXCUI=${row.RXCUI} CODE='${row.CODE}' shape=${c.unii_shape} STR=${(row.STR ?? '').slice(0, 60)}`);
             }
         }
     } finally { await zip.close(); }
-    const pct = uniiRows > 0 ? ((shapeOk / uniiRows) * 100).toFixed(2) : '0.00';
-    const sabDist = Object.fromEntries([...sabCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 15));
-    console.log(`[DIAGNOSTIC-SUMMARY] total_rxnsat_rows=${total} atn_unii_rows=${uniiRows} unii_shape_ok=${shapeOk} unii_shape_pct=${pct}% distinct_unii=${distinctUnii.size} distinct_unii_rxcui=${uniiByRxcui.size} (vs current MTHSPL 7234) sab_distribution=${JSON.stringify(sabDist)}`);
+    const pct = mthsplSu > 0 ? ((shapeOk / mthsplSu) * 100).toFixed(2) : '0.00';
+    console.log(`[DIAGNOSTIC-SUMMARY] total_rxnconso_rows=${total} mthspl_su_rows=${mthsplSu} unii_shape_ok=${shapeOk} unii_shape_pct=${pct}% distinct_full_unii=${distinctUnii.size} distinct_unii_rxcui=${uniiByRxcui.size} vs_prescribable_baseline=${PRESCRIBABLE_BASELINE}`);
 }
 
 async function main() {
@@ -166,7 +166,7 @@ async function main() {
     try {
         const bytes = await auth.download(tmpZip);
         console.log(`[DIAGNOSTIC] downloaded Full RRF zip=${bytes} bytes (~${(bytes / 1e9).toFixed(2)} GB) via ${auth.label}`);
-        await dumpRxnsatUnii(tmpZip);
+        await dumpMthsplConsoUnii(tmpZip);
         console.log('[DIAGNOSTIC-END]');
     } finally {
         try { unlinkSync(tmpZip); } catch { /* ignore */ }
