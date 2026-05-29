@@ -1,0 +1,52 @@
+name: Diagnostic RxNorm Full RRF UMLS Probe
+
+# PR-RXN-2a: one-shot diagnostic that de-risks the Full RxNorm RRF switch
+# before any production change (PR-RXN-2b) per [[external_dataset_diagnostic_first]].
+#   1. UMLS auth -- probes BOTH download paths head-to-head (apiKey download
+#      proxy + legacy CAS TGT/Service-Ticket); HTTP 200/206 is the sole verdict.
+#   2. UNII payoff -- streams RXNSAT.RRF, dumps ATN='UNII' row count + canonical
+#      shape pct (re-confirms ...ATN,SAB,ATV... column order) + distinct
+#      UNII->RXCUI count (vs today's narrow 7234 MTHSPL keys) + SAB distribution.
+#
+# Diagnostic-only: no R2 writes, no cursor mutation, no schema change.
+# Reuses production RXNSAT_COLUMNS + isCanonicalUnii SSoT + release-discovery
+# date helpers. Requires UMLS_API_KEY secret (license APPROVED 2026-05-27).
+
+on:
+  workflow_dispatch:
+    inputs:
+      full_url:
+        description: 'Optional explicit Full RRF inner URL override (default = current-month first-Monday RxNorm_full_<MMDDYYYY>.zip at the UMLS kss path)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  probe-full-rrf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      UMLS_API_KEY: ${{ secrets.UMLS_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install deps
+        run: npm ci
+      - name: Run Full RRF UMLS-auth diagnostic
+        run: |
+          set -e
+          if [ -n "${{ inputs.full_url }}" ]; then
+            node scripts/factory/diagnostic-rxnorm-full-probe.js --full-url="${{ inputs.full_url }}"
+          else
+            node scripts/factory/diagnostic-rxnorm-full-probe.js
+          fi
+      - name: Summary
+        if: always()
+        run: |
+          echo "## PR-RXN-2a Full RRF + UMLS diagnostic" >> $GITHUB_STEP_SUMMARY
+          echo "Auth path verdict + RXNSAT ATN=UNII payoff (distinct_unii_rxcui vs 7234) in the workflow log." >> $GITHUB_STEP_SUMMARY
