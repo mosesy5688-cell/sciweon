@@ -34,7 +34,7 @@ export const TRIAL_SCHEMA = {
             'CANCELLED', 'UNDER_EVALUATION', 'NOT_YET_AUTHORISED',
         ],
     },
-    status_reason: { type: 'string', required: false, maxLength: 4000 },
+    status_reason: { type: 'string', required: false, maxLength: 8000 },
     is_negative_outcome: { type: 'boolean', required: true }, // status in {TERMINATED, WITHDRAWN}
 
     // ─── Trial Details ───
@@ -49,15 +49,19 @@ export const TRIAL_SCHEMA = {
     interventions: {
         type: 'array', required: false, maxItems: 200,
         itemShape: {
-            // V0.5.1 widened 500 -> 2000; V0.6 cycle 20 widened 2000 -> 4000.
-            // CTIS (EU) trials carry multilingual, multi-compound combination
-            // descriptions that routinely exceed 500 characters. Run 25934066131
-            // halted on a 635-char name (trial:2024-519857-13-00); run 26262787261
-            // halted on a 2039-char name (trial:2024-519186-21-01). Schema, not
-            // data, was the deviation both times. Keeping a generous upper bound
-            // prevents truncation of legitimate primary-source content; pathological
-            // inputs are still capped to avoid runaway entity sizes.
-            name: { type: 'string', required: true, maxLength: 4000 },
+            // V0.5.1 widened 500->2000; V0.6 cycle 20 widened 2000->4000;
+            // PR-TRIAL-WIDEN-8K widened 4000->8000. CTIS (EU) trials carry
+            // multilingual, multi-compound combination descriptions that
+            // routinely exceed 500 characters. Halts: run 25934066131 (635-char
+            // trial:2024-519857-13-00); run 26262787261 (2039-char
+            // trial:2024-519186-21-01); run 26648812843 (4020-char
+            // trial:2024-518115-19-02). Schema, not data, was the deviation each
+            // time. Generous bound prevents truncation of legitimate primary-source
+            // content; finite cap still guards runaway entity sizes (NXVF shard
+            // 8-10MB cap). Follow-up PR-TRIAL-ISOLATION converts overflow from
+            // primary-halt to scope-tier fail-soft so one oversized trial no
+            // longer halts the whole F3 chain.
+            name: { type: 'string', required: true, maxLength: 8000 },
             compound_id: { type: 'string', required: false }, // FK to Compound if matched
             mapping_confidence: { type: 'number', required: false, min: 0, max: 100 },
             type: {
