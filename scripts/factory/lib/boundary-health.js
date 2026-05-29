@@ -5,9 +5,14 @@
  * alongside the existing per-source attribution scan:
  *
  *   1. Retry queue depth (PubChem ingestion boundary)
- *      - OK:    depth <= 50
- *      - WARN:  50 < depth <= 200
- *      - FAIL:  depth > 200    (real PubChem outage signal)
+ *      - OK:    depth <= 200
+ *      - WARN:  200 < depth <= 400
+ *      - FAIL:  depth > 400    (real PubChem outage signal)
+ *      PR-OPS-1 post-storm uplift: prior 50/200 bands triggered false WARN
+ *      during the natural drainage tail after PR #188's 503 circuit
+ *      breaker absorbed a PubChem storm. New bands give the post-storm
+ *      wake operational headroom while keeping FAIL meaningfully below
+ *      MAX_QUEUE_DEPTH=1500 hard cap.
  *
  *   2. Harvest WARN aggregate sustained signal
  *      - Reads last 2 harvest summaries from state/harvest-history/
@@ -28,8 +33,9 @@
 import { readQueue, MAX_QUEUE_DEPTH } from './harvest-retry-queue.js';
 import { listLatestHarvests } from './harvest-history.js';
 
-const QUEUE_WARN_THRESHOLD = 50;
-const QUEUE_FAIL_THRESHOLD = 200;
+// PR-OPS-1 post-storm threshold uplift: prior 50/200 -> new 200/400.
+export const QUEUE_WARN_THRESHOLD = 200;
+export const QUEUE_FAIL_THRESHOLD = 400;
 
 function mergeStatus(a, b) {
     const rank = { OK: 0, WARN: 1, FAIL: 2 };
