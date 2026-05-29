@@ -11,6 +11,10 @@
  *           and no published snapshot ever carried drug-labels.jsonl.gz —
  *           blocking C2-7 (label vs FAERS PT contradictions matcher).
  *
+ * The DailyMed-join primitives (hydrate / build index / link) live in the SSoT
+ * lib (./lib/dailymed-crosslink.js) so the F2 increment linker here and the F3
+ * cumulative re-link (aggregated-backfill-enrich.js) share one join semantic.
+ *
  * Input:  output/linked/compounds-enriched.jsonl
  *         output/linked/adapter-cumulative.jsonl  (written by adapter-bridge.js)
  * Output: output/linked/compounds-enriched.jsonl  (in-place enrichment)
@@ -21,8 +25,14 @@
  */
 
 import fs from 'fs/promises';
-import { loadRxnormBulkMaps, lookupByNdc } from '../ingestion/adapters/rxnorm-bulk-adapter.js';
-import { normalizeNdcTo11Digit } from './lib/ndc-normalize.js';
+import { loadRxnormBulkMaps } from '../ingestion/adapters/rxnorm-bulk-adapter.js';
+import {
+    hydrateLabelRxcuisFromNdcs, buildDailymedByRxcui, linkCompoundsToDailymed,
+} from './lib/dailymed-crosslink.js';
+
+// Re-export the DailyMed-join SSoT so existing importers (and tests that import
+// hydrateLabelRxcuisFromNdcs from this module) keep resolving from here.
+export { hydrateLabelRxcuisFromNdcs, buildDailymedByRxcui, linkCompoundsToDailymed };
 
 const COMPOUNDS    = './output/linked/compounds-enriched.jsonl';
 const ADAPTER      = './output/linked/adapter-cumulative.jsonl';
@@ -30,97 +40,6 @@ const DRUG_LABELS  = './output/linked/drug-labels.jsonl';
 
 function parseJsonl(text) {
     return text.split('\n').filter(Boolean).map(l => JSON.parse(l));
-}
-
-/**
- * PR-RXN-1b: hydrate drug_label.rxcui[] from drug_label.ndcs[] via RxNorm
- * bulk Map lookup. Pre-step for downstream dailymedByRxcui builder (which
- * iterates r.rxcui[]). DailyMed v2 API never emits rxcui on label metadata;
- * this function activates the cross-link path by resolving NDC -> ingredient
- * RxCUI through the architecturally graph-flattened RxNorm bulk index.
- *
- * Fail-soft per-NDC (architect lock 2026-05-28 +
- * [[scope_vs_quality_validation_segregation]]): a single unmapped NDC in a
- * multi-NDC label MUST NOT nuke parent label backlinks; bucket-counted in
- * excluded_unmapped_ndc_count telemetry.
- *
- * Combination-product 1:N: lookupByNdc returns Set<{rxcui,...}> per the
- * concept-level-graph design in PR-RXN-1. Combo NDC (e.g., Combivent =
- * ipratropium + albuterol) maps to 2 ingredient RxCUIs; label.rxcui[] gets
- * the dedup union across all NDCs in the label.
- *
- * Idempotent: r.rxcui[] already non-empty -> treat as already hydrated.
- *
- * Deterministic: [...resolved].sort() ensures byte-identical output across
- * runs on identical input (Constitution Art 7).
- *
- * Pure function: no I/O, mutates only r.rxcui on matching records, returns
- * telemetry by value.
- */
-export function hydrateLabelRxcuisFromNdcs(adapterRecords, maps) {
-    const telemetry = {
-        labels_with_ndcs: 0,
-        labels_hydrated: 0,
-        labels_zero_match: 0,
-        labels_skipped_already_populated: 0,
-        // PR-RXN-1b-ndc-normalize: split exclusion bucket into malformed
-        // (normalizer null -- bad shape) vs unmapped (normalized OK but
-        // not in RxNorm map -- Prescribable subset boundary attrition or
-        // genuine historical / discontinued labeler). Preserves
-        // excluded_unmapped_ndc_count = malformed + unmapped for log
-        // backward-compat.
-        malformed_ndc_count: 0,
-        unmapped_ndc_count: 0,
-        excluded_unmapped_ndc_count: 0,
-        sample_unmapped_ndcs: [],
-    };
-    if (!Array.isArray(adapterRecords)) return telemetry;
-    for (const r of adapterRecords) {
-        if (!r?.id?.startsWith?.('sciweon::drug_label::')) continue;
-        if (!Array.isArray(r.ndcs) || r.ndcs.length === 0) continue;
-        if (Array.isArray(r.rxcui) && r.rxcui.length > 0) {
-            telemetry.labels_skipped_already_populated++;
-            continue;
-        }
-        telemetry.labels_with_ndcs++;
-        const resolved = new Set();
-        for (const ndc of r.ndcs) {
-            if (typeof ndc !== 'string' || ndc.length === 0) {
-                telemetry.malformed_ndc_count++;
-                telemetry.excluded_unmapped_ndc_count++;
-                if (telemetry.sample_unmapped_ndcs.length < 10) {
-                    telemetry.sample_unmapped_ndcs.push(`[MALFORMED] ${String(ndc)}`);
-                }
-                continue;
-            }
-            const normalized = normalizeNdcTo11Digit(ndc);
-            if (!normalized) {
-                telemetry.malformed_ndc_count++;
-                telemetry.excluded_unmapped_ndc_count++;
-                if (telemetry.sample_unmapped_ndcs.length < 10) {
-                    telemetry.sample_unmapped_ndcs.push(`[MALFORMED] ${ndc}`);
-                }
-                continue;
-            }
-            const hits = lookupByNdc(maps, normalized);
-            if (hits.size === 0) {
-                telemetry.unmapped_ndc_count++;
-                telemetry.excluded_unmapped_ndc_count++;
-                if (telemetry.sample_unmapped_ndcs.length < 10) {
-                    telemetry.sample_unmapped_ndcs.push(`[UNMAPPED] ${ndc} (${normalized})`);
-                }
-                continue;
-            }
-            for (const meta of hits) resolved.add(meta.rxcui);
-        }
-        if (resolved.size === 0) {
-            telemetry.labels_zero_match++;
-            continue;
-        }
-        r.rxcui = [...resolved].sort();
-        telemetry.labels_hydrated++;
-    }
-    return telemetry;
 }
 
 export async function runCrossLinker({ compoundsPath = COMPOUNDS, adapterPath = ADAPTER, drugLabelsPath = DRUG_LABELS } = {}) {
@@ -159,7 +78,6 @@ export async function runCrossLinker({ compoundsPath = COMPOUNDS, adapterPath = 
     // Build lookup maps — only WHO-ATC and DailyMed entities are consumed here;
     // other adapter types (chembl, clinicaltrials, etc.) have dedicated enrichers.
     const atcMap = new Map();           // level5 code → ATC entity
-    const dailymedByRxcui = new Map();  // rxcui string → label summary[]
     const drugLabelRecords = [];        // full DrugLabel entities → drug-labels.jsonl
 
     for (const r of adapterRecords) {
@@ -169,28 +87,19 @@ export async function runCrossLinker({ compoundsPath = COMPOUNDS, adapterPath = 
         }
         if (r.id.startsWith('sciweon::drug_label::')) {
             drugLabelRecords.push(r);
-            for (const rxcui of (r.rxcui ?? [])) {
-                if (!dailymedByRxcui.has(rxcui)) dailymedByRxcui.set(rxcui, []);
-                dailymedByRxcui.get(rxcui).push({
-                    setid:            r.setid ?? null,
-                    title:            (r.title ?? '').slice(0, 200) || null,
-                    has_boxed_warning: r.has_boxed_warning ?? false,
-                    published_date:   r.published_date ?? null,
-                });
-            }
         }
     }
+    // DailyMed index via the SSoT builder shared with the F3 cumulative re-link.
+    const dailymedByRxcui = buildDailymedByRxcui(drugLabelRecords);
     console.log(`[ADAPTER-LINKER] WHO-ATC: ${atcMap.size} codes | DailyMed RxCUI: ${dailymedByRxcui.size} | DrugLabel records: ${drugLabelRecords.length}`);
 
     const compounds = parseJsonl(await fs.readFile(compoundsPath, 'utf-8'));
     let atcExpanded = 0;
-    let dmLinked    = 0;
 
+    // WHO-ATC: expand atc_codes → atc_details with full hierarchy.
     const enriched = compounds.map(c => {
         let out = c;
         const ds = c.drug_status ?? {};
-
-        // WHO-ATC: expand atc_codes → atc_details with full hierarchy
         const codes = ds.atc_codes ?? [];
         if (codes.length > 0 && atcMap.size > 0) {
             const details = codes.map(code => {
@@ -211,18 +120,11 @@ export async function runCrossLinker({ compoundsPath = COMPOUNDS, adapterPath = 
             });
             out = { ...out, drug_status: { ...ds, atc_details: details } };
         }
-
-        // DailyMed: link labels via RxCUI
-        const rxcui    = c.external_ids?.rxcui;
-        const rxcuiArr = Array.isArray(rxcui) ? rxcui : (rxcui ? [String(rxcui)] : []);
-        const labels   = rxcuiArr.flatMap(r => dailymedByRxcui.get(r) ?? []);
-        if (labels.length > 0) {
-            dmLinked++;
-            out = { ...out, drug_labels: labels };
-        }
-
         return out;
     });
+
+    // DailyMed: link labels via RxCUI (SSoT join shared with the F3 backfill).
+    const { dmLinked } = linkCompoundsToDailymed(enriched, dailymedByRxcui);
 
     await fs.writeFile(compoundsPath, enriched.map(c => JSON.stringify(c)).join('\n') + '\n', 'utf-8');
 
@@ -242,4 +144,10 @@ async function main() {
     await runCrossLinker();
 }
 
-main().catch(err => { console.error('[ADAPTER-LINKER] Fatal:', err.message); process.exit(1); });
+// Run main only when invoked directly (not on import — aggregated-backfill-
+// enrich.js + tests import the DailyMed-join SSoT re-exported above).
+const isDirectRun = import.meta.url === `file://${process.argv[1]}`
+    || import.meta.url.endsWith(process.argv[1]?.replace(/\\/g, '/'));
+if (isDirectRun) {
+    main().catch(err => { console.error('[ADAPTER-LINKER] Fatal:', err.message); process.exit(1); });
+}

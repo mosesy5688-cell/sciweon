@@ -136,6 +136,45 @@ describe('backfillOneSource (rxnorm)', () => {
     });
 });
 
+describe('backfillOneSource (rxnorm) — PR-RXN-1g Fix A bulk pre-pass', () => {
+    function maps(uniiPairs: [string, string][]) {
+        return {
+            uniiToRxcui: new Map(uniiPairs.map(([u, r]) => [u, { rxcui: r, preferred_str: `d${r}`, tty: 'IN' }])),
+            ndcToRxcuis: new Map(),
+        };
+    }
+
+    it('stamps in-bulk-map UNIIs in-memory and routes only the long tail to REST', async () => {
+        vi.mocked(resolveByUnii).mockResolvedValue({ rxcui: 'REST999' });
+        const compounds = [
+            mkCompound('sciweon::compound::CID:1', { external_ids: { unii: 'AAAAAAAAAA' } }),  // in bulk map
+            mkCompound('sciweon::compound::CID:2', { external_ids: { unii: 'ZZZZZZZZZZ' } }),  // long tail -> REST
+        ];
+        const r = await backfillOneSource('rxnorm', compounds, maps([['AAAAAAAAAA', 'BULK111']]) as never);
+        expect(compounds[0].external_ids).toMatchObject({ rxcui: 'BULK111' });
+        expect(compounds[1].external_ids).toMatchObject({ rxcui: 'REST999' });
+        expect(resolveByUnii).toHaveBeenCalledTimes(1);
+        expect(resolveByUnii).toHaveBeenCalledWith('ZZZZZZZZZZ');
+        expect(r.stamped).toBe(2);  // 1 bulk + 1 REST
+    });
+
+    it('skips REST entirely when the bulk pre-pass clears all eligible', async () => {
+        const compounds = [mkCompound('sciweon::compound::CID:3', { external_ids: { unii: 'AAAAAAAAAA' } })];
+        const r = await backfillOneSource('rxnorm', compounds, maps([['AAAAAAAAAA', 'BULK111']]) as never);
+        expect(r.stamped).toBe(1);
+        expect(resolveByUnii).not.toHaveBeenCalled();
+    });
+
+    it('fail-soft: no bulkMaps -> pre-pass skipped, REST drain unchanged (parity)', async () => {
+        vi.mocked(resolveByUnii).mockResolvedValue({ rxcui: 'REST999' });
+        const compounds = [mkCompound('sciweon::compound::CID:4', { external_ids: { unii: 'AAAAAAAAAA' } })];
+        const r = await backfillOneSource('rxnorm', compounds);  // no maps
+        expect(compounds[0].external_ids).toMatchObject({ rxcui: 'REST999' });
+        expect(resolveByUnii).toHaveBeenCalledTimes(1);
+        expect(r.stamped).toBe(1);
+    });
+});
+
 describe('backfillOneSource (openfda_faers)', () => {
     it('stamps fda_signals.faers_top_adr_terms on UNII-bearing records', async () => {
         vi.mocked(fetchFaersSignalsByUnii).mockResolvedValue([
