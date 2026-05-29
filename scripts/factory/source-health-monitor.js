@@ -34,19 +34,53 @@ import { runBoundaryChecks } from './lib/boundary-health.js';
 const HEALTHY_MAX_HOURS = 36;
 const STALE_MAX_HOURS = 96;
 
-const KNOWN_SOURCES = [
+// PR-OPS-1: 15 -> 13. Dropped `semantic_scholar` (canonical writer is `s2`
+// per paper-linker.js) and `pubmed` (no adapter writes; openalex covers).
+export const KNOWN_SOURCES = [
     'pubchem', 'pubchem_bioassay', 'chembl', 'clinicaltrials', 'ctis',
-    'kegg', 'openalex', 'openfda', 'pubmed', 'retraction_watch',
-    'rxnorm', 'semantic_scholar', 's2', 'unichem', 'uniprot',
+    'kegg', 'openalex', 'openfda', 'retraction_watch',
+    'rxnorm', 's2', 'unichem', 'uniprot',
 ];
 
 const SCAN_DIRS = ['output/linked', 'snapshots'];
 
-function statusFor(hours) {
-    if (hours == null) return 'MISSING';
+// PR-OPS-1: records>0 + no timestamp is HEALTHY (enricher fingerprint
+// without per-source ts is still presence-of-data). MISSING reserved for
+// records===0 (true absence).
+export function statusFor(hours, records) {
+    if (records === 0) return 'MISSING';
+    if (hours == null) return 'HEALTHY';
     if (hours <= HEALTHY_MAX_HOURS) return 'HEALTHY';
     if (hours <= STALE_MAX_HOURS) return 'STALE';
     return 'CRITICAL';
+}
+
+// PR-OPS-1 dual-path hydration. Merges creator lineage
+// (provenance.sources[]) with enricher fingerprint (external_ids.sources[])
+// for one entity; per-entity dedup so records++ exactly once per source.
+// last_seen takes max across both paths. Pure + unit-testable.
+export function collectEntityStats(entity, stats) {
+    if (!entity) return;
+    const fallbackTs = entity.provenance?.last_updated ?? entity.last_modified ?? null;
+    const perEntity = new Map();
+    const mergeTs = (source, ts) => {
+        const cur = perEntity.has(source) ? perEntity.get(source) : null;
+        if (!perEntity.has(source) || (ts && (cur == null || ts > cur))) {
+            perEntity.set(source, ts ?? cur ?? null);
+        }
+    };
+    for (const s of entity.provenance?.sources ?? []) {
+        if (s?.source) mergeTs(s.source, s.timestamp ?? null);
+    }
+    for (const id of entity.external_ids?.sources ?? []) {
+        if (typeof id === 'string' && id.length > 0) mergeTs(id, fallbackTs);
+    }
+    for (const [source, ts] of perEntity) {
+        const slot = stats[source] ?? { records: 0, last_seen: null };
+        slot.records++;
+        if (ts && (slot.last_seen == null || ts > slot.last_seen)) slot.last_seen = ts;
+        stats[source] = slot;
+    }
 }
 
 function openLineStream(filePath) {
@@ -65,19 +99,7 @@ async function collectStats(filePath, stats) {
             try {
                 const entity = JSON.parse(line);
                 count++;
-                const sources = entity?.provenance?.sources;
-                if (!Array.isArray(sources)) continue;
-                for (const s of sources) {
-                    const id = s?.source;
-                    if (!id) continue;
-                    const slot = stats[id] ?? { records: 0, last_seen: null };
-                    slot.records++;
-                    const ts = s?.timestamp;
-                    if (ts && (slot.last_seen == null || ts > slot.last_seen)) {
-                        slot.last_seen = ts;
-                    }
-                    stats[id] = slot;
-                }
+                collectEntityStats(entity, stats);
             } catch {
                 // malformed line - skip
             }
@@ -134,7 +156,7 @@ async function main() {
             records: st.records,
             last_seen: st.last_seen,
             age_hours: hours == null ? null : Math.round(hours * 10) / 10,
-            status: statusFor(hours),
+            status: statusFor(hours, st.records),
         };
     });
     rows.sort((a, b) => a.source.localeCompare(b.source));
