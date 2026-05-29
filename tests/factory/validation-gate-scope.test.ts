@@ -106,3 +106,49 @@ describe('gate() scope-tier behavior (PR-HARVEST-SCOPE-TIER)', () => {
         expect(r.passed).toBe(true);
     });
 });
+
+const MINI_TRIAL_SCHEMA = {
+    id: { type: 'string', required: true, pattern: /^sciweon::trial::/ },
+    interventions: {
+        type: 'array', required: false, maxItems: 200,
+        itemShape: { name: { type: 'string', required: true, maxLength: 4000 } },
+    },
+};
+
+describe('gate() trial long-text scope-tier (PR-TRIAL-ISOLATION)', () => {
+    it('1. oversized interventions[].name returns excluded, does NOT throw', () => {
+        const trial = { id: 'sciweon::trial::2024-518115-19-02', interventions: [{ name: 'x'.repeat(4020) }] };
+        const r = gate(trial, MINI_TRIAL_SCHEMA, 'trial:2024-518115-19-02');
+        expect(r.passed).toBe(false);
+        expect(r.excluded).toBe(true);
+        expect(r.exclusion_reason).toBe('oversized_intervention_name');
+    });
+
+    it('2. oversized name + bad id still THROWS (primary priority, hard-fail preserved)', () => {
+        const trial = { id: 'BADID', interventions: [{ name: 'x'.repeat(4020) }] };
+        expect(() => gate(trial, MINI_TRIAL_SCHEMA, 'trial:bad')).toThrow(/primary violations/);
+    });
+
+    it('3. in-cap long name passes (legitimate long text kept, not halted, not skipped)', () => {
+        const trial = { id: 'sciweon::trial::NCT1', interventions: [{ name: 'x'.repeat(3999) }] };
+        const r = gate(trial, MINI_TRIAL_SCHEMA, 'trial:ok');
+        expect(r.passed).toBe(true);
+        expect(r.excluded).toBeUndefined();
+    });
+
+    it('4. ANTI-REGRESSION: one oversized trial excluded while siblings accepted (no batch halt)', () => {
+        const trials = [
+            { id: 'sciweon::trial::A', interventions: [{ name: 'short' }] },
+            { id: 'sciweon::trial::B', interventions: [{ name: 'x'.repeat(9000) }] },  // oversized
+            { id: 'sciweon::trial::C', interventions: [{ name: 'also short' }] },
+        ];
+        let accepted = 0, excluded = 0;
+        for (const t of trials) {
+            const r = gate(t, MINI_TRIAL_SCHEMA, `trial:${t.id}`);  // must NOT throw
+            if (r.excluded) excluded++;
+            else if (r.passed) accepted++;
+        }
+        expect(accepted).toBe(2);
+        expect(excluded).toBe(1);
+    });
+});

@@ -170,3 +170,38 @@ describe('classifyViolations -- scope tier (PR-HARVEST-SCOPE-TIER)', () => {
         }
     });
 });
+
+describe('classifyViolations -- trial long-text scope tier (PR-TRIAL-ISOLATION)', () => {
+    it('interventions[].name overflow routes to scope (oversized_intervention_name)', () => {
+        const errors = [{ path: 'trial:2024-518115-19-02.interventions[0].name', error: 'length 4020 > maxLength 4000' }];
+        const r = classifyViolations(errors);
+        expect(r.scope).toHaveLength(1);
+        expect(r.primary).toHaveLength(0);
+        expect(r.scope[0].exclusion_reason).toBe('oversized_intervention_name');
+    });
+
+    it('status_reason overflow routes to scope (oversized_status_reason)', () => {
+        const errors = [{ path: 'trial:NCT1.status_reason', error: 'length 9000 > maxLength 8000' }];
+        const r = classifyViolations(errors);
+        expect(r.scope).toHaveLength(1);
+        expect(r.scope[0].exclusion_reason).toBe('oversized_status_reason');
+    });
+
+    it('interventions[].name required-missing stays primary (overflow-only is scope)', () => {
+        const errors = [{ path: 'trial:X.interventions[0].name', error: 'required field missing' }];
+        const r = classifyViolations(errors);
+        expect(r.primary).toHaveLength(1);
+        expect(r.scope).toHaveLength(0);
+    });
+
+    it('mixed oversized name (scope) + bad id (primary) -> partitioned, primary preserved', () => {
+        const errors = [
+            { path: 'trial:X.id', error: 'pattern mismatch' },
+            { path: 'trial:X.interventions[2].name', error: 'length 5000 > maxLength 4000' },
+        ];
+        const r = classifyViolations(errors);
+        expect(r.primary).toHaveLength(1);
+        expect(r.scope).toHaveLength(1);
+        expect(r.primary[0].path).toBe('trial:X.id');
+    });
+});
