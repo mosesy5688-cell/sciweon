@@ -25,20 +25,21 @@ import { writeFileSync, readFileSync, unlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import StreamZip from 'node-stream-zip';
-import { RXNCONSO_COLUMNS, findRrfEntry } from './lib/rxnorm-rrf-streams.js';
+import { RXNCONSO_COLUMNS, findRrfEntry, isCanonicalUnii } from './lib/rxnorm-rrf-streams.js';
 import { parse as parseCsv } from 'csv-parse';
 
 const SAMPLE_LIMIT = 100;
-const UNII_SHAPE = /^[A-Z0-9]{10}$/;
 
 /**
  * Pure classifier for an RXNCONSO CODE value under SAB='MTHSPL'. Returns
  * `{ unii_shape, length }`. Treats non-string input as zero-length shape miss.
- * Locked under unit test for column boundary safety.
+ * PR-RXN-1f: delegates shape check to `isCanonicalUnii` (single SSoT in
+ * `lib/rxnorm-rrf-streams.js`) so the diagnostic + harvester gate cannot
+ * drift apart. Locked under unit test for column boundary safety.
  */
 export function classifyMthsplCode(code) {
     if (typeof code !== 'string') return { unii_shape: false, length: 0 };
-    return { unii_shape: UNII_SHAPE.test(code), length: code.length };
+    return { unii_shape: isCanonicalUnii(code), length: code.length };
 }
 
 function parseArgs() {

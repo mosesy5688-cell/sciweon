@@ -13,7 +13,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { buildProductToIngredientsMap } from '../../scripts/factory/lib/rxnorm-rel-projector.js';
-import { composeRecords } from '../../scripts/factory/lib/rxnorm-rrf-streams.js';
+import { composeRecords, isCanonicalUnii, UNII_SHAPE } from '../../scripts/factory/lib/rxnorm-rrf-streams.js';
 
 function rxnrelRow(rxcui2, rxcui1, rela, suppress = 'N') {
     return { RXCUI1: rxcui1, RXCUI2: rxcui2, RELA: rela, SUPPRESS: suppress };
@@ -166,5 +166,51 @@ describe('PR-RXN-1: ANTI-REGRESSION suite (architect locks)', () => {
         const out = composeRecords(meta, attrs);
         expect(out).toHaveLength(1);
         expect(out[0].rxcui).toBe('ORPHAN_IN');
+    });
+});
+
+describe('PR-RXN-1f MTHSPL UNII Rewire', () => {
+    const m = (rxcui, label = rxcui) => [rxcui, { preferred_str: label, tty: 'IN', sab: 'RXNORM' }];
+
+    it('14. isCanonicalUnii regex parity + UNII_SHAPE export contract', () => {
+        for (const ok of ['NR7O1405Q9', '362O9ITL9D', 'QF8SVZ843E']) expect(isCanonicalUnii(ok)).toBe(true);
+        for (const bad of ['nr7o1405q9', 'NR7O1405Q', 'NR7O1405Q9X', 'NR7O-1405Q', '', null, undefined, 8123456789]) expect(isCanonicalUnii(bad as any)).toBe(false);
+        expect(UNII_SHAPE).toBeInstanceOf(RegExp);
+        expect(UNII_SHAPE.source).toBe('^[A-Z0-9]{10}$');
+    });
+
+    it('15. union: rxcui only in mthsplUniiByRxcui (no NDC) is emitted with unii set', () => {
+        const out = composeRecords(new Map([m('IN_X', 'Mesna')]), new Map(), new Map([['IN_X', 'NR7O1405Q9']]));
+        expect(out).toHaveLength(1);
+        expect(out[0]).toMatchObject({ rxcui: 'IN_X', unii: 'NR7O1405Q9', ndcs: [], preferred_str: 'Mesna' });
+    });
+
+    it('16. precedence: attr.unii beats mthsplUniiByRxcui (Full Release forward-compat wins)', () => {
+        const attrs = new Map([['IN_X', { unii: 'AAA1111111', ndcs: new Set() }]]);
+        const out = composeRecords(new Map([m('IN_X')]), attrs, new Map([['IN_X', 'BBB2222222']]));
+        expect(out[0].unii).toBe('AAA1111111');
+    });
+
+    it('17. mixed: NDC-only / MTHSPL-only / both -> all emitted with correct fields', () => {
+        const meta = new Map([m('NDC_ONLY'), m('MTHSPL_ONLY'), m('BOTH')]);
+        const attrs = new Map([
+            ['NDC_ONLY', { unii: null, ndcs: new Set(['00071015523']) }],
+            ['BOTH',     { unii: null, ndcs: new Set(['11111111111']) }],
+        ]);
+        const mthspl = new Map([['MTHSPL_ONLY', 'CCC3333333'], ['BOTH', 'DDD4444444']]);
+        const by = Object.fromEntries(composeRecords(meta, attrs, mthspl).map(r => [r.rxcui, r]));
+        expect(by['NDC_ONLY']).toMatchObject({ unii: null, ndcs: ['00071015523'] });
+        expect(by['MTHSPL_ONLY']).toMatchObject({ unii: 'CCC3333333', ndcs: [] });
+        expect(by['BOTH']).toMatchObject({ unii: 'DDD4444444', ndcs: ['11111111111'] });
+    });
+
+    it('18. deterministic lex-sort across union (byte-stable R2 artifact)', () => {
+        const meta = new Map([m('C'), m('A'), m('B')]);
+        const attrs = new Map([
+            ['C', { unii: null, ndcs: new Set(['11111111111']) }],
+            ['B', { unii: null, ndcs: new Set(['22222222222']) }],
+        ]);
+        const mthspl = new Map([['A', 'EEE5555555'], ['B', 'FFF6666666']]);
+        expect(composeRecords(meta, attrs, mthspl).map(r => r.rxcui)).toEqual(['A', 'B', 'C']);
     });
 });

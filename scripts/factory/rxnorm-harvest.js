@@ -104,20 +104,21 @@ async function main() {
         // LOCK 1: SEQUENTIAL three-phase fusion. Each phase awaited before
         // the next begins so Phase 3 sees fully-built Phase 1 projection.
         const zip = new StreamZip.async({ file: tmpZip });
-        let meta, productToIngredients, attrs;
+        let meta, productToIngredients, attrs, mthsplUniiByRxcui, mthsplTelemetry;
         try {
             productToIngredients = await loadProductToIngredients(zip);
             console.log(`[RXNORM-HARVEST] phase 1 (RXNREL) complete: ${productToIngredients.size} product->ingredient edges`);
-            meta = await loadRxcuiMeta(zip);
-            console.log(`[RXNORM-HARVEST] phase 2 (RXNCONSO) complete: ${meta.size} RxCUI metadata entries`);
+            ({ meta, mthsplUniiByRxcui, mthsplTelemetry } = await loadRxcuiMeta(zip));
+            console.log(`[RXNORM-HARVEST] phase 2 (RXNCONSO) complete: ${meta.size} RxCUI metadata entries; ${mthsplUniiByRxcui.size} MTHSPL UNII bindings`);
             attrs = await loadIngredientAttributes(zip, productToIngredients, droppedCounts);
             console.log(`[RXNORM-HARVEST] phase 3 (RXNSAT) complete: ${attrs.size} ingredient-keyed attribute records`);
         } finally {
             await zip.close();
         }
 
-        const records = composeRecords(meta, attrs);
+        const records = composeRecords(meta, attrs, mthsplUniiByRxcui);
         console.log(`[RXNORM-HARVEST] composed ${records.length} ingredient records; dropped malformed NDCs=${droppedCounts.malformed_ndc}; skipped non-RXNORM SAB=${droppedCounts.skipped_nonrxnorm_sab ?? 0}`);
+        console.log(`[RXNORM-HARVEST] MTHSPL UNII Rewire: total_mthspl_conso_rows=${mthsplTelemetry.total_mthspl_conso_rows} mthspl_su_rows=${mthsplTelemetry.mthspl_su_rows} mthspl_unii_harvested=${mthsplTelemetry.mthspl_unii_harvested} mthspl_unii_dropped_shape=${mthsplTelemetry.mthspl_unii_dropped_shape}`);
         if (droppedCounts.ndc_sab_distribution) {
             console.log(`[RXNORM-HARVEST] NDC SAB distribution: ${JSON.stringify(droppedCounts.ndc_sab_distribution)}`);
         }

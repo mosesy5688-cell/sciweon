@@ -16,6 +16,16 @@ import { normalizeNdcTo11Digit } from './ndc-normalize.js';
 import { buildProductToIngredientsMap } from './rxnorm-rel-projector.js';
 
 export const RXNCONSO_COLUMNS = ['RXCUI', 'LAT', 'TS', 'LUI', 'STT', 'SUI', 'ISPREF', 'RXAUI', 'SAUI', 'SCUI', 'SDUI', 'SAB', 'TTY', 'CODE', 'STR', 'SRL', 'SUPPRESS', 'CVF'];
+
+// PR-RXN-1f: NLM canonical UNII shape (10-char uppercase alphanumeric).
+// Single SSoT for the shape regex; diagnostic-rxnorm-mthspl.js + harvester
+// both import this so the gate cannot drift between probe and production.
+// Verified against 11,245 / 11,246 (99.99%) MTHSPL/SU CODE values in
+// diagnostic run 26612396344 (release=2026-05-04).
+export const UNII_SHAPE = /^[A-Z0-9]{10}$/;
+export function isCanonicalUnii(s) {
+    return typeof s === 'string' && UNII_SHAPE.test(s);
+}
 // PR-RXN-1 column-order hotfix 2026-05-27: empirical row-dump from run
 // 26506247880 proved actual RXNSAT.RRF order is ... ATN, SAB, ATV, ...
 // (SAB precedes ATV), contradicting the UMLS Metathesaurus MRSAT column
@@ -47,16 +57,57 @@ export async function loadProductToIngredients(zip) {
     return buildProductToIngredientsMap(rows);
 }
 
-// LOCK 1 Phase 2: parse RXNCONSO.RRF, build rxcui -> { preferred_str, tty, sab }.
+// LOCK 1 Phase 2: parse RXNCONSO.RRF.
+//
+// Builds (a) canonical rxcui -> {preferred_str, tty, sab} meta map under
+// the standard SAB=RXNORM + LAT=ENG filter (unchanged contract), and
+// (b) PR-RXN-1f MTHSPL UNII rewire: parallel rxcui -> UNII map harvested
+// from SAB=MTHSPL + TTY=SU rows whose CODE matches the canonical UNII
+// shape. Both maps built in a single stream pass (zero extra I/O).
+//
+// Returns { meta, mthsplUniiByRxcui, mthsplTelemetry } where telemetry =
+// { total_mthspl_conso_rows, mthspl_su_rows, mthspl_unii_harvested,
+//   mthspl_unii_dropped_shape }.
 export async function loadRxcuiMeta(zip) {
     const entries = await zip.entries();
     const target = findRrfEntry(entries, 'RXNCONSO.RRF');
     if (!target) throw new Error('RXNCONSO.RRF entry not found in ZIP');
     const meta = new Map();
+    const mthsplUniiByRxcui = new Map();
+    const mthsplTelemetry = {
+        total_mthspl_conso_rows: 0,
+        mthspl_su_rows: 0,
+        mthspl_unii_harvested: 0,
+        mthspl_unii_dropped_shape: 0,
+    };
     const stream = await zip.stream(target.name);
     const parser = stream.pipe(makeRrfParser(RXNCONSO_COLUMNS));
     for await (const row of parser) {
         if (row.SUPPRESS && row.SUPPRESS !== 'N') continue;
+
+        // PR-RXN-1f parallel branch: MTHSPL UNII extraction. Diagnostic
+        // (run 26612396344) confirmed TTY=SU rows carry FDA UNII at
+        // 99.99% rate; hard regex guard rejects the rare malformed.
+        // First-write-wins because duplicate-language rows share the
+        // same CODE per the same diagnostic. Runs alongside the canonical
+        // meta filter without sharing exit; MTHSPL rows never reach
+        // meta.set since the canonical filter requires SAB=RXNORM.
+        if (row.SAB === 'MTHSPL') {
+            mthsplTelemetry.total_mthspl_conso_rows++;
+            if (row.TTY === 'SU') {
+                mthsplTelemetry.mthspl_su_rows++;
+                const code = (row.CODE ?? '').trim().toUpperCase();
+                if (isCanonicalUnii(code)) {
+                    if (!mthsplUniiByRxcui.has(row.RXCUI)) {
+                        mthsplUniiByRxcui.set(row.RXCUI, code);
+                    }
+                    mthsplTelemetry.mthspl_unii_harvested++;
+                } else {
+                    mthsplTelemetry.mthspl_unii_dropped_shape++;
+                }
+            }
+        }
+
         if (row.LAT !== 'ENG') continue;
         if (row.SAB !== 'RXNORM') continue;
         const existing = meta.get(row.RXCUI);
@@ -70,7 +121,7 @@ export async function loadRxcuiMeta(zip) {
             });
         }
     }
-    return meta;
+    return { meta, mthsplUniiByRxcui, mthsplTelemetry };
 }
 
 // LOCK 1 Phase 3: parse RXNSAT.RRF; project NDC -> ingredient via
@@ -143,18 +194,29 @@ export async function loadIngredientAttributes(zip, productToIngredients, droppe
 /**
  * Join phase outputs into final ingredient-keyed records. One record per
  * ingredient-level RxCUI carrying any UNII or NDC association.
+ *
+ * PR-RXN-1f: 3rd parameter `mthsplUniiByRxcui` provides the MTHSPL/SU
+ * Prescribable-internal UNII fallback. Precedence: attr.unii (Full Release
+ * RXNSAT path, currently empty under Prescribable) > mthsplUniiByRxcui.
+ * Iterates the union of attrs.keys() + mthsplUniiByRxcui.keys() so RxCUIs
+ * carrying only MTHSPL UNII (no NDC) are also emitted -- expanding the
+ * artifact from the 7,573 NDC-only baseline to roughly ~17K including
+ * MTHSPL-UNII-only ingredients. Output stays lex-sorted by rxcui.
  */
-export function composeRecords(meta, attrs) {
+export function composeRecords(meta, attrs, mthsplUniiByRxcui = new Map()) {
     const out = [];
-    for (const [rxcui, attr] of attrs) {
-        if (!attr.unii && attr.ndcs.size === 0) continue;
+    const allRxcuis = new Set([...attrs.keys(), ...mthsplUniiByRxcui.keys()]);
+    for (const rxcui of allRxcuis) {
+        const attr = attrs.get(rxcui) ?? { unii: null, ndcs: new Set() };
+        const unii = attr.unii ?? mthsplUniiByRxcui.get(rxcui) ?? null;
+        if (!unii && attr.ndcs.size === 0) continue;
         const m = meta.get(rxcui) ?? {};
         out.push({
             rxcui,
             preferred_str: m.preferred_str ?? null,
             tty: m.tty ?? null,
             sab: m.sab ?? null,
-            unii: attr.unii,
+            unii,
             ndcs: [...attr.ndcs].sort(),
         });
     }
