@@ -61,6 +61,9 @@ async function main() {
     let totalFound = 0;
     let totalAccepted = 0;
     let processed = 0;
+    // PR-TRIAL-ISOLATION: bucket scope-excluded (oversized legitimate text) trials
+    // so the fail-soft skip is observable instead of silent.
+    const tele = { excluded_oversized: 0, sample_excluded: [] };
 
     for (const compound of compounds) {
         const searchName = pickSearchName(compound);
@@ -72,7 +75,15 @@ async function main() {
             const trial = normalizeToTrial(raw, compound.id);
             if (!trial) continue;
             const result = gate(trial, TRIAL_SCHEMA, `trial:${trial.ct_number}`);
-            if (!result.passed) continue;
+            if (!result.passed) {
+                if (result.excluded) {
+                    tele.excluded_oversized++;
+                    if (tele.sample_excluded.length < 10) {
+                        tele.sample_excluded.push(`${trial.ct_number} (${result.exclusion_reason})`);
+                    }
+                }
+                continue;
+            }
             newTrials.push(trial);
             existingCtNumbers.add(trial.ct_number);
             newLinks.push({
@@ -98,6 +109,9 @@ async function main() {
     console.log(`  CTIS raw matches:        ${totalFound}`);
     console.log(`  Schema-valid + new:      ${totalAccepted}`);
     console.log(`  Total EU trials added:   ${newTrials.length}`);
+    if (tele.excluded_oversized > 0) {
+        console.log(`[CTIS-LINKER] scope-excluded oversized trials: ${tele.excluded_oversized} | sample: ${tele.sample_excluded.join(', ')}`);
+    }
     console.log(`  Compound-trial links:    ${newLinks.length}`);
 }
 

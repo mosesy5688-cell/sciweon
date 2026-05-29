@@ -36,11 +36,31 @@ export const DERIVED_PATH_PATTERNS = [
 // Triggered by F1 run 26512200020 PubChem Harvest cron halt on CID:111615
 // molecular_weight.value=18657 > max 10000 -- a known macromolecule outside
 // Sciweon's small-molecule drug-graph scope, not a data quality regression.
+// 2026-05-30 (PR-TRIAL-ISOLATION): CTIS (EU) trials carry legitimate
+// multilingual, multi-compound combination descriptions whose
+// interventions[].name / status_reason length recurrently outpaces the
+// schema maxLength cap (halts at 635/2039/4020 chars across 4 F3 runs).
+// This is boundary drift, not data corruption: a non-truncatable long
+// primary-source string belongs in the scope tier (fail-soft skip + bucket),
+// NOT a primary halt that nukes the entire F3 chain. The finite cap is kept
+// as a runaway guard (NXVF shard 8-10MB); overflow now excludes the single
+// trial. errorPattern is narrow (only `length N > maxLength` overflow), so a
+// missing/typed/pattern violation on the same field is still primary.
 export const SCOPE_VIOLATION_RULES = [
     {
         pathPattern: /\.molecular_weight\.value$/,
         errorPattern: /^[\d.]+ > max \d/,
         exclusion_reason: 'macromolecule_out_of_scope',
+    },
+    {
+        pathPattern: /\.interventions\[\d+\]\.name$/,
+        errorPattern: /^length \d+ > maxLength/,
+        exclusion_reason: 'oversized_intervention_name',
+    },
+    {
+        pathPattern: /\.status_reason$/,
+        errorPattern: /^length \d+ > maxLength/,
+        exclusion_reason: 'oversized_status_reason',
     },
 ];
 

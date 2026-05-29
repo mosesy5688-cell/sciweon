@@ -34,7 +34,7 @@ export const TRIAL_SCHEMA = {
             'CANCELLED', 'UNDER_EVALUATION', 'NOT_YET_AUTHORISED',
         ],
     },
-    status_reason: { type: 'string', required: false, maxLength: 8000 },
+    status_reason: { type: 'string', required: false, maxLength: 16000 },
     is_negative_outcome: { type: 'boolean', required: true }, // status in {TERMINATED, WITHDRAWN}
 
     // ─── Trial Details ───
@@ -58,10 +58,12 @@ export const TRIAL_SCHEMA = {
             // trial:2024-518115-19-02). Schema, not data, was the deviation each
             // time. Generous bound prevents truncation of legitimate primary-source
             // content; finite cap still guards runaway entity sizes (NXVF shard
-            // 8-10MB cap). Follow-up PR-TRIAL-ISOLATION converts overflow from
-            // primary-halt to scope-tier fail-soft so one oversized trial no
-            // longer halts the whole F3 chain.
-            name: { type: 'string', required: true, maxLength: 8000 },
+            // 8-10MB cap). PR-TRIAL-ISOLATION (2026-05-30) converted overflow from
+            // primary-halt to scope-tier fail-soft (schema-tier.js) so one
+            // oversized trial skips+buckets instead of halting the F3 chain; the
+            // cap then became the *pathological* threshold (raised 8000->16000 to
+            // keep legitimate CTIS combo descriptions in-band), not a halt trigger.
+            name: { type: 'string', required: true, maxLength: 16000 },
             compound_id: { type: 'string', required: false }, // FK to Compound if matched
             mapping_confidence: { type: 'number', required: false, min: 0, max: 100 },
             type: {
