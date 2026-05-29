@@ -9,6 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { classifyMthsplCode } from '../../scripts/factory/diagnostic-rxnorm-mthspl.js';
+import { isCanonicalUnii } from '../../scripts/factory/lib/rxnorm-rrf-streams.js';
 
 describe('PR-RXN-1e: classifyMthsplCode UNII shape oracle', () => {
     it('1. canonical NLM UNII shape (10-char uppercase alnum) matches', () => {
@@ -50,5 +51,16 @@ describe('PR-RXN-1e: classifyMthsplCode UNII shape oracle', () => {
         expect(Object.keys(r).sort()).toEqual(['length', 'unii_shape']);
         expect(typeof r.unii_shape).toBe('boolean');
         expect(typeof r.length).toBe('number');
+    });
+
+    it('7. PR-RXN-1f SSoT parity: classifyMthsplCode delegates to lib isCanonicalUnii', () => {
+        // Locks regex parity between diagnostic + harvester so future
+        // refactor of one cannot silently desync the other.
+        for (const sample of ['NR7O1405Q9', '362O9ITL9D', 'nr7o1405q9', 'too-short', '', 'A1B2C3D4E5']) {
+            expect(classifyMthsplCode(sample).unii_shape).toBe(isCanonicalUnii(sample));
+        }
+        // Null/undefined also align (both return false)
+        expect(classifyMthsplCode(null).unii_shape).toBe(isCanonicalUnii(null));
+        expect(classifyMthsplCode(undefined).unii_shape).toBe(isCanonicalUnii(undefined));
     });
 });
