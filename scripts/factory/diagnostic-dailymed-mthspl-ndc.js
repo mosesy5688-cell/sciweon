@@ -104,7 +104,8 @@ async function downloadFullRrf(innerUrl, tmpPath) {
 // latest published snapshot via the latest.json pointer.
 async function loadDailymedLabels(client) {
     const latest = JSON.parse((await r2GetBuffer(client, 'snapshots/latest.json')).toString('utf-8'));
-    const date = latest.date;
+    const date = latest.latest_snapshot_date;
+    if (!date) throw new Error(`snapshots/latest.json missing latest_snapshot_date: ${JSON.stringify(latest)}`);
     const gz = await r2GetBuffer(client, `snapshots/${date}/drug-labels.jsonl.gz`);
     const text = gunzipSync(gz).toString('utf-8');
     const labels = text.split('\n').filter(Boolean).map(l => JSON.parse(l));
