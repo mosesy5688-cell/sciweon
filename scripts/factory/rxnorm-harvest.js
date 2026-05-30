@@ -134,7 +134,7 @@ async function main() {
             // (FDA public-domain) UNII + RXNORM-SAB NDCs; access channel is
             // UMLS-gated, so the conservative artifact tag is 'umls'.
             upstream_license: 'umls',
-            extracted_content: 'mthspl_unii(fda_public_domain)+rxnorm_sab_ndcs',
+            extracted_content: 'mthspl_unii(fda_public_domain)+rxnorm_sab_ndcs+mthspl_sab_ndcs',
             upstream_release: release_date,
             ingestion_date: new Date().toISOString().slice(0, 10),
             attribution: ATTRIBUTION,
