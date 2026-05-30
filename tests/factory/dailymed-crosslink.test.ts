@@ -1,11 +1,11 @@
 /**
- * Tests for the DailyMed cross-link SSoT (PR-RXN-1g) — lib/dailymed-crosslink.js.
+ * Tests for the DailyMed cross-link SSoT (PR-RXN-1g) -- lib/dailymed-crosslink.js.
  *
  * Locks the join semantics shared by the F2 increment linker (adapter-cross-
  * linker.js) and the F3 cumulative re-link (aggregated-backfill-enrich.js):
  *   - 4-field summary shape (parity guard vs the pre-extraction inline build)
  *   - scalar-or-array rxcui normalization
- *   - overwrite-ONLY-on-match (never blind-clears prior drug_labels —
+ *   - overwrite-ONLY-on-match (never blind-clears prior drug_labels --
  *     [[cross_cycle_silent_data_loss]])
  *   - idempotent re-run (overwrite, not append/double)
  */
@@ -15,6 +15,7 @@ import {
     buildDailymedByRxcui,
     linkCompoundsToDailymed,
     relinkCumulativeDailymed,
+    classifyDailymedRxcuiBuckets,
 } from '../../scripts/factory/lib/dailymed-crosslink.js';
 
 function label(setid: string, rxcui: string[], opts: Record<string, unknown> = {}) {
@@ -131,5 +132,57 @@ describe('relinkCumulativeDailymed', () => {
         expect(r.labelsRehydrated).toBe(1);
         expect(r.dmLinked).toBe(1);
         expect((compounds[0] as any).drug_labels[0].setid).toBe('a');
+    });
+});
+
+describe('classifyDailymedRxcuiBuckets', () => {
+    const maps = (pairs: [string, string][]) => ({
+        uniiToRxcui: new Map(pairs.map(([u, r]) => [u, { rxcui: r }])),
+    });
+
+    it('fail-soft: no bulkMaps -> reverse_map_available false + zeros, no throw', () => {
+        const dm = buildDailymedByRxcui([label('a', ['111'])]);
+        const r = classifyDailymedRxcuiBuckets([compound(1, '111')], dm, null);
+        expect(r.reverse_map_available).toBe(false);
+        expect(r.total_label_rxcui).toBe(1);
+        expect(r.productive).toBe(0);
+    });
+
+    it('productive: a compound carries the label rxcui', () => {
+        const dm = buildDailymedByRxcui([label('a', ['111'])]);
+        const r = classifyDailymedRxcuiBuckets([compound(1, '111')], dm, maps([['UUUUUUUUU1', '111']]));
+        expect(r.reverse_map_available).toBe(true);
+        expect(r.productive).toBe(1);
+    });
+
+    it('in_corpus_unstamped: reverse-unii on a corpus compound with rxcui null (B2a self-check)', () => {
+        const dm = buildDailymedByRxcui([label('a', ['111'])]);
+        const comp = compound(1, null, { external_ids: { unii: 'UUUUUUUUU1', rxcui: null } });
+        const r = classifyDailymedRxcuiBuckets([comp], dm, maps([['UUUUUUUUU1', '111']]));
+        expect(r.in_corpus_unstamped).toBe(1);
+        expect(r.productive).toBe(0);
+        expect(r.samples.in_corpus_unstamped[0]).toMatchObject({ rxcui: '111', unii: 'UUUUUUUUU1' });
+    });
+
+    it('in_corpus_stamp_drift: reverse-unii on a stamped compound with a different rxcui', () => {
+        const dm = buildDailymedByRxcui([label('a', ['111'])]);
+        const comp = compound(1, '999', { external_ids: { unii: 'UUUUUUUUU1', rxcui: '999' } });
+        const r = classifyDailymedRxcuiBuckets([comp], dm, maps([['UUUUUUUUU1', '111']]));
+        expect(r.in_corpus_stamp_drift).toBe(1);
+        expect(r.productive).toBe(0);
+    });
+
+    it('not_in_corpus: reverse-unii exists but no compound carries it (lever = expand corpus)', () => {
+        const dm = buildDailymedByRxcui([label('a', ['111'])]);
+        const r = classifyDailymedRxcuiBuckets([compound(1, '222', { external_ids: { unii: 'OTHERUNII1', rxcui: '222' } })], dm, maps([['UUUUUUUUU1', '111']]));
+        expect(r.not_in_corpus).toBe(1);
+        expect(r.samples.not_in_corpus[0]).toMatchObject({ rxcui: '111', unii: 'UUUUUUUUU1' });
+    });
+
+    it('no_unii_bridge: label rxcui absent from inverted map', () => {
+        const dm = buildDailymedByRxcui([label('a', ['111'])]);
+        const r = classifyDailymedRxcuiBuckets([compound(1, '222')], dm, maps([['UUUUUUUUU1', '999']]));
+        expect(r.no_unii_bridge).toBe(1);
+        expect(r.samples.no_unii_bridge[0]).toMatchObject({ rxcui: '111' });
     });
 });

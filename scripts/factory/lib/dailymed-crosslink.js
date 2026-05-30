@@ -146,5 +146,66 @@ export function relinkCumulativeDailymed(compounds, drugLabelRecords, bulkMaps) 
         ? hydrateLabelRxcuisFromNdcs(drugLabelRecords, bulkMaps).labels_hydrated : 0;
     const dmByRxcui = buildDailymedByRxcui(drugLabelRecords);
     const { dmLinked } = linkCompoundsToDailymed(compounds, dmByRxcui);
-    return { dmLinked, labelsRehydrated, dmByRxcuiSize: dmByRxcui.size };
+    const buckets = classifyDailymedRxcuiBuckets(compounds, dmByRxcui, bulkMaps);
+    return { dmLinked, labelsRehydrated, dmByRxcuiSize: dmByRxcui.size, buckets };
+}
+
+/**
+ * PR-MD-1c: classify every label-rxcui in the keyset to answer "of the
+ * unproductive label-rxcui (match no stamped compound), how many are corpus
+ * compounds lacking rxcui [grow UNII->RxCUI mapping] vs substances not in the
+ * corpus [expand corpus] vs no-UNII-bridge". Pure, read-only, never throws.
+ * Bridge is label-rxcui -> (invert uniiToRxcui) -> unii -> corpus compound.unii
+ * (compounds carry UNII not NDC). Fail-soft: no bulkMaps -> reverse bridge
+ * impossible -> reverse_map_available:false + zeros. Buckets:
+ *   productive            R is carried by some compound (drives dm_linked)
+ *   no_unii_bridge        R not in inverted map (non-ingredient / UNII-less rxcui)
+ *   in_corpus_unstamped   R's unii on a corpus compound with rxcui==null (expect ~0;
+ *                         >0 => bulk pre-pass gap alarm)
+ *   in_corpus_stamp_drift R's unii on a stamped compound (different rxcui = map/REST drift)
+ *   not_in_corpus         R's unii on no corpus compound (lever = expand corpus)
+ */
+export function classifyDailymedRxcuiBuckets(compounds, dmByRxcui, bulkMaps) {
+    const zero = {
+        reverse_map_available: false, total_label_rxcui: dmByRxcui?.size ?? 0,
+        productive: 0, in_corpus_unstamped: 0, in_corpus_stamp_drift: 0,
+        not_in_corpus: 0, no_unii_bridge: 0,
+        samples: { in_corpus_unstamped: [], not_in_corpus: [], no_unii_bridge: [] },
+    };
+    if (!bulkMaps?.uniiToRxcui || !dmByRxcui) return zero;
+    const compoundRxcui = new Set();
+    const uniiStamp = new Map();  // unii -> { anyUnstamped, anyStamped }
+    for (const c of compounds ?? []) {
+        const rx = c?.external_ids?.rxcui;
+        for (const r of Array.isArray(rx) ? rx : (rx ? [String(rx)] : [])) compoundRxcui.add(r);
+        const u = c?.external_ids?.unii;
+        if (typeof u === 'string' && u) {
+            const e = uniiStamp.get(u) ?? { anyUnstamped: false, anyStamped: false };
+            if (rx == null || (Array.isArray(rx) && rx.length === 0)) e.anyUnstamped = true; else e.anyStamped = true;
+            uniiStamp.set(u, e);
+        }
+    }
+    const rxcuiToUniis = new Map();
+    for (const [unii, meta] of bulkMaps.uniiToRxcui) {
+        const r = meta?.rxcui; if (!r) continue;
+        if (!rxcuiToUniis.has(r)) rxcuiToUniis.set(r, new Set());
+        rxcuiToUniis.get(r).add(unii);
+    }
+    const out = { ...zero, reverse_map_available: true };
+    const push = (b, o) => { if (out.samples[b].length < 10) out.samples[b].push(o); };
+    for (const R of dmByRxcui.keys()) {
+        if (compoundRxcui.has(R)) { out.productive++; continue; }
+        const uniis = rxcuiToUniis.get(R);
+        if (!uniis || uniis.size === 0) { out.no_unii_bridge++; push('no_unii_bridge', { rxcui: R }); continue; }
+        let unstamped = false, stamped = false, present = false, sampleUnii = null;
+        for (const u of uniis) {
+            const e = uniiStamp.get(u);
+            if (e) { present = true; sampleUnii = sampleUnii ?? u; if (e.anyUnstamped) unstamped = true; if (e.anyStamped) stamped = true; }
+        }
+        if (unstamped) { out.in_corpus_unstamped++; push('in_corpus_unstamped', { rxcui: R, unii: sampleUnii }); }
+        else if (stamped) { out.in_corpus_stamp_drift++; }
+        else if (present) { out.in_corpus_stamp_drift++; }
+        else { out.not_in_corpus++; push('not_in_corpus', { rxcui: R, unii: [...uniis][0] }); }
+    }
+    return out;
 }
