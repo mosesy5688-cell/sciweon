@@ -127,12 +127,20 @@ export async function loadRxcuiMeta(zip) {
 // LOCK 1 Phase 3: parse RXNSAT.RRF; project NDC -> ingredient via
 // Phase 1 map; attach UNII directly to its row's RxCUI (ingredient-level
 // by RxNorm convention). Returns Map<ingredientRxcui, { unii?, ndcs: Set }>.
-// SAB filter: SAB='RXNORM' guarantees HIPAA-normalized 11-digit NDC per NLM
-// tech docs. Other SABs (MTHSPL/FDB/MULTUM/MMSL) emit varied formats (12-digit
-// '6-4-2', 10-digit '5-3-2'/'4-4-2'/'5-4-1') and would all reject under LOCK 2.
-// V1 scope is canonical SAB=RXNORM only; PR-RXN-2 may expand if multi-SAB
-// coverage justifies the per-SAB normalization complexity.
-const NDC_ACCEPTED_SABS = new Set(['RXNORM']);
+// NDC SAB whitelist. RXNORM NDCs are NLM HIPAA-normalized 11-digit. PR-MD-1b
+// (2026-05-30) admitted MTHSPL after probe run 26676173465 empirically falsified
+// the old "non-RXNORM SABs emit varied/ambiguous formats" caution FOR MTHSPL:
+// all 239,449 MTHSPL NDC rows are hyphenated-3seg and 100% normalizable by
+// normalizeNdcTo11Digit (0 rejected). MTHSPL is FDA SPL, same source as DailyMed,
+// so admitting it closes the DailyMed cross-link RxNorm axis (+100 recoverable
+// labels). Other SABs (FDB/MULTUM/MMSL/VANDF/NDDF/GS/MMX/CVX) remain excluded
+// pending their own probe -- NOT widened blind (those may carry the varied/
+// abbreviated formats the original caution described). isAcceptedNdcSab is the
+// pure, unit-testable boundary so a future widen is a one-line + one-test change.
+const NDC_ACCEPTED_SABS = new Set(['RXNORM', 'MTHSPL']);
+export function isAcceptedNdcSab(sab) {
+    return NDC_ACCEPTED_SABS.has(sab);
+}
 
 export async function loadIngredientAttributes(zip, productToIngredients, droppedCounts) {
     const entries = await zip.entries();
@@ -171,7 +179,7 @@ export async function loadIngredientAttributes(zip, productToIngredients, droppe
             // NDC: filter to SAB='RXNORM' so LOCK 2 11-digit regex matches the
             // NLM-normalized format. Non-RXNORM SAB rows have varied formats
             // and are counted in dropped_counts.skipped_nonrxnorm_sab.
-            if (!NDC_ACCEPTED_SABS.has(row.SAB)) {
+            if (!isAcceptedNdcSab(row.SAB)) {
                 droppedCounts.skipped_nonrxnorm_sab = (droppedCounts.skipped_nonrxnorm_sab || 0) + 1;
                 continue;
             }
