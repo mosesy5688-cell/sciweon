@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import {
     firstMondayOfMonth, formatMMDDYYYY, formatIsoDate,
-    buildCandidateUrls, findLatestPrescribableUrl,
+    buildCandidateUrls, findLatestFullUrl,
 } from '../../scripts/factory/lib/rxnorm-release-discovery.js';
 
 describe('PR-RXN-1 hotfix: firstMondayOfMonth', () => {
@@ -44,11 +44,11 @@ describe('PR-RXN-1 hotfix: buildCandidateUrls', () => {
         expect(candidates[2].release_date).toBe('2026-03-02');
     });
 
-    it('6. URL pattern matches RxNorm_full_prescribe_MMDDYYYY.zip', () => {
+    it('6. URL pattern matches Full RRF at the UMLS kss host (PR-RXN-2b)', () => {
         const now = new Date(Date.UTC(2026, 4, 15));
         const candidates = buildCandidateUrls(1, now);
-        expect(candidates[0].url).toBe('https://download.nlm.nih.gov/rxnorm/RxNorm_full_prescribe_05042026.zip');
-        expect(candidates[0].filename).toBe('RxNorm_full_prescribe_05042026.zip');
+        expect(candidates[0].url).toBe('https://download.nlm.nih.gov/umls/kss/rxnorm/RxNorm_full_05042026.zip');
+        expect(candidates[0].filename).toBe('RxNorm_full_05042026.zip');
     });
 
     it('7. year boundary: January falls back to previous year December', () => {
@@ -59,14 +59,14 @@ describe('PR-RXN-1 hotfix: buildCandidateUrls', () => {
     });
 });
 
-describe('PR-RXN-1 hotfix: findLatestPrescribableUrl', () => {
+describe('PR-RXN-1 hotfix: findLatestFullUrl', () => {
     it('8. returns first 200 OK candidate', async () => {
         const candidates = [
             { url: 'http://a/', filename: 'a', release_date: '2026-05-04' },
             { url: 'http://b/', filename: 'b', release_date: '2026-04-06' },
         ];
         const headFetch = async (u) => ({ ok: u === 'http://a/', status: u === 'http://a/' ? 200 : 404, headers: new Map([['last-modified', 'Mon, 04 May 2026 12:00:00 GMT']]) });
-        const res = await findLatestPrescribableUrl(candidates, async (u) => {
+        const res = await findLatestFullUrl(candidates, async (u) => {
             const fake = await headFetch(u);
             return { ok: fake.ok, status: fake.status, headers: { get: (k) => fake.headers.get(k) } };
         });
@@ -80,7 +80,7 @@ describe('PR-RXN-1 hotfix: findLatestPrescribableUrl', () => {
             { url: 'http://newest/', filename: 'a', release_date: '2026-06-01' },
             { url: 'http://prev/', filename: 'b', release_date: '2026-05-04' },
         ];
-        const res = await findLatestPrescribableUrl(candidates, async (u) => ({
+        const res = await findLatestFullUrl(candidates, async (u) => ({
             ok: u === 'http://prev/',
             status: u === 'http://prev/' ? 200 : 404,
             headers: { get: () => null },
@@ -91,9 +91,9 @@ describe('PR-RXN-1 hotfix: findLatestPrescribableUrl', () => {
 
     it('10. throws when no candidate returns 200', async () => {
         const candidates = [{ url: 'http://x/', filename: 'x', release_date: '2026-05-04' }];
-        await expect(findLatestPrescribableUrl(candidates, async () => ({
+        await expect(findLatestFullUrl(candidates, async () => ({
             ok: false, status: 404, headers: { get: () => null },
-        }))).rejects.toThrow(/no prescribable release found/);
+        }))).rejects.toThrow(/no Full RxNorm release found/);
     });
 
     it('11. network error on one candidate falls through to next', async () => {
@@ -101,7 +101,7 @@ describe('PR-RXN-1 hotfix: findLatestPrescribableUrl', () => {
             { url: 'http://err/', filename: 'a', release_date: '2026-06-01' },
             { url: 'http://ok/', filename: 'b', release_date: '2026-05-04' },
         ];
-        const res = await findLatestPrescribableUrl(candidates, async (u) => {
+        const res = await findLatestFullUrl(candidates, async (u) => {
             if (u === 'http://err/') throw new Error('ECONNRESET');
             return { ok: true, status: 200, headers: { get: () => null } };
         });

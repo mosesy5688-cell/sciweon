@@ -30,6 +30,7 @@ import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import {
     loadProductToIngredients, loadRxcuiMeta, loadIngredientAttributes, composeRecords,
 } from './lib/rxnorm-rrf-streams.js';
+import { umlsDownloadUrl } from './lib/umls-auth.js';
 
 const CURSOR_KEY = 'state/rxnorm-bulk-cursor.json';
 const REQUIRED_ENV = ['R2_ENDPOINT', 'R2_BUCKET', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'];
@@ -47,7 +48,7 @@ function parseArgs() {
 }
 
 async function fetchArchive(url, tmpPath) {
-    const res = await fetch(url, { method: 'GET' });
+    const res = await fetch(umlsDownloadUrl(url), { method: 'GET' });
     if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText} on ${url}`);
     const buf = Buffer.from(await res.arrayBuffer());
     writeFileSync(tmpPath, buf);
@@ -127,8 +128,13 @@ async function main() {
         }
 
         const licenseMetadata = {
-            upstream_source: 'rxnorm_prescribable',
-            upstream_license: 'public-domain',
+            upstream_source: 'rxnorm_full',
+            // PR-RXN-2b: Full RRF is accessed under the UMLS license (the
+            // Prescribable subset was public-domain). Extracted fields are MTHSPL
+            // (FDA public-domain) UNII + RXNORM-SAB NDCs; access channel is
+            // UMLS-gated, so the conservative artifact tag is 'umls'.
+            upstream_license: 'umls',
+            extracted_content: 'mthspl_unii(fda_public_domain)+rxnorm_sab_ndcs',
             upstream_release: release_date,
             ingestion_date: new Date().toISOString().slice(0, 10),
             attribution: ATTRIBUTION,

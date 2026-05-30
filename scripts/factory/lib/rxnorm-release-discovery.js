@@ -14,7 +14,12 @@
  * month's release has not yet been published.
  */
 
-const BASE_URL = 'https://download.nlm.nih.gov/rxnorm/';
+import { umlsDownloadUrl } from './umls-auth.js';
+
+// PR-RXN-2b: Full RxNorm RRF is published under the UMLS kss path (auth-gated),
+// NOT the public-domain Prescribable subset's /rxnorm/ path. Discovery probes
+// go through the apiKey proxy (umls-auth.js); an unauthenticated HEAD 403s.
+const BASE_URL = 'https://download.nlm.nih.gov/umls/kss/rxnorm/';
 
 /**
  * Find the first Monday of a given calendar month.
@@ -66,7 +71,7 @@ export function buildCandidateUrls(monthsBack, now = new Date()) {
         while (m < 1) { m += 12; y -= 1; }
         const monday = firstMondayOfMonth(y, m);
         const mmddyyyy = formatMMDDYYYY(monday);
-        const filename = `RxNorm_full_prescribe_${mmddyyyy}.zip`;
+        const filename = `RxNorm_full_${mmddyyyy}.zip`;
         out.push({
             url: BASE_URL + filename,
             filename,
@@ -76,14 +81,26 @@ export function buildCandidateUrls(monthsBack, now = new Date()) {
     return out;
 }
 
+// Auth'd Range-probe: Full RRF URLs are UMLS-gated, so probe through the apiKey
+// proxy (an unauthenticated HEAD 403s). Range avoids downloading the body.
+async function authRangeProbe(innerUrl) {
+    const res = await fetch(umlsDownloadUrl(innerUrl), { headers: { Range: 'bytes=0-1' } });
+    try { await res.body?.cancel(); } catch { /* ignore */ }
+    return res;
+}
+
 /**
- * HEAD-probe candidates in order; return first that responds 200.
+ * Probe candidates newest-first; return the first that responds 200/206.
+ * Multi-month window = graceful rollback when the current month's Full release
+ * has not yet published (NLM first-Monday releases routinely lag). Throws ONLY
+ * when the entire window is empty (genuine multi-month outage) -- boundary-timing
+ * drift is not a hard-fail (PR-TRIAL-ISOLATION discipline).
  *
  * @param {Array} candidates  from buildCandidateUrls
- * @param {function} headFetch  optional injected fetch (for tests)
+ * @param {function} headFetch  injected probe (default = auth'd Range; tests inject)
  * @returns {Promise<{url, filename, release_date, last_modified}>}
  */
-export async function findLatestPrescribableUrl(candidates, headFetch = (u) => fetch(u, { method: 'HEAD' })) {
+export async function findLatestFullUrl(candidates, headFetch = (u) => authRangeProbe(u)) {
     const tried = [];
     for (const c of candidates) {
         let res;
@@ -94,5 +111,5 @@ export async function findLatestPrescribableUrl(candidates, headFetch = (u) => f
         }
         tried.push(`${c.url} -> HTTP ${res.status}`);
     }
-    throw new Error(`no prescribable release found in ${candidates.length} candidate(s): ${tried.join('; ')}`);
+    throw new Error(`no Full RxNorm release found in ${candidates.length} candidate(s): ${tried.join('; ')}`);
 }

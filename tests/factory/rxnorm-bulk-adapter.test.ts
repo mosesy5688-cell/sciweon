@@ -22,11 +22,12 @@ describe('PR-RXN-1: parseRxcuiIndexJsonl + lookup APIs', () => {
         const jsonl = makeJsonl([
             { rxcui: 'IN1', preferred_str: 'Drug-A', tty: 'IN', sab: 'RXNORM', unii: 'AAA000', ndcs: ['00071015523'] },
             { rxcui: 'IN2', preferred_str: 'Drug-B', tty: 'IN', sab: 'RXNORM', unii: 'BBB000', ndcs: ['12345678901', '99999999999'] },
-        ], { upstream_source: 'rxnorm_prescribable', upstream_license: 'public-domain' });
+        ], { upstream_source: 'rxnorm_full', upstream_license: 'umls' });
 
         const parsed = parseRxcuiIndexJsonl(jsonl);
         expect(parsed.totalRecords).toBe(2);
-        expect(parsed.licenseMetadata?.upstream_source).toBe('rxnorm_prescribable');
+        expect(parsed.licenseMetadata?.upstream_source).toBe('rxnorm_full');
+        expect(parsed.licenseMetadata?.upstream_license).toBe('umls');
         expect(parsed.uniiToRxcui.size).toBe(2);
         expect(parsed.ndcToRxcuis.size).toBe(3);
     });
