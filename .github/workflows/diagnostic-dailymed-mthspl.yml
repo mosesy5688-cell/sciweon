@@ -1,0 +1,53 @@
+name: Diagnostic DailyMed MTHSPL NDC Probe
+
+# PR-MD-1a-probe: twin-axis diagnostic for the DailyMed-linked 502 ceiling.
+# Dim A (yield): how many DailyMed labels gain rxcui ONLY via MTHSPL NDCs.
+# Dim B (format): MTHSPL NDC format topology + whether normalizeNdcTo11Digit
+# (the SSoT) can canonicalize them. Gates PR-MD-1b (whether to admit MTHSPL into
+# NDC_ACCEPTED_SABS and whether the normalizer needs a per-SAB extension).
+#
+# Diagnostic-only: no R2 writes, no cursor mutation, no schema change.
+# Requires UMLS_API_KEY (Full RRF) + R2 creds (drug-labels snapshot + control map).
+
+on:
+  workflow_dispatch:
+    inputs:
+      full_url:
+        description: 'Optional explicit Full RRF inner URL override (default = current-month first-Monday)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  probe-dailymed-mthspl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      UMLS_API_KEY: ${{ secrets.UMLS_API_KEY }}
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install deps
+        run: npm ci
+      - name: Run DailyMed MTHSPL NDC diagnostic
+        run: |
+          set -e
+          if [ -n "${{ inputs.full_url }}" ]; then
+            node scripts/factory/diagnostic-dailymed-mthspl-ndc.js --full-url="${{ inputs.full_url }}"
+          else
+            node scripts/factory/diagnostic-dailymed-mthspl-ndc.js
+          fi
+      - name: Summary
+        if: always()
+        run: |
+          echo "## PR-MD-1a DailyMed MTHSPL NDC diagnostic" >> $GITHUB_STEP_SUMMARY
+          echo "DIM-A net_recoverable_via_mthspl + DIM-B format topology in the workflow log." >> $GITHUB_STEP_SUMMARY
