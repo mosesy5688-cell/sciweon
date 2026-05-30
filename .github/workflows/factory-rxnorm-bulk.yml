@@ -1,6 +1,8 @@
 name: Factory RxNorm Bulk
 
-# PR-RXN-1: RxNorm Prescribable Subset bulk ingest (Phase 1.9 leadoff).
+# PR-RXN-1: RxNorm bulk ingest (Phase 1.9 leadoff).
+# PR-RXN-2b: switched upstream from the public-domain Prescribable Subset to the
+# UMLS-gated Full RxNorm RRF (RXNCONSO MTHSPL/SU UNII widened 7234 -> ~14990).
 #
 # Three-job rail per FDA SRS template:
 #   check-version  - Rail 1+2+3+7 pre-flight + release discovery via NLM dir listing
@@ -46,6 +48,9 @@ env:
   R2_BUCKET: ${{ secrets.R2_BUCKET }}
   R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
   R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+  # PR-RXN-2b: Full RxNorm RRF is UMLS-license-gated; probe + harvest both
+  # download via the apiKey proxy (umls-auth.js). Shared by both jobs.
+  UMLS_API_KEY: ${{ secrets.UMLS_API_KEY }}
 
 jobs:
   check-version:

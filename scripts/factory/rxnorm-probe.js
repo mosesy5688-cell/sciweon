@@ -24,7 +24,8 @@ import { writeFileSync, unlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import StreamZip from 'node-stream-zip';
-import { buildCandidateUrls, findLatestPrescribableUrl } from './lib/rxnorm-release-discovery.js';
+import { buildCandidateUrls, findLatestFullUrl } from './lib/rxnorm-release-discovery.js';
+import { umlsDownloadUrl } from './lib/umls-auth.js';
 
 const MONTHS_BACK = 3;
 
@@ -39,7 +40,7 @@ export function computeSortedHeaderChecksum(headerLine) {
 }
 
 async function fetchArchive(url, tmpPath) {
-    const res = await fetch(url, { method: 'GET' });
+    const res = await fetch(umlsDownloadUrl(url), { method: 'GET' });
     if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText} on ${url}`);
     const lastMod = res.headers.get('last-modified');
     const buf = Buffer.from(await res.arrayBuffer());
@@ -73,7 +74,7 @@ async function readRxnconsoFirstRow(zipPath) {
 async function main() {
     const candidates = buildCandidateUrls(MONTHS_BACK);
     let resolved;
-    try { resolved = await findLatestPrescribableUrl(candidates); }
+    try { resolved = await findLatestFullUrl(candidates); }
     catch (err) { console.error(`[RXNORM-PROBE] release discovery failed: ${err.message}`); process.exit(1); }
     console.error(`[RXNORM-PROBE] resolved release_date=${resolved.release_date} url=${resolved.url}`);
 
