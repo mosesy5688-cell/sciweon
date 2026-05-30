@@ -1,11 +1,11 @@
 /**
- * Tests for the DailyMed cross-link SSoT (PR-RXN-1g) — lib/dailymed-crosslink.js.
+ * Tests for the DailyMed cross-link SSoT (PR-RXN-1g) -- lib/dailymed-crosslink.js.
  *
  * Locks the join semantics shared by the F2 increment linker (adapter-cross-
  * linker.js) and the F3 cumulative re-link (aggregated-backfill-enrich.js):
  *   - 4-field summary shape (parity guard vs the pre-extraction inline build)
  *   - scalar-or-array rxcui normalization
- *   - overwrite-ONLY-on-match (never blind-clears prior drug_labels —
+ *   - overwrite-ONLY-on-match (never blind-clears prior drug_labels --
  *     [[cross_cycle_silent_data_loss]])
  *   - idempotent re-run (overwrite, not append/double)
  */
