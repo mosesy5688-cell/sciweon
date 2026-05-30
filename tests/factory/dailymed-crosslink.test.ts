@@ -185,4 +185,23 @@ describe('classifyDailymedRxcuiBuckets', () => {
         expect(r.no_unii_bridge).toBe(1);
         expect(r.samples.no_unii_bridge[0]).toMatchObject({ rxcui: '111' });
     });
+
+    it('PR-MD-1c.2: no_unii_bridge sample carries TTY from ndcToRxcuis (in-memory, no RXNCONSO re-read)', () => {
+        // label rxcui 111 has no UNII (not in uniiToRxcui) but IS in ndcToRxcuis
+        // with tty=SCD (product-level) -> structural-vs-scope becomes measurable.
+        const dm = buildDailymedByRxcui([label('a', ['111'])]);
+        const bm = {
+            uniiToRxcui: new Map([['UUUUUUUUU1', { rxcui: '999' }]]),
+            ndcToRxcuis: new Map([['00001000001', new Set([{ rxcui: '111', tty: 'SCD' }])]]),
+        };
+        const r = classifyDailymedRxcuiBuckets([compound(1, '222')], dm, bm);
+        expect(r.no_unii_bridge).toBe(1);
+        expect(r.samples.no_unii_bridge[0]).toMatchObject({ rxcui: '111', tty: 'SCD', in_ndc_map: true });
+    });
+
+    it('PR-MD-1c.2: no_unii_bridge R absent from BOTH maps -> tty null, in_ndc_map false', () => {
+        const dm = buildDailymedByRxcui([label('a', ['111'])]);
+        const r = classifyDailymedRxcuiBuckets([compound(1, '222')], dm, maps([['UUUUUUUUU1', '999']]));
+        expect(r.samples.no_unii_bridge[0]).toMatchObject({ rxcui: '111', tty: null, in_ndc_map: false });
+    });
 });

@@ -191,12 +191,22 @@ export function classifyDailymedRxcuiBuckets(compounds, dmByRxcui, bulkMaps) {
         if (!rxcuiToUniis.has(r)) rxcuiToUniis.set(r, new Set());
         rxcuiToUniis.get(r).add(unii);
     }
+    // PR-MD-1c.2: reverse rxcui -> tty from ndcToRxcuis (meta carries tty baked
+    // from RXNCONSO at harvest, rxnorm-bulk-adapter.js:86) so the no_unii_bridge
+    // bucket reports each R's TTY IN-MEMORY (no RXNCONSO re-read): structural
+    // product-level (SCD/SBD, intrinsically UNII-less) vs harvest-scope (ingredient
+    // TTY whose UNII is outside the MTHSPL-SU slice) becomes measurable. R absent
+    // from both maps -> tty:null, in_ndc_map:false.
+    const rxcuiToTty = new Map();
+    for (const set of bulkMaps.ndcToRxcuis?.values() ?? []) {
+        for (const meta of set) { if (meta?.rxcui && !rxcuiToTty.has(meta.rxcui)) rxcuiToTty.set(meta.rxcui, meta.tty ?? null); }
+    }
     const out = { ...zero, reverse_map_available: true };
     const push = (b, o) => { if (out.samples[b].length < 10) out.samples[b].push(o); };
     for (const R of dmByRxcui.keys()) {
         if (compoundRxcui.has(R)) { out.productive++; continue; }
         const uniis = rxcuiToUniis.get(R);
-        if (!uniis || uniis.size === 0) { out.no_unii_bridge++; push('no_unii_bridge', { rxcui: R }); continue; }
+        if (!uniis || uniis.size === 0) { out.no_unii_bridge++; push('no_unii_bridge', { rxcui: R, tty: rxcuiToTty.get(R) ?? null, in_ndc_map: rxcuiToTty.has(R) }); continue; }
         let unstamped = false, stamped = false, present = false, sampleUnii = null;
         for (const u of uniis) {
             const e = uniiStamp.get(u);
