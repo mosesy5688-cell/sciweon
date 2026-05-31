@@ -43,6 +43,15 @@
  * @param {Set<string>} compoundRxcui  rxcui carried by some compound (== productive)
  * @param {Map<string,{bucket,tty}>} rxcuiClass  per-rxcui bucket + tty (empty on no-bulkMaps)
  */
+// PR-MD-1f-probe TTY sets (strings confirmed from real data: harvest lost_tty
+// GPCK/BPCK/SY/PSN/TMSY; F3 samples BN, IN). Ingredient-tier presence => corpus-bound.
+// RXNREL_REACHABLE = TTY-ELIGIBLE for a has_ingredient/consists_of edge, NOT proof the
+// edge exists (Collar 2: these stranded BECAUSE the harvest projector had no edge; the
+// fix-PR must confirm edge-existence). NAME_TYPE atoms have no RXNREL relation at all.
+const INGREDIENT_TIER = new Set(['IN', 'MIN', 'PIN']);
+const RXNREL_REACHABLE = new Set(['SCD', 'SBD', 'GPCK', 'BPCK']);
+const NAME_TYPE = new Set(['SY', 'PSN', 'TMSY']);
+
 export function summarizeLabelProductivity(drugLabelRecords, compoundRxcui, rxcuiClass) {
     const out = {
         labels_no_rxcui: 0,
@@ -50,7 +59,11 @@ export function summarizeLabelProductivity(drugLabelRecords, compoundRxcui, rxcu
         labels_linked: 0,
         labels_zero_productive: 0,
         harm_reason: { projection_gap_typed: 0, projection_gap_null_tty: 0, not_in_corpus: 0, mixed_or_other: 0 },
-        samples: { zero_productive: [] },
+        // PR-MD-1f-probe: grades projection_gap_typed (sums to it). in_present = corpus-bound
+        // (projection no net gain, EXCEPT an undetermined tradename co-ingredient residual --
+        // NOT "0 value proven"). no_in_* = the (ii) TTY tri-split + catch-all.
+        typed_breakdown: { in_present: 0, no_in_rxnrel_reachable: 0, no_in_tradename_bn: 0, no_in_name_type: 0, no_in_other: 0 },
+        samples: { zero_productive: [], typed_no_in: [] },
     };
     const productive = compoundRxcui instanceof Set ? compoundRxcui : new Set();
     const cls = rxcuiClass instanceof Map ? rxcuiClass : new Map();
@@ -79,6 +92,22 @@ export function summarizeLabelProductivity(drugLabelRecords, compoundRxcui, rxcu
                 setid: r.setid ?? null, reason,
                 rxcui: rx.slice(0, 5).map(x => ({ rxcui: x, bucket: cls.get(x)?.bucket ?? null, tty: cls.get(x)?.tty ?? null })),
             });
+        }
+        // PR-MD-1f-probe: grade the typed lever. (i) in_present (corpus-bound) if any rxcui
+        // is ingredient-tier; else (ii) tri-split by no_unii_bridge TTY, cheapest-actionable
+        // precedence rxnrel_reachable > tradename_bn > name_type > other (catch-all).
+        if (reason === 'projection_gap_typed') {
+            const nbTtys = rx.filter(x => cls.get(x)?.bucket === 'no_unii_bridge').map(x => cls.get(x)?.tty ?? null);
+            let sub;
+            if (rx.some(x => INGREDIENT_TIER.has(cls.get(x)?.tty))) sub = 'in_present';
+            else if (nbTtys.some(t => RXNREL_REACHABLE.has(t))) sub = 'no_in_rxnrel_reachable';
+            else if (nbTtys.some(t => t === 'BN')) sub = 'no_in_tradename_bn';
+            else if (nbTtys.some(t => NAME_TYPE.has(t))) sub = 'no_in_name_type';
+            else sub = 'no_in_other';
+            out.typed_breakdown[sub]++;
+            if (sub !== 'in_present' && out.samples.typed_no_in.length < 10) {
+                out.samples.typed_no_in.push({ setid: r.setid ?? null, sub, no_unii_bridge_ttys: nbTtys });
+            }
         }
     }
     return out;

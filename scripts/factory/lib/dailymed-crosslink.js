@@ -156,19 +156,6 @@ export function relinkCumulativeDailymed(compounds, drugLabelRecords, bulkMaps) 
 }
 
 /**
- * Pure formatter for the two F3 DailyMed telemetry lines (relink buckets +
- * PR-MD-1e label-level harm). Returns a 2-line string (one per log prefix, so
- * operators still grep [BACKFILL/dailymed-relink] and [BACKFILL/dailymed-label-harm]
- * separately). Extracted so aggregated-backfill-enrich.js stays under the Art 5.1
- * 250-line cap. No I/O -- the caller console.logs the result.
- */
-export function formatDailymedRelinkLog(rl) {
-    const b = rl.buckets, lp = rl.labelProductivity, h = lp.harm_reason;
-    return `[BACKFILL/dailymed-relink] labels_rehydrated=${rl.labelsRehydrated} dailymed_by_rxcui=${rl.dmByRxcuiSize} cumulative_dm_linked=${rl.dmLinked} | buckets: reverse_map=${b.reverse_map_available} total=${b.total_label_rxcui} productive=${b.productive} in_corpus_unstamped=${b.in_corpus_unstamped} stamp_drift=${b.in_corpus_stamp_drift} not_in_corpus=${b.not_in_corpus} no_unii_bridge=${b.no_unii_bridge} | samples not_in_corpus=${JSON.stringify(b.samples.not_in_corpus)} no_unii_bridge=${JSON.stringify(b.samples.no_unii_bridge)}\n`
-        + `[BACKFILL/dailymed-label-harm] labels_linked=${lp.labels_linked} labels_zero_productive=${lp.labels_zero_productive} labels_no_rxcui=${lp.labels_no_rxcui} total_with_rxcui=${lp.total_labels_with_rxcui} | reason: projection_gap_typed=${h.projection_gap_typed} projection_gap_null_tty=${h.projection_gap_null_tty} not_in_corpus=${h.not_in_corpus} mixed=${h.mixed_or_other} | samples=${JSON.stringify(lp.samples.zero_productive)}`;
-}
-
-/**
  * PR-MD-1c: classify every label-rxcui in the keyset to answer "of the
  * unproductive label-rxcui (match no stamped compound), how many are corpus
  * compounds lacking rxcui [grow UNII->RxCUI mapping] vs substances not in the

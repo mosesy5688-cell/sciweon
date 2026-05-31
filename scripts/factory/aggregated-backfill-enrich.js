@@ -13,7 +13,6 @@
  * ([[no_shortcut_in_science]]): full O(N/chunk) coverage; predicates ==
  * SOURCE_REQUIRED_FIELDS SSoT; closed PR-CORE-1->3->1 loop. D7/D8: per-source
  * failure logs explicit, never aborts; cursor persists across partial failure.
- *
  * PR-RXN-1g adds two F3-cumulative bridges: (Fix A) a RxNorm bulk fast-path
  * pre-pass so the bulk Map UNII supply reaches the backlog; (Fix B) a terminal
  * cumulative DailyMed re-link on the resident array before writeback.
@@ -41,7 +40,8 @@ import {
     enrichOne as enrichOneFaers,
 } from './compound-faers-enricher.js';
 import { loadRxnormBulkMaps } from '../ingestion/adapters/rxnorm-bulk-adapter.js';
-import { relinkCumulativeDailymed, formatDailymedRelinkLog } from './lib/dailymed-crosslink.js';
+import { relinkCumulativeDailymed } from './lib/dailymed-crosslink.js';
+import { formatDailymedRelinkLog } from './lib/dailymed-relink-log.js';
 
 const DATA_DIR = './output/linked';
 const COMPOUNDS_FILE = path.join(DATA_DIR, 'compounds-enriched.jsonl');

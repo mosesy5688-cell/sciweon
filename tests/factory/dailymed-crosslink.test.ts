@@ -16,7 +16,6 @@ import {
     linkCompoundsToDailymed,
     relinkCumulativeDailymed,
     classifyDailymedRxcuiBuckets,
-    formatDailymedRelinkLog,
 } from '../../scripts/factory/lib/dailymed-crosslink.js';
 
 function label(setid: string, rxcui: string[], opts: Record<string, unknown> = {}) {
@@ -206,25 +205,4 @@ describe('classifyDailymedRxcuiBuckets', () => {
         expect(r.samples.no_unii_bridge[0]).toMatchObject({ rxcui: '111', tty: null, in_ndc_map: false });
     });
 
-    it('PR-MD-1e: formatDailymedRelinkLog emits BOTH prefixes with the harm fields', () => {
-        const rl = {
-            labelsRehydrated: 3, dmByRxcuiSize: 10, dmLinked: 190,
-            buckets: {
-                reverse_map_available: true, total_label_rxcui: 10, productive: 187,
-                in_corpus_unstamped: 0, in_corpus_stamp_drift: 0, not_in_corpus: 165, no_unii_bridge: 225,
-                samples: { not_in_corpus: [], no_unii_bridge: [] },
-            },
-            labelProductivity: {
-                labels_linked: 188, labels_zero_productive: 12, labels_no_rxcui: 4, total_labels_with_rxcui: 200,
-                harm_reason: { projection_gap_typed: 3, projection_gap_null_tty: 7, not_in_corpus: 2, mixed_or_other: 0 },
-                samples: { zero_productive: [{ setid: 'X', reason: 'projection_gap_null_tty', rxcui: [] }] },
-            },
-        };
-        const out = formatDailymedRelinkLog(rl);
-        const lines = out.split('\n');
-        expect(lines).toHaveLength(2);
-        expect(lines[0]).toContain('[BACKFILL/dailymed-relink] labels_rehydrated=3');
-        expect(lines[1]).toContain('[BACKFILL/dailymed-label-harm] labels_linked=188 labels_zero_productive=12');
-        expect(lines[1]).toContain('projection_gap_typed=3 projection_gap_null_tty=7');
-    });
 });
