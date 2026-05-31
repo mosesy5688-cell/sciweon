@@ -199,6 +199,24 @@ describe('classifyDailymedRxcuiBuckets', () => {
         expect(r.samples.no_unii_bridge[0]).toMatchObject({ rxcui: '111', tty: 'SCD', in_ndc_map: true });
     });
 
+    it('PR-MD-2a: not_in_corpus_full is UNCAPPED (full target set) while samples stay capped at 10', () => {
+        // 12 distinct rxcui, each with a UNII no compound carries -> all not_in_corpus.
+        const rxcuis = Array.from({ length: 12 }, (_, i) => `R${i}`);
+        const dm = buildDailymedByRxcui(rxcuis.map((r, i) => label(`s${i}`, [r])));
+        const pairs = rxcuis.map((r, i) => [`U${String(i).padStart(8, '0')}`, r] as [string, string]);
+        const r = classifyDailymedRxcuiBuckets([compound(1, '999')], dm, maps(pairs));
+        expect(r.not_in_corpus).toBe(12);
+        expect(r.samples.not_in_corpus).toHaveLength(10);   // sample path still capped
+        expect(r.not_in_corpus_full).toHaveLength(12);      // full enumeration uncapped
+        expect(r.not_in_corpus_full[0]).toMatchObject({ rxcui: 'R0', uniis: ['U00000000'] });
+    });
+
+    it('PR-MD-2a: not_in_corpus_full is [] on the fail-soft (no bulkMaps) path', () => {
+        const dm = buildDailymedByRxcui([label('a', ['111'])]);
+        const r = classifyDailymedRxcuiBuckets([compound(1, '222')], dm, null);
+        expect(r.not_in_corpus_full).toEqual([]);
+    });
+
     it('PR-MD-1c.2: no_unii_bridge R absent from BOTH maps -> tty null, in_ndc_map false', () => {
         const dm = buildDailymedByRxcui([label('a', ['111'])]);
         const r = classifyDailymedRxcuiBuckets([compound(1, '222')], dm, maps([['UUUUUUUUU1', '999']]));

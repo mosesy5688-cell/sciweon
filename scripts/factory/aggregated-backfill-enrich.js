@@ -42,6 +42,7 @@ import {
 import { loadRxnormBulkMaps } from '../ingestion/adapters/rxnorm-bulk-adapter.js';
 import { relinkCumulativeDailymed } from './lib/dailymed-crosslink.js';
 import { formatDailymedRelinkLog } from './lib/dailymed-relink-log.js';
+import { buildCorpusAddList, emitCorpusAddList } from './lib/corpus-add-list-emit.js';
 
 const DATA_DIR = './output/linked';
 const COMPOUNDS_FILE = path.join(DATA_DIR, 'compounds-enriched.jsonl');
@@ -218,16 +219,16 @@ async function main() {
     // sources errored) is suspicious - keep the prior local file intact so
     // F3's upload step uses the unchanged-but-not-wrong merged cumulative.
     if (anySuccess) {
-        // PR-RXN-1g Fix B re-link + PR-MD-1e label-harm telemetry (see lib headers).
+        // PR-RXN-1g Fix B re-link + PR-MD-1e harm telemetry + PR-MD-2a corpus add-list emit.
         const labels = await loadJsonl(DRUG_LABELS_FILE);
         const rl = relinkCumulativeDailymed(compounds, labels, bulkMaps);
         console.log(formatDailymedRelinkLog(rl));
+        await emitCorpusAddList(buildCorpusAddList(rl), { generatedFrom: process.env.GITHUB_RUN_ID ?? null });
         await writeJsonl(COMPOUNDS_FILE, compounds);
         console.log(`[BACKFILL] Wrote back ${compounds.length} compounds to ${COMPOUNDS_FILE}`);
     } else {
         console.error(`[BACKFILL] All sources errored - SKIPPING writeback to avoid clobbering merged cumulative.`);
     }
-
     console.log(`\n[BACKFILL] === Summary ===`);
     for (const s of summaries) {
         const tag = s.error ? `ERROR(${s.error.slice(0, 80)})` : 'OK';
