@@ -14,6 +14,7 @@
 
 import { lookupByNdc } from '../../ingestion/adapters/rxnorm-bulk-adapter.js';
 import { normalizeNdcTo11Digit } from './ndc-normalize.js';
+import { summarizeLabelProductivity } from './dailymed-label-productivity.js';
 
 /**
  * PR-RXN-1b: hydrate drug_label.rxcui[] from drug_label.ndcs[] via RxNorm
@@ -147,7 +148,24 @@ export function relinkCumulativeDailymed(compounds, drugLabelRecords, bulkMaps) 
     const dmByRxcui = buildDailymedByRxcui(drugLabelRecords);
     const { dmLinked } = linkCompoundsToDailymed(compounds, dmByRxcui);
     const buckets = classifyDailymedRxcuiBuckets(compounds, dmByRxcui, bulkMaps);
-    return { dmLinked, labelsRehydrated, dmByRxcuiSize: dmByRxcui.size, buckets };
+    // PR-MD-1e: F3-side label-level harm (GUARD 1). Reuses the productive set +
+    // per-rxcui class the bucket pass already built -- no duplicate reverse maps.
+    const labelProductivity = summarizeLabelProductivity(
+        drugLabelRecords, buckets.compoundRxcui, buckets.rxcuiClass);
+    return { dmLinked, labelsRehydrated, dmByRxcuiSize: dmByRxcui.size, buckets, labelProductivity };
+}
+
+/**
+ * Pure formatter for the two F3 DailyMed telemetry lines (relink buckets +
+ * PR-MD-1e label-level harm). Returns a 2-line string (one per log prefix, so
+ * operators still grep [BACKFILL/dailymed-relink] and [BACKFILL/dailymed-label-harm]
+ * separately). Extracted so aggregated-backfill-enrich.js stays under the Art 5.1
+ * 250-line cap. No I/O -- the caller console.logs the result.
+ */
+export function formatDailymedRelinkLog(rl) {
+    const b = rl.buckets, lp = rl.labelProductivity, h = lp.harm_reason;
+    return `[BACKFILL/dailymed-relink] labels_rehydrated=${rl.labelsRehydrated} dailymed_by_rxcui=${rl.dmByRxcuiSize} cumulative_dm_linked=${rl.dmLinked} | buckets: reverse_map=${b.reverse_map_available} total=${b.total_label_rxcui} productive=${b.productive} in_corpus_unstamped=${b.in_corpus_unstamped} stamp_drift=${b.in_corpus_stamp_drift} not_in_corpus=${b.not_in_corpus} no_unii_bridge=${b.no_unii_bridge} | samples not_in_corpus=${JSON.stringify(b.samples.not_in_corpus)} no_unii_bridge=${JSON.stringify(b.samples.no_unii_bridge)}\n`
+        + `[BACKFILL/dailymed-label-harm] labels_linked=${lp.labels_linked} labels_zero_productive=${lp.labels_zero_productive} labels_no_rxcui=${lp.labels_no_rxcui} total_with_rxcui=${lp.total_labels_with_rxcui} | reason: projection_gap_typed=${h.projection_gap_typed} projection_gap_null_tty=${h.projection_gap_null_tty} not_in_corpus=${h.not_in_corpus} mixed=${h.mixed_or_other} | samples=${JSON.stringify(lp.samples.zero_productive)}`;
 }
 
 /**
@@ -166,13 +184,10 @@ export function relinkCumulativeDailymed(compounds, drugLabelRecords, bulkMaps) 
  *   not_in_corpus         R's unii on no corpus compound (lever = expand corpus)
  */
 export function classifyDailymedRxcuiBuckets(compounds, dmByRxcui, bulkMaps) {
-    const zero = {
-        reverse_map_available: false, total_label_rxcui: dmByRxcui?.size ?? 0,
-        productive: 0, in_corpus_unstamped: 0, in_corpus_stamp_drift: 0,
-        not_in_corpus: 0, no_unii_bridge: 0,
-        samples: { in_corpus_unstamped: [], not_in_corpus: [], no_unii_bridge: [] },
-    };
-    if (!bulkMaps?.uniiToRxcui || !dmByRxcui) return zero;
+    // PR-MD-1e: build compoundRxcui (the productive set) + uniiStamp BEFORE the
+    // bulkMaps guard so both the fail-soft return and the F3-side label-productivity
+    // pass (which needs the productive set even when reverse bridge is unavailable)
+    // get a real set, not an empty placeholder.
     const compoundRxcui = new Set();
     const uniiStamp = new Map();  // unii -> { anyUnstamped, anyStamped }
     for (const c of compounds ?? []) {
@@ -185,6 +200,14 @@ export function classifyDailymedRxcuiBuckets(compounds, dmByRxcui, bulkMaps) {
             uniiStamp.set(u, e);
         }
     }
+    const zero = {
+        reverse_map_available: false, total_label_rxcui: dmByRxcui?.size ?? 0,
+        productive: 0, in_corpus_unstamped: 0, in_corpus_stamp_drift: 0,
+        not_in_corpus: 0, no_unii_bridge: 0,
+        samples: { in_corpus_unstamped: [], not_in_corpus: [], no_unii_bridge: [] },
+        compoundRxcui, rxcuiClass: new Map(),
+    };
+    if (!bulkMaps?.uniiToRxcui || !dmByRxcui) return zero;
     const rxcuiToUniis = new Map();
     for (const [unii, meta] of bulkMaps.uniiToRxcui) {
         const r = meta?.rxcui; if (!r) continue;
@@ -201,21 +224,24 @@ export function classifyDailymedRxcuiBuckets(compounds, dmByRxcui, bulkMaps) {
     for (const set of bulkMaps.ndcToRxcuis?.values() ?? []) {
         for (const meta of set) { if (meta?.rxcui && !rxcuiToTty.has(meta.rxcui)) rxcuiToTty.set(meta.rxcui, meta.tty ?? null); }
     }
-    const out = { ...zero, reverse_map_available: true };
+    const out = { ...zero, reverse_map_available: true, rxcuiClass: new Map() };
     const push = (b, o) => { if (out.samples[b].length < 10) out.samples[b].push(o); };
+    // PR-MD-1e: record each R's bucket + tty so the F3-side label-productivity pass
+    // can split projection_gap by null-tty without rebuilding the reverse maps.
+    const setCls = (R, bucket) => out.rxcuiClass.set(R, { bucket, tty: rxcuiToTty.get(R) ?? null });
     for (const R of dmByRxcui.keys()) {
-        if (compoundRxcui.has(R)) { out.productive++; continue; }
+        if (compoundRxcui.has(R)) { out.productive++; setCls(R, 'productive'); continue; }
         const uniis = rxcuiToUniis.get(R);
-        if (!uniis || uniis.size === 0) { out.no_unii_bridge++; push('no_unii_bridge', { rxcui: R, tty: rxcuiToTty.get(R) ?? null, in_ndc_map: rxcuiToTty.has(R) }); continue; }
+        if (!uniis || uniis.size === 0) { out.no_unii_bridge++; setCls(R, 'no_unii_bridge'); push('no_unii_bridge', { rxcui: R, tty: rxcuiToTty.get(R) ?? null, in_ndc_map: rxcuiToTty.has(R) }); continue; }
         let unstamped = false, stamped = false, present = false, sampleUnii = null;
         for (const u of uniis) {
             const e = uniiStamp.get(u);
             if (e) { present = true; sampleUnii = sampleUnii ?? u; if (e.anyUnstamped) unstamped = true; if (e.anyStamped) stamped = true; }
         }
-        if (unstamped) { out.in_corpus_unstamped++; push('in_corpus_unstamped', { rxcui: R, unii: sampleUnii }); }
-        else if (stamped) { out.in_corpus_stamp_drift++; }
-        else if (present) { out.in_corpus_stamp_drift++; }
-        else { out.not_in_corpus++; push('not_in_corpus', { rxcui: R, unii: [...uniis][0] }); }
+        if (unstamped) { out.in_corpus_unstamped++; setCls(R, 'in_corpus_unstamped'); push('in_corpus_unstamped', { rxcui: R, unii: sampleUnii }); }
+        else if (stamped) { out.in_corpus_stamp_drift++; setCls(R, 'in_corpus_stamp_drift'); }
+        else if (present) { out.in_corpus_stamp_drift++; setCls(R, 'in_corpus_stamp_drift'); }
+        else { out.not_in_corpus++; setCls(R, 'not_in_corpus'); push('not_in_corpus', { rxcui: R, unii: [...uniis][0] }); }
     }
     return out;
 }

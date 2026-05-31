@@ -41,7 +41,7 @@ import {
     enrichOne as enrichOneFaers,
 } from './compound-faers-enricher.js';
 import { loadRxnormBulkMaps } from '../ingestion/adapters/rxnorm-bulk-adapter.js';
-import { relinkCumulativeDailymed } from './lib/dailymed-crosslink.js';
+import { relinkCumulativeDailymed, formatDailymedRelinkLog } from './lib/dailymed-crosslink.js';
 
 const DATA_DIR = './output/linked';
 const COMPOUNDS_FILE = path.join(DATA_DIR, 'compounds-enriched.jsonl');
@@ -218,11 +218,10 @@ async function main() {
     // sources errored) is suspicious - keep the prior local file intact so
     // F3's upload step uses the unchanged-but-not-wrong merged cumulative.
     if (anySuccess) {
-        // PR-RXN-1g Fix B: cumulative DailyMed re-link on the resident array,
-        // after Fix A filled rxcui and before the single writeback.
+        // PR-RXN-1g Fix B re-link + PR-MD-1e label-harm telemetry (see lib headers).
         const labels = await loadJsonl(DRUG_LABELS_FILE);
         const rl = relinkCumulativeDailymed(compounds, labels, bulkMaps);
-        console.log(`[BACKFILL/dailymed-relink] labels_rehydrated=${rl.labelsRehydrated} dailymed_by_rxcui=${rl.dmByRxcuiSize} cumulative_dm_linked=${rl.dmLinked} | buckets: reverse_map=${rl.buckets.reverse_map_available} total=${rl.buckets.total_label_rxcui} productive=${rl.buckets.productive} in_corpus_unstamped=${rl.buckets.in_corpus_unstamped} stamp_drift=${rl.buckets.in_corpus_stamp_drift} not_in_corpus=${rl.buckets.not_in_corpus} no_unii_bridge=${rl.buckets.no_unii_bridge} | samples not_in_corpus=${JSON.stringify(rl.buckets.samples.not_in_corpus)} no_unii_bridge=${JSON.stringify(rl.buckets.samples.no_unii_bridge)}`);
+        console.log(formatDailymedRelinkLog(rl));
         await writeJsonl(COMPOUNDS_FILE, compounds);
         console.log(`[BACKFILL] Wrote back ${compounds.length} compounds to ${COMPOUNDS_FILE}`);
     } else {
