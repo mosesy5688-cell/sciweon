@@ -1,0 +1,37 @@
+name: Factory Resolve Corpus Add CIDs
+
+# PR-MD-2b: the corpus add-list addressability gate. Reads the 2a artifact
+# state/dailymed-corpus-add-list.json (165 target UNIIs), resolves each UNII ->
+# InChIKey (FDA SRS, inverted) -> PubChem CID (UniChem), and emits
+# state/dailymed-corpus-add-cids.json {resolvable, unresolvable, coverage} for
+# USER REVIEW before PR-MD-2c (the gated corpus mutation).
+#
+# Diagnostic-only: no compound fetch, no corpus mutation. workflow_dispatch only
+# (own per-attempt auth); UniChem is public so no UMLS key is needed.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+  R2_BUCKET: ${{ secrets.R2_BUCKET }}
+  R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+  R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Resolve corpus add-list UNIIs to CIDs
+        run: node scripts/factory/resolve-corpus-add-cids.js
