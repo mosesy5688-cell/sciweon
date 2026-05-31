@@ -39,10 +39,11 @@ export function invertSrsToUniiIndex(inchiKeyedMap) {
  * `pubchemCidOrNull` = the UniChem-resolved CID for that InChIKey (or null).
  * Returns either a resolvable entry or {unii, reason}.
  */
-export function classifyUniiResolution(unii, inchiKeyOrNull, pubchemCidOrNull, name = null) {
+export function classifyUniiResolution(unii, inchiKeyOrNull, pubchemCidOrNull, name = null, cidSource = null) {
     if (!inchiKeyOrNull) return { unii, reason: 'no_srs_inchikey' };
     if (!pubchemCidOrNull) return { unii, reason: 'no_cid', inchikey: inchiKeyOrNull };
-    return { unii, inchikey: inchiKeyOrNull, cid: String(pubchemCidOrNull), name };
+    // PR-MD-2b.1: cid_source records provenance (unichem | pubchem_inchikey) for 2c audit.
+    return { unii, inchikey: inchiKeyOrNull, cid: String(pubchemCidOrNull), name, cid_source: cidSource };
 }
 
 const isResolvable = (e) => e && e.cid != null && !e.reason;

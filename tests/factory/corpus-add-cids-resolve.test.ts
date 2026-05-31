@@ -32,9 +32,12 @@ describe('classifyUniiResolution', () => {
     it('InChIKey but no CID -> no_cid', () => {
         expect(classifyUniiResolution('UA', 'IKEY1', null)).toEqual({ unii: 'UA', reason: 'no_cid', inchikey: 'IKEY1' });
     });
-    it('InChIKey + CID -> resolvable carrying the TARGET unii (Collar A)', () => {
-        expect(classifyUniiResolution('UA', 'IKEY1', 1234, 'Alpha'))
-            .toEqual({ unii: 'UA', inchikey: 'IKEY1', cid: '1234', name: 'Alpha' });
+    it('InChIKey + CID -> resolvable carrying the TARGET unii (Collar A) + cid_source provenance', () => {
+        expect(classifyUniiResolution('UA', 'IKEY1', 1234, 'Alpha', 'unichem'))
+            .toEqual({ unii: 'UA', inchikey: 'IKEY1', cid: '1234', name: 'Alpha', cid_source: 'unichem' });
+        // PR-MD-2b.1: PubChem-recovered entries carry cid_source: pubchem_inchikey
+        expect(classifyUniiResolution('UB', 'IKEY2', 9, 'Beta', 'pubchem_inchikey').cid_source)
+            .toBe('pubchem_inchikey');
     });
 });
 
