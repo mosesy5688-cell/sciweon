@@ -122,7 +122,7 @@ async function main() {
         console.log(`[RXNORM-HARVEST] MTHSPL UNII Rewire: total_mthspl_conso_rows=${mthsplTelemetry.total_mthspl_conso_rows} mthspl_su_rows=${mthsplTelemetry.mthspl_su_rows} mthspl_unii_harvested=${mthsplTelemetry.mthspl_unii_harvested} mthspl_unii_dropped_shape=${mthsplTelemetry.mthspl_unii_dropped_shape}`);
         if (droppedCounts.ndc_projection) {
             const np = droppedCounts.ndc_projection;
-            console.log(`[RXNORM-HARVEST] NDC projection: distinct_projected=${np.distinct_projected} distinct_fallback_only=${np.distinct_fallback_only} (=lost, true link-loss bound; NDC-level, see GUARD 1) fallback_rate_upper_bound=${np.fallback_rate_upper_bound}% lost_tty_dist=${JSON.stringify(np.tty_dist)} lost_sab_dist=${JSON.stringify(np.sab_dist)} sample_lost=${JSON.stringify(np.samples)}`);
+            console.log(`[RXNORM-HARVEST] NDC projection: distinct_projected=${np.distinct_projected} distinct_fallback_only=${np.distinct_fallback_only} (=lost, true link-loss bound; NDC-level, see GUARD 1) fallback_rate_upper_bound=${np.fallback_rate_upper_bound}% lost_pure_null_tty=${np.lost_pure_null_tty} (RXNREL-unrescuable; no concept node) lost_tty_dist=${JSON.stringify(np.tty_dist)} lost_sab_dist=${JSON.stringify(np.sab_dist)} sample_lost=${JSON.stringify(np.samples)}`);
         }
         if (droppedCounts.ndc_sab_distribution) {
             console.log(`[RXNORM-HARVEST] NDC SAB distribution: ${JSON.stringify(droppedCounts.ndc_sab_distribution)}`);

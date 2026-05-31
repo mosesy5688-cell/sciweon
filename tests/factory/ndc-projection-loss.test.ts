@@ -60,4 +60,28 @@ describe('summarizeNdcProjectionLoss', () => {
         expect(r.fallback_rate_upper_bound).toBe(25);  // 1 lost / (3 projected + 1 lost)
         expect(summarizeNdcProjectionLoss(new Set(), new Map(), new Map())).toMatchObject({ distinct_projected: 0, distinct_fallback_only: 0, fallback_rate_upper_bound: 0 });
     });
+
+    it('(A) one NDC with TWO fallback hits -> tty/sab counted ONCE per distinct value', () => {
+        // The same lost NDC carries a null-tty MTHSPL row AND a BN MTHSPL row.
+        // Per-hit counting would give 2; per-distinct-NDC dedup gives 1 each.
+        const fallback = new Map([['00001000001', [
+            { rxcui: 'A', sab: 'MTHSPL' },  // tty null (no meta)
+            { rxcui: 'B', sab: 'MTHSPL' },  // tty BN
+        ]]]);
+        const r = summarizeNdcProjectionLoss(new Set(), fallback, meta([['B', 'BN']]));
+        expect(r.distinct_fallback_only).toBe(1);
+        expect(r.tty_dist).toEqual({ null: 1, BN: 1 });  // not {null:1, BN:1} doubled
+        expect(r.sab_dist).toEqual({ MTHSPL: 1 });        // deduped to 1, not 2
+        expect(r.lost_pure_null_tty).toBe(0);             // has a typed (BN) row -> not pure-null
+    });
+
+    it('(A) lost_pure_null_tty counts ONLY all-null NDCs', () => {
+        const fallback = new Map([
+            ['00001000001', [{ rxcui: 'A', sab: 'MTHSPL' }]],                 // pure null
+            ['00001000002', [{ rxcui: 'B', sab: 'MTHSPL' }, { rxcui: 'C', sab: 'MTHSPL' }]],  // null + typed
+        ]);
+        const r = summarizeNdcProjectionLoss(new Set(), fallback, meta([['C', 'SCD']]));
+        expect(r.distinct_fallback_only).toBe(2);
+        expect(r.lost_pure_null_tty).toBe(1);  // only NDC ...001 is all-null
+    });
 });
