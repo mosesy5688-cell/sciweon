@@ -55,6 +55,28 @@ export async function fetchSynonyms(cid) {
 }
 
 /**
+ * PR-MD-2b.1: resolve a CID directly from an InChIKey (PubChem PUG REST). Used to
+ * recover the corpus add-list `no_cid` bucket -- UniChem's InChIKey->PubChem xref is
+ * a SUBSET of PubChem's own, so a direct query recovers small molecules UniChem missed.
+ * 404 = PubChem has no record for this exact structure -> null (genuinely CID-unaddressable).
+ *
+ * FIDELITY LOCK: uses the FULL 27-char InChIKey ONLY -- NEVER the skeleton/connectivity
+ * first-14 block. The first block matches the PARENT, but a UNII's specific substance
+ * (salt/hydrate) differs from its parent (a different UNII), so a skeleton match would
+ * inject the wrong substance and break the caller's UNII fidelity. Returns the first CID
+ * (a full InChIKey usually maps 1; PubChem returns CID-ascending, [0] ~canonical).
+ */
+export async function fetchCidByInchiKey(inchiKey) {
+    if (!inchiKey) return null;
+    try {
+        const url = `${PUBCHEM_BASE}/compound/inchikey/${encodeURIComponent(inchiKey)}/cids/JSON`;
+        const data = await fetchJsonWithRetry(url, { timeoutMs: REQUEST_TIMEOUT_MS, allow404: true });
+        const cid = data?.IdentifierList?.CID?.[0];
+        return cid != null ? String(cid) : null;
+    } catch { return null; }
+}
+
+/**
  * Normalize raw PubChem record → Sciweon Compound schema.
  */
 export function normalize(raw, synonyms = []) {

@@ -13,6 +13,7 @@
 import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { loadLookupFromR2 } from '../ingestion/adapters/fda-srs-adapter.js';
 import { fetchByInchiKey, REQUEST_DELAY_MS } from '../ingestion/adapters/unichem-adapter.js';
+import { fetchCidByInchiKey } from '../ingestion/adapters/pubchem-adapter.js';
 import {
     invertSrsToUniiIndex, classifyUniiResolution, buildAddCidsArtifact,
 } from './lib/corpus-add-cids-resolve.js';
@@ -58,21 +59,30 @@ async function main() {
     console.log(`[CORPUS-ADD-CIDS] SRS UNII-first index: ${uniiIndex.size} UNIIs`);
 
     const classified = [];
-    let i = 0;
+    let i = 0, recovered = 0;
     for (const u of targetUniis) {
         const hit = uniiIndex.get(u);
         if (!hit) { classified.push(classifyUniiResolution(u, null, null)); continue; }
-        let cid = null;
+        let cid = null, cidSource = null;
         try {
             const res = await fetchByInchiKey(hit.inchi_key);
             cid = res?.pubchem_cid ?? null;
+            if (cid) cidSource = 'unichem';
         } catch (err) {
             console.warn(`[CORPUS-ADD-CIDS] UniChem ${u}/${hit.inchi_key}: ${err.message}`);
         }
-        classified.push(classifyUniiResolution(u, hit.inchi_key, cid, hit.name));
+        if (!cid) {
+            // PR-MD-2b.1: UniChem miss -> PubChem direct (don't write off a small molecule on a
+            // single vendor's missing xref). Exact full InChIKey only (UNII fidelity).
+            cid = await fetchCidByInchiKey(hit.inchi_key);
+            if (cid) { cidSource = 'pubchem_inchikey'; recovered++; }
+            await sleep(REQUEST_DELAY_MS);
+        }
+        classified.push(classifyUniiResolution(u, hit.inchi_key, cid, hit.name, cidSource));
         if (++i % 25 === 0) console.log(`[CORPUS-ADD-CIDS] resolved ${i}/${targetUniis.length}`);
         await sleep(REQUEST_DELAY_MS);
     }
+    console.log(`[CORPUS-ADD-CIDS] PubChem-recovered (UniChem-missed) CIDs: ${recovered}`);
 
     const artifact = buildAddCidsArtifact(classified);
     artifact.generated_from = process.env.GITHUB_RUN_ID ?? null;
