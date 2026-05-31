@@ -98,3 +98,57 @@ describe('summarizeLabelProductivity', () => {
         expect(r.labels_no_rxcui).toBe(0);
     });
 });
+
+describe('summarizeLabelProductivity typed_breakdown (PR-MD-1f-probe)', () => {
+    const one = (setid, rxcui, entries) =>
+        summarizeLabelProductivity([label(setid, rxcui)], new Set(), cls(entries));
+
+    it('in_present: typed label that ALSO carries an IN rxcui -> in_present (corpus-bound)', () => {
+        const r = one('A', ['100', '999'], [['100', 'not_in_corpus', 'IN'], ['999', 'no_unii_bridge', 'BN']]);
+        expect(r.harm_reason.projection_gap_typed).toBe(1);
+        expect(r.typed_breakdown.in_present).toBe(1);
+        expect(r.typed_breakdown.no_in_tradename_bn).toBe(0);
+        expect(r.samples.typed_no_in).toHaveLength(0);  // in_present not sampled
+    });
+
+    it('no_in_rxnrel_reachable: no IN, a GPCK no_unii_bridge -> reachable (TTY-eligible)', () => {
+        const r = one('B', ['777'], [['777', 'no_unii_bridge', 'GPCK']]);
+        expect(r.typed_breakdown.no_in_rxnrel_reachable).toBe(1);
+        expect(r.samples.typed_no_in[0]).toMatchObject({ setid: 'B', sub: 'no_in_rxnrel_reachable', no_unii_bridge_ttys: ['GPCK'] });
+    });
+
+    it('no_in_tradename_bn: no IN, only BN -> tradename_bn', () => {
+        expect(one('C', ['888'], [['888', 'no_unii_bridge', 'BN']]).typed_breakdown.no_in_tradename_bn).toBe(1);
+    });
+
+    it('no_in_name_type: no IN, only SY -> name_type (no lever)', () => {
+        expect(one('D', ['889'], [['889', 'no_unii_bridge', 'SY']]).typed_breakdown.no_in_name_type).toBe(1);
+    });
+
+    it('no_in_other: no IN, unknown tty -> catch-all', () => {
+        expect(one('E', ['890'], [['890', 'no_unii_bridge', 'ZZZ']]).typed_breakdown.no_in_other).toBe(1);
+    });
+
+    it('sub-precedence: reachable > BN; BN > name_type (order-independent)', () => {
+        expect(one('F', ['a', 'b'], [['a', 'no_unii_bridge', 'GPCK'], ['b', 'no_unii_bridge', 'BN']])
+            .typed_breakdown.no_in_rxnrel_reachable).toBe(1);
+        expect(one('G', ['b', 'a'], [['a', 'no_unii_bridge', 'BN'], ['b', 'no_unii_bridge', 'SY']])
+            .typed_breakdown.no_in_tradename_bn).toBe(1);
+    });
+
+    it('sum invariant: typed_breakdown sums to projection_gap_typed', () => {
+        const labels = [
+            label('A', ['100', '999']), label('B', ['777']), label('C', ['888']),
+            label('D', ['889']), label('E', ['890']),
+        ];
+        const r = summarizeLabelProductivity(labels, new Set(), cls([
+            ['100', 'not_in_corpus', 'IN'], ['999', 'no_unii_bridge', 'BN'],
+            ['777', 'no_unii_bridge', 'GPCK'], ['888', 'no_unii_bridge', 'BN'],
+            ['889', 'no_unii_bridge', 'SY'], ['890', 'no_unii_bridge', 'ZZZ'],
+        ]));
+        const tb = r.typed_breakdown;
+        const sum = tb.in_present + tb.no_in_rxnrel_reachable + tb.no_in_tradename_bn + tb.no_in_name_type + tb.no_in_other;
+        expect(sum).toBe(r.harm_reason.projection_gap_typed);
+        expect(sum).toBe(5);
+    });
+});
