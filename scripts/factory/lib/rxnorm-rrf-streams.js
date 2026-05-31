@@ -14,6 +14,7 @@
 import { parse as parseCsv } from 'csv-parse';
 import { normalizeNdcTo11Digit } from './ndc-normalize.js';
 import { buildProductToIngredientsMap } from './rxnorm-rel-projector.js';
+import { summarizeNdcProjectionLoss } from './ndc-projection-loss.js';
 
 export const RXNCONSO_COLUMNS = ['RXCUI', 'LAT', 'TS', 'LUI', 'STT', 'SUI', 'ISPREF', 'RXAUI', 'SAUI', 'SCUI', 'SDUI', 'SAB', 'TTY', 'CODE', 'STR', 'SRL', 'SUPPRESS', 'CVF'];
 
@@ -142,7 +143,7 @@ export function isAcceptedNdcSab(sab) {
     return NDC_ACCEPTED_SABS.has(sab);
 }
 
-export async function loadIngredientAttributes(zip, productToIngredients, droppedCounts) {
+export async function loadIngredientAttributes(zip, productToIngredients, droppedCounts, meta = new Map()) {
     const entries = await zip.entries();
     const target = findRrfEntry(entries, 'RXNSAT.RRF');
     if (!target) throw new Error('RXNSAT.RRF entry not found in ZIP');
@@ -164,6 +165,10 @@ export async function loadIngredientAttributes(zip, productToIngredients, droppe
 
     // Diagnostic: distribution of SABs observed on NDC rows, for ops visibility.
     const ndcSabCounts = new Map();
+
+    // PR-MD-1d: instrument the silent :193 projection fallback (see ndc-projection-loss.js).
+    const ndcsProjected = new Set();          // NDCs that reached an ingredient
+    const ndcsFallback = new Map();           // normalized NDC -> [{rxcui, sab}] (1:N)
 
     for await (const row of parser) {
         if (row.SUPPRESS && row.SUPPRESS !== 'N') continue;
@@ -190,12 +195,23 @@ export async function loadIngredientAttributes(zip, productToIngredients, droppe
                 continue;
             }
             const ingredients = productToIngredients.get(rxcui);
-            const targets = (ingredients && ingredients.size > 0) ? ingredients : [rxcui];
-            for (const ing of targets) ensureRecord(ing).ndcs.add(normalized);
+            if (ingredients && ingredients.size > 0) {
+                ndcsProjected.add(normalized);
+                for (const ing of ingredients) ensureRecord(ing).ndcs.add(normalized);
+            } else {
+                // :193 fallback: no ingredient edge -> NDC stays on the non-ingredient rxcui.
+                if (!ndcsFallback.has(normalized)) ndcsFallback.set(normalized, []);
+                ndcsFallback.get(normalized).push({ rxcui, sab: row.SAB });
+                ensureRecord(rxcui).ndcs.add(normalized);
+            }
         }
     }
     droppedCounts.malformed_ndc_samples = [...droppedSamples];
     droppedCounts.ndc_sab_distribution = Object.fromEntries(ndcSabCounts);
+
+    // PR-MD-1d: lost set-diff + tty/sab dist computed by summarizeNdcProjectionLoss
+    // (lib/ndc-projection-loss.js) to keep this function under the 250-line cap.
+    droppedCounts.ndc_projection = summarizeNdcProjectionLoss(ndcsProjected, ndcsFallback, meta);
     return attrs;
 }
 
