@@ -196,6 +196,9 @@ export function classifyDailymedRxcuiBuckets(compounds, dmByRxcui, bulkMaps) {
         not_in_corpus: 0, no_unii_bridge: 0,
         samples: { in_corpus_unstamped: [], not_in_corpus: [], no_unii_bridge: [] },
         compoundRxcui, rxcuiClass: new Map(),
+        // PR-MD-2a: UNCAPPED full target set for the corpus add-list (NOT Top-N, per
+        // triple-lock). Each entry = a not_in_corpus rxcui + its FULL UNII set.
+        not_in_corpus_full: [],
     };
     if (!bulkMaps?.uniiToRxcui || !dmByRxcui) return zero;
     const rxcuiToUniis = new Map();
@@ -214,7 +217,7 @@ export function classifyDailymedRxcuiBuckets(compounds, dmByRxcui, bulkMaps) {
     for (const set of bulkMaps.ndcToRxcuis?.values() ?? []) {
         for (const meta of set) { if (meta?.rxcui && !rxcuiToTty.has(meta.rxcui)) rxcuiToTty.set(meta.rxcui, meta.tty ?? null); }
     }
-    const out = { ...zero, reverse_map_available: true, rxcuiClass: new Map() };
+    const out = { ...zero, reverse_map_available: true, rxcuiClass: new Map(), not_in_corpus_full: [] };
     const push = (b, o) => { if (out.samples[b].length < 10) out.samples[b].push(o); };
     // PR-MD-1e: record each R's bucket + tty so the F3-side label-productivity pass
     // can split projection_gap by null-tty without rebuilding the reverse maps.
@@ -231,7 +234,7 @@ export function classifyDailymedRxcuiBuckets(compounds, dmByRxcui, bulkMaps) {
         if (unstamped) { out.in_corpus_unstamped++; setCls(R, 'in_corpus_unstamped'); push('in_corpus_unstamped', { rxcui: R, unii: sampleUnii }); }
         else if (stamped) { out.in_corpus_stamp_drift++; setCls(R, 'in_corpus_stamp_drift'); }
         else if (present) { out.in_corpus_stamp_drift++; setCls(R, 'in_corpus_stamp_drift'); }
-        else { out.not_in_corpus++; setCls(R, 'not_in_corpus'); push('not_in_corpus', { rxcui: R, unii: [...uniis][0] }); }
+        else { out.not_in_corpus++; setCls(R, 'not_in_corpus'); push('not_in_corpus', { rxcui: R, unii: [...uniis][0] }); out.not_in_corpus_full.push({ rxcui: R, uniis: [...uniis] }); }
     }
     return out;
 }
