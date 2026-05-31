@@ -15,6 +15,7 @@
 import { lookupByNdc } from '../../ingestion/adapters/rxnorm-bulk-adapter.js';
 import { normalizeNdcTo11Digit } from './ndc-normalize.js';
 import { summarizeLabelProductivity } from './dailymed-label-productivity.js';
+import { summarizeUnmappedLabels } from './dailymed-unmapped-labels.js';
 
 /**
  * PR-RXN-1b: hydrate drug_label.rxcui[] from drug_label.ndcs[] via RxNorm
@@ -152,7 +153,9 @@ export function relinkCumulativeDailymed(compounds, drugLabelRecords, bulkMaps) 
     // per-rxcui class the bucket pass already built -- no duplicate reverse maps.
     const labelProductivity = summarizeLabelProductivity(
         drugLabelRecords, buckets.compoundRxcui, buckets.rxcuiClass);
-    return { dmLinked, labelsRehydrated, dmByRxcuiSize: dmByRxcui.size, buckets, labelProductivity };
+    // PR-MD-1g-probe: diagnose the no_rxcui pool (NDC->rxcui coverage; SAB-slice honest).
+    const unmappedLabels = summarizeUnmappedLabels(drugLabelRecords, bulkMaps);
+    return { dmLinked, labelsRehydrated, dmByRxcuiSize: dmByRxcui.size, buckets, labelProductivity, unmappedLabels };
 }
 
 /**

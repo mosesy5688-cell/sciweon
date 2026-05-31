@@ -18,18 +18,25 @@ const rl = {
     labelProductivity: {
         labels_linked: 188, labels_zero_productive: 12, labels_no_rxcui: 4, total_labels_with_rxcui: 200,
         harm_reason: { projection_gap_typed: 3, projection_gap_null_tty: 7, not_in_corpus: 2, mixed_or_other: 0 },
+        corpus_fixable: 9,
         typed_breakdown: { in_present: 1, no_in_rxnrel_reachable: 1, no_in_tradename_bn: 1, no_in_name_type: 0, no_in_other: 0 },
         samples: { zero_productive: [{ setid: 'X', reason: 'projection_gap_null_tty', rxcui: [] }], typed_no_in: [] },
+    },
+    unmappedLabels: {
+        reverse_map_available: true, no_rxcui_labels: 4, no_ndc_labels: 1, ndcs_all_unmapped: 3,
+        ndc_hits_malformed: 0, ndc_hits_absent_from_accepted_sab: 5, ndc_hits_unexpected_mapped: 0,
+        sample_unmapped: [{ ndc: '00002000002', normalized: '00002000002', reason: 'absent_from_accepted_sab_map' }],
     },
 };
 
 describe('formatDailymedRelinkLog', () => {
-    it('emits THREE prefixed lines: relink + label-harm + typed-split', () => {
+    it('emits FOUR prefixed lines: relink + label-harm + typed-split + no-rxcui-diag', () => {
         const lines = formatDailymedRelinkLog(rl).split('\n');
-        expect(lines).toHaveLength(3);
+        expect(lines).toHaveLength(4);
         expect(lines[0]).toContain('[BACKFILL/dailymed-relink] labels_rehydrated=3');
         expect(lines[1]).toContain('[BACKFILL/dailymed-label-harm] labels_linked=188 labels_zero_productive=12');
         expect(lines[1]).toContain('projection_gap_typed=3 projection_gap_null_tty=7');
+        expect(lines[1]).toContain('corpus_fixable=9 (precedence-free)');
     });
 
     it('typed-split line carries the breakdown + the Collar-2 edge-TBD framing', () => {
@@ -38,5 +45,11 @@ describe('formatDailymedRelinkLog', () => {
         expect(line).toContain('no_in_rxnrel_reachable=1 (TTY-eligible; edge-existence TBD)');
         expect(line).toContain('no_in_tradename_bn=1');
         expect(line).toContain('no_in_name_type=0 (no RXNREL path)');
+    });
+
+    it('no-rxcui-diag line carries the SAB-honest naming (NOT absent_from_rxnorm)', () => {
+        const line = formatDailymedRelinkLog(rl).split('\n')[3];
+        expect(line).toContain('[BACKFILL/dailymed-no-rxcui-diag] no_rxcui_labels=4 no_ndc_labels=1 ndcs_all_unmapped=3');
+        expect(line).toContain('absent_from_accepted_sab_map=5 (NOT absent_from_rxnorm -- excluded-SAB blind)');
     });
 });

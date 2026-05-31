@@ -152,3 +152,29 @@ describe('summarizeLabelProductivity typed_breakdown (PR-MD-1f-probe)', () => {
         expect(sum).toBe(5);
     });
 });
+
+describe('summarizeLabelProductivity corpus_fixable (PR-MD-1g-probe, precedence-free)', () => {
+    it('counts a zero_productive label with a not_in_corpus rxcui', () => {
+        const r = summarizeLabelProductivity([label('A', ['100'])], new Set(), cls([['100', 'not_in_corpus', 'IN']]));
+        expect(r.corpus_fixable).toBe(1);
+    });
+
+    it('does NOT count a label whose only rxcui is no_unii_bridge/null', () => {
+        const r = summarizeLabelProductivity([label('B', ['888'])], new Set(), cls([['888', 'no_unii_bridge', null]]));
+        expect(r.labels_zero_productive).toBe(1);
+        expect(r.corpus_fixable).toBe(0);
+    });
+
+    it('PRECEDENCE-FREE: a projection_gap_typed label that ALSO has a not_in_corpus rxcui is corpus_fixable', () => {
+        const r = summarizeLabelProductivity([label('C', ['999', '100'])], new Set(),
+            cls([['999', 'no_unii_bridge', 'BN'], ['100', 'not_in_corpus', 'IN']]));
+        expect(r.harm_reason.projection_gap_typed).toBe(1);  // precedence assigns typed
+        expect(r.corpus_fixable).toBe(1);                    // but corpus_fixable still catches it
+    });
+
+    it('a linked label is not corpus_fixable', () => {
+        const r = summarizeLabelProductivity([label('D', ['100'])], new Set(['100']), cls([['100', 'productive', 'IN']]));
+        expect(r.labels_linked).toBe(1);
+        expect(r.corpus_fixable).toBe(0);
+    });
+});

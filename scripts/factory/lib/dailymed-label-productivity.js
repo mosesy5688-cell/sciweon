@@ -59,6 +59,11 @@ export function summarizeLabelProductivity(drugLabelRecords, compoundRxcui, rxcu
         labels_linked: 0,
         labels_zero_productive: 0,
         harm_reason: { projection_gap_typed: 0, projection_gap_null_tty: 0, not_in_corpus: 0, mixed_or_other: 0 },
+        // PR-MD-1g-probe: PRECEDENCE-FREE true corpus lever size = zero_productive labels with
+        // >=1 not_in_corpus rxcui (has a UNII bridge -> adding the compound auto-stamps+links).
+        // Supersets harm_reason.not_in_corpus (>=150) by also catching the corpus-fixable share
+        // hidden inside typed/null_tty/mixed (incl. in_present labels whose IN is not_in_corpus).
+        corpus_fixable: 0,
         // PR-MD-1f-probe: grades projection_gap_typed (sums to it). in_present = corpus-bound
         // (projection no net gain, EXCEPT an undetermined tradename co-ingredient residual --
         // NOT "0 value proven"). no_in_* = the (ii) TTY tri-split + catch-all.
@@ -87,6 +92,7 @@ export function summarizeLabelProductivity(drugLabelRecords, compoundRxcui, rxcu
             : notInCorpus ? 'not_in_corpus'
             : 'mixed_or_other';
         out.harm_reason[reason]++;
+        if (notInCorpus) out.corpus_fixable++;  // PR-MD-1g-probe: precedence-free
         if (out.samples.zero_productive.length < 10) {
             out.samples.zero_productive.push({
                 setid: r.setid ?? null, reason,
