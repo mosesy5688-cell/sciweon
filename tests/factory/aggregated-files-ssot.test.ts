@@ -81,6 +81,14 @@ describe('AGGREGATED_FILES SSoT (stage-3 bundle)', () => {
             expect(AGGREGATED_FILES).toContain(required);
         }
     });
+
+    it('includes mesh-concepts.jsonl -- PR-UMLS-2 F3 placement + stamped corpus', () => {
+        // mesh-concept-linker.js writes it (F3 placement of the ~355K MSH corpus);
+        // stage-3-mesh-sid-stamp.js stamps it in place; the F2 enricher consumes it.
+        // It must reach the aggregated bundle so stamped concepts + CUI cross-link
+        // anchors ship in the daily snapshot.
+        expect(AGGREGATED_FILES).toContain('mesh-concepts.jsonl');
+    });
 });
 
 describe('SNAPSHOT_FILES SSoT (snapshot-builder publish list)', () => {

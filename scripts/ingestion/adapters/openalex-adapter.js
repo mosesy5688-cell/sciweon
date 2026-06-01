@@ -20,7 +20,7 @@ export const fallbackFullRefreshDays = 7;
 
 import {
     normalizeDoi, normalizeOpenAlexId, extractPmid,
-    extractAuthors, extractMesh, reconstructAbstract, extractNctIds,
+    extractAuthors, extractMesh, extractMeshDescriptors, reconstructAbstract, extractNctIds,
 } from './openalex-helpers.js';
 import {
     shouldFetchNextPage, nextSinceTokenAfterLoop,
@@ -150,6 +150,9 @@ export function normalize(raw, compoundIdHint = null, extractionMethod = 'concep
         retraction_nature: null,
         retraction_source: raw.is_retracted === true ? 'openalex' : null, // overridden by Retraction Watch when matched (canonical)
         mesh_terms: extractMesh(raw),
+        // PR-UMLS-2 ADDITIVE: MSH D-codes for the deterministic mesh_concept code-join
+        // (Part A of the F2 cross-link). mesh_terms above is UNCHANGED (string[]).
+        mesh_descriptors: extractMeshDescriptors(raw),
         mentioned_compounds: mentionedCompounds,
         mentioned_trial_ids: extractNctIds(abstract),
         provenance: {

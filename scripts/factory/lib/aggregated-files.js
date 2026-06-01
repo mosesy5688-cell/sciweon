@@ -70,6 +70,12 @@ export const AGGREGATED_FILES = Object.freeze([
     // Required by Phase 1.6b SID disease stamper + downstream PR 1.6c
     // clinical_indication SAL stamping (object-side disease.sid_s lookup).
     'diseases.jsonl',
+    // PR-UMLS-2: mesh-concepts.jsonl produced by scripts/factory/mesh-concept-linker.js
+    // (F3 placement of the ~355K MSH concept corpus from R2) and stamped in place by
+    // stage-3-mesh-sid-stamp.js (mesh_concept class). Bundled so the stamped concepts +
+    // their CUI cross-link anchors reach researchers in the daily snapshot; consumed by
+    // the F2 mesh-crosslink-enricher (paper.mesh_links).
+    'mesh-concepts.jsonl',
     // Phase 1.6a: sal-assertions.jsonl produced by scripts/factory/stage-3-sal-sid-stamp.js
     // (content-addressed UUID v5 anchored assertions; bioactivity-as-assertion in
     // PR 1.6a, OT clinical_indication additively appended in PR 1.6c).

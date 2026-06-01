@@ -82,6 +82,31 @@ export const PAPER_SCHEMA = {
     // V0.4: Sciweon's own topic classifier over abstract + MeSH primary signal.
     mesh_terms: { type: 'array', required: false, itemType: 'string', maxItems: 100 },
 
+    // PR-UMLS-2 ADDITIVE: structured MSH descriptors (D-codes + names) retained from
+    // OpenAlex mesh objects. mesh_terms (above) stays the string[] consumed by the
+    // schema gate + simulator; mesh_descriptors carries the deterministic join key.
+    mesh_descriptors: {
+        type: 'array', required: false, maxItems: 100,
+        itemShape: {
+            ui: { type: 'string', required: true, maxLength: 20 },
+            name: { type: 'string', required: false, maxLength: 500 },
+        },
+    },
+
+    // PR-UMLS-2: the F2 cross-link output -- one entry per resolved MeSH term, linking
+    // this paper to a mesh_concept SID. match='code_join' (Part A, MSH D-code -> sid_s,
+    // confidence high) or 'string_resolve' (Part B, preferred/synonym string fallback for
+    // historical no-code papers, confidence low). Overwritten idempotently each F3 run.
+    mesh_links: {
+        type: 'array', required: false, maxItems: 200,
+        itemShape: {
+            mesh_sid: { type: 'string', required: true, maxLength: 64 },
+            code: { type: 'string', required: true, maxLength: 100 },
+            match: { type: 'string', required: true, enum: ['code_join', 'string_resolve'] },
+            confidence: { type: 'string', required: true, enum: ['high', 'low'] },
+        },
+    },
+
     // ─── Linkage to Compounds (V0.1: hint via mentions; V0.2+: NLP-based) ───
     mentioned_compounds: {
         type: 'array', required: false, maxItems: 50,
