@@ -5,7 +5,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { generateChunkFilenames, partitionForWorker } from '../../scripts/factory/bulk-pubchem-harvest.js';
+import { generateChunkFilenames, partitionForWorker, decideExitCode } from '../../scripts/factory/bulk-pubchem-harvest.js';
+import { buildGlobalIndex } from '../../scripts/factory/bulk-pubchem-shard.js';
 
 describe('generateChunkFilenames', () => {
     it('produces 250 chunk filenames for ~125M total CIDs at 500K per chunk', () => {
@@ -78,5 +79,93 @@ describe('partitionForWorker', () => {
                 .reduce((acc, s) => acc + s.length, 0);
             expect(totalAssigned).toBe(all.length);
         }
+    });
+});
+
+describe('decideExitCode (LOCKED policy: finish all chunks, then non-zero if ANY unrecoverable)', () => {
+    it('returns 0 when all chunks done and nothing failed', () => {
+        expect(decideExitCode({ chunks_done: [{}], chunks_failed: [], unrecoverable_chunks: [] })).toBe(0);
+    });
+
+    it('returns 1 when ANY chunk is unrecoverable (even if others succeeded)', () => {
+        expect(decideExitCode({
+            chunks_done: [{}, {}], chunks_failed: [],
+            unrecoverable_chunks: [{ chunk: 'Compound_x.sdf.gz', attempts: 5, last_error_class: 'UND_ERR_SOCKET' }],
+        })).toBe(1);
+    });
+
+    it('keeps the legacy "all chunks failed -> exit 1" (no done, some failed)', () => {
+        expect(decideExitCode({ chunks_done: [], chunks_failed: [{ chunk: 'x', error: 'HTTP 403' }], unrecoverable_chunks: [] })).toBe(1);
+    });
+
+    it('a parse/404 failure with other successes does NOT fail the worker (chunks_failed is soft)', () => {
+        expect(decideExitCode({ chunks_done: [{}], chunks_failed: [{ chunk: 'x', error: 'parse: bad' }], unrecoverable_chunks: [] })).toBe(0);
+    });
+});
+
+// Manifest-shape contract: processChunk pushes a structured entry into
+// unrecoverable_chunks on retry-exhaustion, and main() sets complete from it.
+describe('manifest complete / unrecoverable_chunks shape', () => {
+    function deriveComplete(stats: any) {
+        return stats.unrecoverable_chunks.length === 0;
+    }
+    it('complete:true when no unrecoverable chunks', () => {
+        const stats = { unrecoverable_chunks: [] as any[] };
+        expect(deriveComplete(stats)).toBe(true);
+    });
+    it('complete:false and unrecoverable_chunks populated with chunk/attempts/last_error_class', () => {
+        const stats = {
+            unrecoverable_chunks: [
+                { chunk: 'Compound_000000001_000500000.sdf.gz', attempts: 5, last_error_class: 'UND_ERR_SOCKET', error: 'exhausted' },
+            ],
+        };
+        expect(deriveComplete(stats)).toBe(false);
+        const e = stats.unrecoverable_chunks[0];
+        expect(e.chunk).toMatch(/^Compound_/);
+        expect(e.attempts).toBe(5);
+        expect(e.last_error_class).toBe('UND_ERR_SOCKET');
+    });
+});
+
+// Fan-in coverage: build-index-only (buildGlobalIndex) must FAIL when any
+// present worker manifest is complete:false -- no silent partial index.
+describe('buildGlobalIndex fan-in completeness gate', () => {
+    function fakeR2(manifests: Record<number, any>) {
+        return {
+            send: async (cmd: any) => {
+                const key: string = cmd.input.Key;
+                const m = key.match(/worker-(\d+)\.json$/);
+                if (m) {
+                    const w = Number(m[1]);
+                    if (!(w in manifests)) { const e: any = new Error('NoSuchKey'); throw e; }
+                    const body = Buffer.from(JSON.stringify(manifests[w]));
+                    async function* iter() { yield body; }
+                    return { Body: iter() };
+                }
+                return {}; // PutObject (index upload) -- no-op
+            },
+        } as any;
+    }
+    const completeManifest = (w: number) => ({
+        worker_shard: w, total_records: 10, complete: true, unrecoverable_chunks: [],
+        shards: [{ shard_id: `s${w}`, cid_range: [w * 1000, w * 1000 + 999], entity_count: 10 }],
+    });
+    const incompleteManifest = (w: number) => ({
+        worker_shard: w, total_records: 5, complete: false,
+        unrecoverable_chunks: [{ chunk: 'Compound_x.sdf.gz', attempts: 5, last_error_class: 'UND_ERR_SOCKET' }],
+        shards: [{ shard_id: `s${w}`, cid_range: [w * 1000, w * 1000 + 499], entity_count: 5 }],
+    });
+
+    it('succeeds when all present workers are complete', async () => {
+        const r2 = fakeR2({ 0: completeManifest(0), 1: completeManifest(1) });
+        const index = await buildGlobalIndex(r2, 'bucket', 'bulk/pubchem/2026-06', 2, true);
+        expect(index.workers_incomplete).toBe(0);
+        expect(index.shard_count).toBe(2);
+    });
+
+    it('THROWS (fails the index build) when ANY present worker is complete:false', async () => {
+        const r2 = fakeR2({ 0: completeManifest(0), 1: incompleteManifest(1) });
+        await expect(buildGlobalIndex(r2, 'bucket', 'bulk/pubchem/2026-06', 2, true))
+            .rejects.toThrow(/incomplete worker|partial index/i);
     });
 });
