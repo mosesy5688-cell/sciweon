@@ -1,0 +1,144 @@
+name: Factory UMLS Bulk
+
+# PR-UMLS-1: first UMLS Metathesaurus ingest -- MeSH (SAB=MSH) concept harvest +
+# 3-SAB distinct-CODE de-risk measurement. Produces the ARTIFACT ONLY
+# (processed/bulk/umls/<release>/mesh-concepts.jsonl.zst + cursor); the SID stamp /
+# cross-link is PR-2. License SSoT = bulk acquisition tracker #47 (UMLS CAT0).
+#
+# Two-job rail (RxNorm template):
+#   check-version  - release discovery via byte-probe + ZIP-magic; cursor no-op gate
+#   ingest         - STREAM MRCONSO (2.34GB / 18M rows) -> MSH concepts -> zstd + R2
+#
+# Rails:
+#   Rail 1 (no-broken-windows)         -- clean SUCCESS on unchanged release
+#   Rail 2 (bidirectional convergence) -- cursor write at harvest end
+#   Rail 3 (defensive discovery)       -- ZIP-magic guard rejects proxy false-200 stub
+#   Rail 4 (streaming pipeline)        -- node-stream-zip + csv-parse row-by-row
+#   Rail 8 (artifact handoff)          -- probe -> ingest via upload-artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry-run ingest (no R2 writes)'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+      force_reingest:
+        description: 'Force re-ingest of same release (bypasses Rail 1 no-op gate; for debug + degenerate-cursor recovery)'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+  schedule:
+    # Monthly on the 1st at 05:00 UTC. UMLS Metathesaurus is semi-annual (AA spring /
+    # AB fall), so this wide window no-ops via the cursor gate until a new release appears.
+    - cron: '0 5 1 * *'
+
+permissions:
+  contents: read
+
+env:
+  R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+  R2_BUCKET: ${{ secrets.R2_BUCKET }}
+  R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+  R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+  # UMLS Metathesaurus is UMLS-license-gated; probe + harvest both download via the
+  # apiKey proxy (umls-auth.js). Shared by both jobs.
+  UMLS_API_KEY: ${{ secrets.UMLS_API_KEY }}
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install deps
+        run: npm ci
+      - name: Install zstd + unzip CLI
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zstd unzip
+      - name: Run probe (byte-probe + ZIP-magic discovery)
+        id: probe
+        run: |
+          set -e
+          node scripts/factory/umls-probe.js > /tmp/umls-probe.json
+          cat /tmp/umls-probe.json
+      - name: Compare release vs R2 cursor (Rail 1+2)
+        id: compare
+        run: |
+          set -e
+          LATEST_RELEASE=$(node -e "console.log(require('/tmp/umls-probe.json').release)")
+          echo "Probe release=${LATEST_RELEASE}"
+          PRIOR=$(node -e "
+            const {S3Client, GetObjectCommand} = require('@aws-sdk/client-s3');
+            const s3 = new S3Client({region:'auto', endpoint:process.env.R2_ENDPOINT, credentials:{accessKeyId:process.env.R2_ACCESS_KEY_ID, secretAccessKey:process.env.R2_SECRET_ACCESS_KEY}});
+            s3.send(new GetObjectCommand({Bucket:process.env.R2_BUCKET, Key:'state/umls-mesh-bulk-cursor.json'})).then(async r => {
+              const text = await new Promise((res,rej)=>{ let b=''; r.Body.on('data',c=>b+=c); r.Body.on('end',()=>res(b)); r.Body.on('error',rej); });
+              const c = JSON.parse(text);
+              console.log(JSON.stringify({release: c.release || ''}));
+            }).catch(() => console.log(JSON.stringify({release:''})));
+          ")
+          PRIOR_RELEASE=$(node -e "console.log(JSON.parse(process.argv[1]).release)" "$PRIOR")
+          echo "Prior cursor release=${PRIOR_RELEASE:-<none>}"
+          if [ "${{ github.event.inputs.force_reingest }}" = "true" ]; then
+            echo "force_reingest=true; bypassing Rail 1 no-op gate."
+            echo "changed=true" >> $GITHUB_OUTPUT
+          elif [ "$LATEST_RELEASE" = "$PRIOR_RELEASE" ]; then
+            echo "No new release. R2 cursor at ${PRIOR_RELEASE}; skipping ingest (Rail 1 clean success)."
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "Release transition: ${PRIOR_RELEASE:-<none>} -> ${LATEST_RELEASE}. Triggering ingest."
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+      - name: Upload probe manifest artifact (Rail 8)
+        if: steps.compare.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: umls-probe-manifest
+          path: /tmp/umls-probe.json
+          retention-days: 1
+      - name: Summary
+        if: always()
+        run: |
+          echo "## PR-UMLS-1 check-version" >> $GITHUB_STEP_SUMMARY
+          echo "- changed: ${{ steps.compare.outputs.changed }}" >> $GITHUB_STEP_SUMMARY
+
+  ingest:
+    needs: check-version
+    if: needs.check-version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    # Heavier than RxNorm: MRCONSO is 2.34GB / 18M rows + a ~5.82GB release download.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install deps
+        run: npm ci
+      - name: Install zstd CLI
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zstd
+      - name: Download probe manifest (Rail 8)
+        uses: actions/download-artifact@v4
+        with:
+          name: umls-probe-manifest
+          path: /tmp
+      - name: Run streaming MeSH harvester (SAB=MSH)
+        run: |
+          set -e
+          ARGS="--probe-json=/tmp/umls-probe.json"
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          node scripts/factory/umls-harvest.js $ARGS
+      - name: Ingest summary
+        if: always()
+        run: |
+          echo "## PR-UMLS-1 ingest" >> $GITHUB_STEP_SUMMARY
+          echo "- dry-run: ${{ github.event.inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
