@@ -9,6 +9,7 @@ on:
     workflows:
       - 'Factory 1/4 Harvest'
       - 'Factory Strategic Harvest (FDA-approved subset)'
+      - 'Factory Seed Corpus Add'
     types: [completed]
     branches: [main]
   workflow_dispatch:
