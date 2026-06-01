@@ -46,6 +46,25 @@ function parseArgs() {
     return opts;
 }
 
+/**
+ * Read the harvest worker's local manifest.json to recover its completeness
+ * gate. Fail-closed: if it is missing/unreadable or lacks `complete`, return
+ * complete:false so a partial worker can never masquerade as complete.
+ */
+async function readHarvestManifest(workerShard) {
+    const p = path.join(BULK_OUTPUT, `worker-${workerShard}`, 'manifest.json');
+    try {
+        const m = JSON.parse(await fs.readFile(p, 'utf-8'));
+        return {
+            complete: m.complete === true,
+            unrecoverable_chunks: Array.isArray(m.unrecoverable_chunks) ? m.unrecoverable_chunks : [],
+        };
+    } catch (e) {
+        console.warn(`[SHARD] worker-${workerShard} harvest manifest unreadable (${e.message}) -- marking complete:false`);
+        return { complete: false, unrecoverable_chunks: [] };
+    }
+}
+
 async function shardWorkerDir(workerShard, r2, bucket, r2Prefix, dryRun) {
     const workerDir = path.join(BULK_OUTPUT, `worker-${workerShard}`);
     const allFiles = (await fs.readdir(workerDir)).filter(f => f.endsWith('.jsonl')).sort();
@@ -97,11 +116,19 @@ async function shardWorkerDir(workerShard, r2, bucket, r2Prefix, dryRun) {
     }
     if (buf.length > 0) await flushShard(buf);
 
+    // Propagate the harvest worker's completeness gate into the R2 shard
+    // manifest so the fan-in (build-index-only) can fail on a partial worker.
+    // A missing/unreadable harvest manifest is itself treated as NOT complete
+    // (fail-closed: never silently emit a partial-but-"complete" index).
+    const harvest = await readHarvestManifest(workerShard);
+
     const manifest = {
         worker_shard: workerShard,
         run_month: r2Prefix.split('/').pop(),
         total_records: totalRecords,
         shard_count: shardEntries.length,
+        complete: harvest.complete,
+        unrecoverable_chunks: harvest.unrecoverable_chunks,
         shards: shardEntries,
         generated_at: new Date().toISOString(),
     };
@@ -120,10 +147,17 @@ async function buildGlobalIndex(r2, bucket, r2Prefix, workerTotal, dryRun) {
     const allShards = [];
     let totalRecords = 0;
     let workersFailed = 0;
+    const incompleteWorkers = []; // present-but-incomplete: harvest left unrecoverable chunks
 
     for (let w = 0; w < workerTotal; w++) {
         const m = await downloadWorkerManifest(r2, bucket, r2Prefix, w);
         if (!m) { workersFailed++; continue; }
+        // No-silent-partial-index gate: a present worker that did not complete
+        // (unrecoverable chunk after retries) must NOT be folded into the index.
+        if (m.complete === false) {
+            incompleteWorkers.push({ worker: w, unrecoverable: (m.unrecoverable_chunks || []).length });
+            console.error(`[SHARD] worker-${w} manifest is complete:false (${(m.unrecoverable_chunks || []).length} unrecoverable chunk(s)) -- index build will FAIL`);
+        }
         allShards.push(...m.shards);
         totalRecords += m.total_records;
     }
@@ -139,15 +173,24 @@ async function buildGlobalIndex(r2, bucket, r2Prefix, workerTotal, dryRun) {
         shard_size: SHARD_SIZE,
         format: 'jsonl.gz',
         workers_failed: workersFailed,
+        workers_incomplete: incompleteWorkers.length,
         shards: allShards,
     };
 
+    if (incompleteWorkers.length > 0) {
+        // LOUD failure: never upload a silently-partial index. Re-run the failed
+        // harvest leg(s), then re-run the fan-in.
+        console.error(`[SHARD] ABORT: ${incompleteWorkers.length} worker(s) incomplete: ${JSON.stringify(incompleteWorkers)}`);
+        throw new Error(`[SHARD] global index build aborted -- ${incompleteWorkers.length} incomplete worker(s); refusing to publish a partial index`);
+    }
+
     if (!dryRun) {
         const key = await uploadGlobalIndex(r2, bucket, r2Prefix, index);
-        console.log(`[SHARD] Global index → ${key} (${allShards.length} shards, ${totalRecords} records)`);
+        console.log(`[SHARD] Global index -> ${key} (${allShards.length} shards, ${totalRecords} records)`);
     } else {
         console.log(`[SHARD] --dry-run: index not uploaded (${allShards.length} shards, ${totalRecords} records)`);
     }
+    return index;
 }
 
 async function main() {
@@ -174,4 +217,10 @@ async function main() {
     await shardWorkerDir(opts.workerShard, client, bucket, r2Prefix, opts.dryRun);
 }
 
-main().catch(err => { console.error('[SHARD] Fatal:', err); process.exit(1); });
+// Only auto-run as a CLI script, not on import (tests import buildGlobalIndex).
+import { pathToFileURL } from 'url';
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+    main().catch(err => { console.error('[SHARD] Fatal:', err); process.exit(1); });
+}
+
+export { buildGlobalIndex, readHarvestManifest };
