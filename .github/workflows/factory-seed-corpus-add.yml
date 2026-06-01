@@ -1,0 +1,38 @@
+name: Factory Seed Corpus Add
+
+# PR-MD-2c: the FIRST corpus mutation of the DailyMed cross-link arc. Seeds the
+# resolvable corpus add-list compounds (state/dailymed-corpus-add-cids.json, the 91
+# {cid,unii} from PR-MD-2b/2b.1) into the corpus: harvest the CIDs through the
+# validated scope-gated PubChem path, inject each compound's target UNII (Collar A;
+# first-wins-safe), and publish the baseline -> F2/F3 cascade auto-stamps rxcui and
+# auto-links drug_labels. Expected: cumulative_dm_linked rises off ~190.
+#
+# MUTATION: workflow_dispatch only (own per-attempt auth). The baseline upload
+# triggers the F2 -> F3 cascade via workflow_run (same as strategic-harvest).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+  R2_BUCKET: ${{ secrets.R2_BUCKET }}
+  R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+  R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Seed corpus add-list compounds (mutation)
+        run: node scripts/factory/seed-corpus-add-compounds.js
