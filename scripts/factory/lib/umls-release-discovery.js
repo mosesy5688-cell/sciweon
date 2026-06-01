@@ -50,20 +50,30 @@ export async function probeArchive(proxyUrl) {
  * FIRST whose head looks like a real ZIP (looks_real === true), NOT the first 200. Returns
  * the inner URL string, or null when no candidate looks real (dumps the last body head as
  * evidence per Bug 2: never discard the bytes).
+ *
+ * STDOUT PURITY (PR-UMLS-1a): per-candidate progress goes to STDERR only. umls-probe.js
+ * captures discovery via `> umls-probe.json`, so the ONLY stdout write in the probe path
+ * must be umls-probe.js's final JSON line -- any console.log here would corrupt that JSON.
+ *
+ * @param {object} args
+ * @param {string|null} [args.fullUrl]  operator override inner URL (skips candidate list)
+ * @param {Date} [args.now]             clock for candidate-year generation
+ * @param {(proxyUrl: string) => Promise<object>} [args.probeArchiveFn]  byte-probe impl
+ *        (defaults to the real network probeArchive; injected by tests for network-free runs)
  */
-export async function discoverRelease({ fullUrl, now }) {
+export async function discoverRelease({ fullUrl, now, probeArchiveFn = probeArchive }) {
     const candidates = fullUrl ? [fullUrl] : candidateMetathesaurusUrls(now);
     let last = null;
     for (const inner of candidates) {
         let p;
-        try { p = await probeArchive(umlsDownloadUrl(inner)); }
+        try { p = await probeArchiveFn(umlsDownloadUrl(inner)); }
         catch (e) {
-            console.log(`[UMLS-PROBE] release-candidate status=err:${e.message} | inner=${inner}`);
+            console.error(`[UMLS-PROBE] release-candidate status=err:${e.message} | inner=${inner}`);
             continue;
         }
         last = { inner, p };
         const c = classifyArchiveHead(p.head, p.contentLength);
-        console.log(`[UMLS-PROBE] release-candidate status=${p.status} magic=${c.magic_hex} looks_real=${c.looks_real} content-length=${p.contentLength ?? 'none'} content-type=${p.contentType} | inner=${inner}`);
+        console.error(`[UMLS-PROBE] release-candidate status=${p.status} magic=${c.magic_hex} looks_real=${c.looks_real} content-length=${p.contentLength ?? 'none'} content-type=${p.contentType} | inner=${inner}`);
         if (c.looks_real) return inner;
     }
     if (last) {
