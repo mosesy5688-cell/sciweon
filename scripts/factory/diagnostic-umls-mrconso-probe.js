@@ -9,20 +9,22 @@
  * against data, and the per-SAB counts are flagged TENTATIVE until that verification.
  *
  * Does, in one run:
- *   1. EMPIRICALLY DISCOVER the release: status-probe candidate Metathesaurus
- *      full-release URLs (recent <YYYY>{AA,AB}, reverse-chron) via the apiKey proxy;
- *      report each status. (--full-url=<inner> overrides if the operator reads the real
- *      URL off the NLM release page.) No hardcoded "the" URL; the probe reports which 200s.
- *   2. Download the winning zip; report compressed + MRCONSO.RRF uncompressed size
- *      (decides stream-vs-memory for PR-1).
+ *   1. EMPIRICALLY DISCOVER the release: BYTE-probe candidate Metathesaurus full-release
+ *      URLs (recent <YYYY>{AA,AB}, reverse-chron) via the apiKey proxy and pick the FIRST
+ *      whose head is a real ZIP (PK magic + size floor), NOT the first HTTP 200 -- the
+ *      proxy returns 200 + a ~196-byte stub for a non-existent inner URL (PR-UMLS-0 Bug 1,
+ *      which locked the phantom 2026AB). (--full-url=<inner> overrides.) No hardcoded URL.
+ *   2. Download the winning zip; guard it (PK magic + 100MB floor) and dump the body head
+ *      as evidence on anomaly (Bug 2: never discard the bytes); report compressed +
+ *      MRCONSO.RRF uncompressed size (decides stream-vs-memory for PR-1).
  *   3. Dump the first N RAW positional rows + a TENTATIVE per-SAB tally at the
  *      doc-assumed SAB index (loudly flagged VERIFY-against-the-raw-dump).
  *
  * ZERO extraction / filter / stamp / mutation / R2 write. Exit: 0 OK / 1 args / 2 no
- * release found / 3 download-or-parse.
+ * real release found / 3 download-or-anomaly-or-parse.
  */
 
-import { createWriteStream, statSync, unlinkSync } from 'fs';
+import { createWriteStream, statSync, unlinkSync, openSync, readSync, closeSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { Readable } from 'stream';
@@ -30,21 +32,53 @@ import { pipeline } from 'stream/promises';
 import StreamZip from 'node-stream-zip';
 import { umlsApiKey, umlsDownloadUrl } from './lib/umls-auth.js';
 import { findRrfEntry } from './lib/rxnorm-rrf-streams.js';
-import { candidateMetathesaurusUrls, newSabTally, addSabTally, DOC_SAB_INDEX } from './lib/umls-mrconso-probe.js';
+import {
+    candidateMetathesaurusUrls, newSabTally, addSabTally, DOC_SAB_INDEX,
+    classifyArchiveHead, ZIP_MAGIC, MIN_RELEASE_BYTES,
+} from './lib/umls-mrconso-probe.js';
 
 const SAMPLE_LIMIT = 100;
+const HEAD_PROBE_BYTES = 512;     // bytes read off the stream per candidate during discovery
+const FAIL_DUMP_BYTES = 2048;     // bytes captured for the terminal discovery-fail dump
 
-async function statusProbe(url) {
-    const res = await fetch(url, { headers: { Range: 'bytes=0-1' } });
-    try { await res.body?.cancel(); } catch { /* ignore */ }
-    return res.status;
+// Byte-reading probe: fetch follows the proxy's 302 redirect, we read only the first
+// ~512 bytes off the stream then cancel() -- the multi-GB body is NEVER downloaded here.
+// PR-UMLS-0 Bug 1: a status-only probe trusted the proxy's false-200 (196-byte stub) for
+// a non-existent inner URL (2026AB). Reading the magic bytes is the fix.
+async function probeArchive(proxyUrl) {
+    const res = await fetch(proxyUrl);
+    let head = Buffer.alloc(0);
+    try {
+        if (res.body) {
+            const reader = res.body.getReader();
+            while (head.length < HEAD_PROBE_BYTES) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                head = Buffer.concat([head, Buffer.from(value)]);
+            }
+            try { await reader.cancel(); } catch { /* ignore */ }
+        }
+    } catch { /* partial head is fine for classification */ }
+    return {
+        status: res.status,
+        finalUrl: res.url,
+        contentType: res.headers.get('content-type') || '',
+        contentLength: res.headers.get('content-length'),
+        head: head.subarray(0, HEAD_PROBE_BYTES),
+    };
 }
 
 async function downloadStream(url, tmpPath) {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`download HTTP ${res.status} ${res.statusText}`);
     await pipeline(Readable.fromWeb(res.body), createWriteStream(tmpPath));
-    return statSync(tmpPath).size;
+    return {
+        size: statSync(tmpPath).size,
+        status: res.status,
+        contentType: res.headers.get('content-type') || '',
+        contentLength: res.headers.get('content-length'),
+        finalUrl: res.url,
+    };
 }
 
 function parseArgs() {
@@ -56,15 +90,33 @@ function parseArgs() {
     return { fullUrl, now };
 }
 
-// Discover the release: probe candidates (or the operator override) and return the winner.
+// Discover the release: BYTE-probe candidates (or the operator override) and return the
+// FIRST whose head looks like a real ZIP (looks_real === true), NOT the first 200. The
+// phantom newest candidate (e.g. 2026AB before it ships) returns a 200 + 196-byte non-PK
+// stub -> fails magic -> skipped -> the real latest (2026AA) wins.
 async function discoverRelease({ fullUrl, now }) {
     const candidates = fullUrl ? [fullUrl] : candidateMetathesaurusUrls(now);
+    let last = null;
     for (const inner of candidates) {
-        let status;
-        try { status = await statusProbe(umlsDownloadUrl(inner)); }
-        catch (e) { status = `err:${e.message}`; }
-        console.log(`[UMLS-PROBE] release-candidate status=${status} | inner=${inner}`);
-        if (status === 200 || status === 206) return inner;
+        let p;
+        try { p = await probeArchive(umlsDownloadUrl(inner)); }
+        catch (e) {
+            console.log(`[UMLS-PROBE] release-candidate status=err:${e.message} | inner=${inner}`);
+            continue;
+        }
+        last = { inner, p };
+        const c = classifyArchiveHead(p.head, p.contentLength);
+        console.log(`[UMLS-PROBE] release-candidate status=${p.status} magic=${c.magic_hex} looks_real=${c.looks_real} content-length=${p.contentLength ?? 'none'} content-type=${p.contentType} | inner=${inner}`);
+        if (c.looks_real) return inner;
+    }
+    // No real release: dump the last probed body head as evidence (Bug 2: never discard it).
+    if (last) {
+        const headText = last.p.head.subarray(0, FAIL_DUMP_BYTES).toString('utf-8');
+        console.error('[UMLS-PROBE] DISCOVERY-FAIL no candidate looks like a real ZIP release.');
+        console.error(`[UMLS-PROBE]   last-status=${last.p.status} final-url=${last.p.finalUrl}`);
+        console.error(`[UMLS-PROBE]   content-type=${last.p.contentType} content-length=${last.p.contentLength ?? 'none'}`);
+        console.error(`[UMLS-PROBE]   first-bytes-hex=${last.p.head.subarray(0, 4).toString('hex')}`);
+        console.error(`[UMLS-PROBE]   body-head(<=${FAIL_DUMP_BYTES}B as text):\n${headText}`);
     }
     return null;
 }
@@ -105,16 +157,39 @@ async function dumpMrconso(tmpZip) {
     }
 }
 
+// Read the first N bytes of a file (for the post-download magic + anomaly dump).
+function readFileHead(path, n) {
+    const fd = openSync(path, 'r');
+    try {
+        const buf = Buffer.alloc(n);
+        const got = readSync(fd, buf, 0, n, 0);
+        return buf.subarray(0, got);
+    } finally { closeSync(fd); }
+}
+
 async function main() {
     const args = parseArgs();
     const inner = await discoverRelease(args);
-    if (!inner) { console.error('[UMLS-PROBE] no Metathesaurus full-release URL returned 200 (pass --full-url=<inner> from the NLM release page).'); process.exit(2); }
+    if (!inner) { console.error('[UMLS-PROBE] no Metathesaurus full-release ZIP found (pass --full-url=<inner> from the NLM release page).'); process.exit(2); }
     console.log(`[UMLS-PROBE] release inner-url RESOLVED: ${inner}`);
 
     const tmpZip = join(tmpdir(), `umls-meta-${process.pid}.zip`);
     try {
-        const zbytes = await downloadStream(umlsDownloadUrl(inner), tmpZip);
-        console.log(`[UMLS-PROBE] downloaded zip bytes=${zbytes} (${(zbytes / 1e9).toFixed(2)} GB)`);
+        const dl = await downloadStream(umlsDownloadUrl(inner), tmpZip);
+        console.log(`[UMLS-PROBE] downloaded zip bytes=${dl.size} (${(dl.size / 1e9).toFixed(2)} GB) status=${dl.status} content-type=${dl.contentType} content-length=${dl.contentLength ?? 'none'} final-url=${dl.finalUrl}`);
+
+        // Guard the downloaded file BEFORE handing it to StreamZip (Bug 1+2): a proxy
+        // false-200 stub is tiny + non-PK. Dump the evidence, never discard it.
+        const head = readFileHead(tmpZip, HEAD_PROBE_BYTES);
+        const firstFour = head.subarray(0, 4);
+        if (dl.size < MIN_RELEASE_BYTES || !firstFour.equals(ZIP_MAGIC)) {
+            console.error('[UMLS-PROBE] ANOMALY downloaded file is not a real Metathesaurus ZIP.');
+            console.error(`[UMLS-PROBE]   file-size=${dl.size} (floor=${MIN_RELEASE_BYTES}) first-4-bytes-hex=${firstFour.toString('hex')}`);
+            console.error(`[UMLS-PROBE]   status=${dl.status} content-type=${dl.contentType} content-length=${dl.contentLength ?? 'none'} final-url=${dl.finalUrl}`);
+            console.error(`[UMLS-PROBE]   body-head(<=${HEAD_PROBE_BYTES}B as text):\n${head.toString('utf-8')}`);
+            process.exit(3);
+        }
+
         const summary = await dumpMrconso(tmpZip);
         console.log(`[UMLS-PROBE] MRCONSO total_rows=${summary.total_rows}`);
         console.log(`[UMLS-PROBE] TENTATIVE per-SAB (col index ${DOC_SAB_INDEX}, DOC-ASSUMED -- VERIFY against the raw rows below before trusting): ${JSON.stringify(summary.by_sab_tentative)}`);
