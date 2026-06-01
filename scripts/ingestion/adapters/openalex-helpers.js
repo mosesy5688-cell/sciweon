@@ -39,7 +39,20 @@ export function extractAuthors(raw) {
 
 export function extractMesh(raw) {
     // NIH MEDLINE MeSH — primary human-curated. Accept.
+    // UNCHANGED (PR-UMLS-2 DECISION 1): mesh_terms stays string[] of descriptor_name —
+    // the paper.js schema gate (itemType:'string') + simulator-checks-paper.js depend
+    // on this shape. The MSH descriptor_ui (D-code) channel is ADDITIVE below.
     return (raw.mesh ?? []).slice(0, 100).map(m => m.descriptor_name).filter(Boolean);
+}
+
+export function extractMeshDescriptors(raw) {
+    // PR-UMLS-2 ADDITIVE: retain the MSH D-code (descriptor_ui) that extractMesh drops,
+    // so paper.mesh_descriptors carry a deterministic code-join key to mesh_concept SIDs.
+    // OpenAlex mesh object: {descriptor_ui, descriptor_name, qualifier_ui, qualifier_name,
+    // is_major_topic}. Filter to non-empty descriptor_ui (the join key must exist).
+    return (raw.mesh ?? []).slice(0, 100)
+        .map(m => ({ ui: m.descriptor_ui, name: m.descriptor_name }))
+        .filter(m => typeof m.ui === 'string' && m.ui.length > 0);
 }
 
 export function reconstructAbstract(inverted) {

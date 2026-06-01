@@ -80,15 +80,9 @@ async function main() {
 
     console.log('\n[STAGE-3] === Download enriched from R2 ===');
     try {
-        // Cycle 21 PR #113 (post-#112 hotfix): use ENRICHED_FILES SSoT, not
-        // hardcoded 2-file list. PR #112 fixed stage-2 upload side to include
-        // drug-labels.jsonl per ENRICHED_FILES, but stage-3 download side
-        // kept the old 2-file hardcoded list, so drug-labels.jsonl was
-        // downloaded-skipped → stage-3 enrichers ran without it → stage-3
-        // uploadStage(AGGREGATED_FILES) HARDFAIL on missing drug-labels.jsonl
-        // (uploadStage missing-check fired correctly per cycle 21 PR #4
-        // [[feedback_cross_cycle_silent_data_loss]] defense). Same SSoT
-        // for both sides of the boundary.
+        // Cycle 21 PR #113: use ENRICHED_FILES SSoT (not a hardcoded 2-file list)
+        // for BOTH sides of the enriched boundary so drug-labels.jsonl is never
+        // download-skipped (which previously hard-failed uploadStage downstream).
         await downloadStage('enriched', ENRICHED_FILES);
     } catch (err) {
         console.error(`[STAGE-3] Enriched download failed: ${err.message}`);
@@ -97,7 +91,8 @@ async function main() {
 
     // V0.5.x: trial scripts run sequentially (last-writer-wins on trials.jsonl);
     // papers/targets/diseases each own disjoint output files so parallel-safe.
-    const [trialResults, paperResults, targetResults, diseaseResults] = await Promise.all([
+    // PR-UMLS-2: mesh-concept-linker owns mesh-concepts.jsonl (disjoint) -> parallel-safe.
+    const [trialResults, paperResults, targetResults, diseaseResults, meshResults] = await Promise.all([
         runSequential('Trials', [
             { name: 'trial-linker', fn: () => runScript('trial-linker.js') },
             { name: 'ctis-trial-linker', fn: () => runScript('ctis-trial-linker.js') },
@@ -112,6 +107,7 @@ async function main() {
         runSequential('Diseases', [
             { name: 'disease-linker', fn: () => runScript('disease-linker.js') },
         ]),
+        runSequential('MeSH', [{ name: 'mesh-concept-linker', fn: () => runScript('mesh-concept-linker.js') }]),
     ]);
 
     const crossLinkResults = await runSequential('Cross-link + Negative Evidence', [
@@ -125,14 +121,10 @@ async function main() {
     // module header for the full code table.
     await executeCumulativeMerge(runId);
 
-    // PR-CORE-3 (cycle 22): aggregated cumulative backfill. Runs AFTER the
-    // cumulative merge (so we operate on the post-merge cumulative) and
-    // BEFORE the search/target indices (so they reflect newly-backfilled
-    // records). Closes the wiring arc that PR-CORE-2 missed (its F2-side
-    // cursors only see ~5k F1 deltas, never the ~70k cumulative backlog).
-    // Per D7: non-fatal to F3 - failure logs explicit but stage continues
-    // with un-backfilled cumulative so the un-related downstream work
-    // (search index, target index, upload, snapshot) still produces output.
+    // PR-CORE-3 (cycle 22): aggregated cumulative backfill, AFTER the merge (post-merge
+    // cumulative) and BEFORE the indices (so they reflect backfilled records). Closes the
+    // wiring arc PR-CORE-2 missed (F2 cursors saw only ~5k deltas, never the ~70k backlog).
+    // Per D7: non-fatal to F3 - failure logs but the stage still ships downstream output.
     console.log('\n[STAGE-3] === PR-CORE-3 cumulative backfill ===');
     try {
         await runScript('aggregated-backfill-enrich.js');
@@ -169,10 +161,17 @@ async function main() {
         ['1.6b disease', 'stage-3-disease-sid-stamp.js'],
         ['1.6a SAL', 'stage-3-sal-sid-stamp.js'],
         ['1.7 NegEvidence', 'stage-3-negevidence-sid-stamp.js'],
+        // PR-UMLS-2: mesh_concept stamper (9th hard-fail entry; first stamp auto-provisions the class).
+        ['1.8 mesh', 'stage-3-mesh-sid-stamp.js'],
     ]) {
         console.log(`\n[STAGE-3] === PR-SID-${stamper[0]} stamping ===`);
         await runScript(stamper[1]);
     }
+
+    // PR-UMLS-2: F2 paper<->mesh_concept cross-link, AFTER stamping (so mesh-concepts.jsonl
+    // carries sid_s). HARD-FAIL; paper-only (DECISION 5); idempotent overwrite of mesh_links.
+    console.log('\n[STAGE-3] === PR-UMLS-2 MeSH cross-link enricher ===');
+    await runScript('mesh-crosslink-enricher.js');
 
     // V0.5.3 Tier 1.5 search index — rebuild SQLite FTS5 over cumulative
     // aggregated. Runs AFTER the cumulative merge so the index reflects
