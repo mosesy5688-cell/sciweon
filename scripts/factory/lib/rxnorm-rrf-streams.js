@@ -34,7 +34,8 @@ export function isCanonicalUnii(s) {
 export const RXNSAT_COLUMNS = ['RXCUI', 'LUI', 'SUI', 'RXAUI', 'STYPE', 'CODE', 'ATUI', 'SATUI', 'ATN', 'SAB', 'ATV', 'SUPPRESS', 'CVF'];
 export const RXNREL_COLUMNS = ['RXCUI1', 'RXAUI1', 'STYPE1', 'REL', 'RXCUI2', 'RXAUI2', 'STYPE2', 'RELA', 'RUI', 'SRUI', 'SAB', 'SL', 'DIR', 'RG', 'SUPPRESS', 'CVF'];
 
-function makeRrfParser(columns) {
+// PR-UMLS-1: exported (was module-private) so the shared umls-concept lib reuses the SAME RRF csv-parse options (single SSoT). Behavior unchanged.
+export function makeRrfParser(columns) {
     return parseCsv({
         delimiter: '|', columns, trim: false, relax_quotes: true, relax_column_count: true,
         skip_empty_lines: true,

@@ -33,40 +33,15 @@ import StreamZip from 'node-stream-zip';
 import { umlsApiKey, umlsDownloadUrl } from './lib/umls-auth.js';
 import { findRrfEntry } from './lib/rxnorm-rrf-streams.js';
 import {
-    candidateMetathesaurusUrls, newSabTally, addSabTally, DOC_SAB_INDEX,
-    classifyArchiveHead, ZIP_MAGIC, MIN_RELEASE_BYTES,
+    newSabTally, addSabTally, DOC_SAB_INDEX, ZIP_MAGIC, MIN_RELEASE_BYTES,
 } from './lib/umls-mrconso-probe.js';
+// PR-UMLS-1: discovery helpers (probeArchive + discoverRelease) extracted to a shared lib
+// so production umls-probe.js + this diagnostic share one SSoT; the byte-probe logic
+// itself is unchanged.
+import { discoverRelease } from './lib/umls-release-discovery.js';
 
 const SAMPLE_LIMIT = 100;
-const HEAD_PROBE_BYTES = 512;     // bytes read off the stream per candidate during discovery
-const FAIL_DUMP_BYTES = 2048;     // bytes captured for the terminal discovery-fail dump
-
-// Byte-reading probe: fetch follows the proxy's 302 redirect, we read only the first
-// ~512 bytes off the stream then cancel() -- the multi-GB body is NEVER downloaded here.
-// PR-UMLS-0 Bug 1: a status-only probe trusted the proxy's false-200 (196-byte stub) for
-// a non-existent inner URL (2026AB). Reading the magic bytes is the fix.
-async function probeArchive(proxyUrl) {
-    const res = await fetch(proxyUrl);
-    let head = Buffer.alloc(0);
-    try {
-        if (res.body) {
-            const reader = res.body.getReader();
-            while (head.length < HEAD_PROBE_BYTES) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                head = Buffer.concat([head, Buffer.from(value)]);
-            }
-            try { await reader.cancel(); } catch { /* ignore */ }
-        }
-    } catch { /* partial head is fine for classification */ }
-    return {
-        status: res.status,
-        finalUrl: res.url,
-        contentType: res.headers.get('content-type') || '',
-        contentLength: res.headers.get('content-length'),
-        head: head.subarray(0, HEAD_PROBE_BYTES),
-    };
-}
+const HEAD_PROBE_BYTES = 512;     // bytes read off the file head for the post-download guard
 
 async function downloadStream(url, tmpPath) {
     const res = await fetch(url);
@@ -88,37 +63,6 @@ function parseArgs() {
     }
     umlsApiKey();  // fail-closed before any network call when UMLS_API_KEY absent
     return { fullUrl, now };
-}
-
-// Discover the release: BYTE-probe candidates (or the operator override) and return the
-// FIRST whose head looks like a real ZIP (looks_real === true), NOT the first 200. The
-// phantom newest candidate (e.g. 2026AB before it ships) returns a 200 + 196-byte non-PK
-// stub -> fails magic -> skipped -> the real latest (2026AA) wins.
-async function discoverRelease({ fullUrl, now }) {
-    const candidates = fullUrl ? [fullUrl] : candidateMetathesaurusUrls(now);
-    let last = null;
-    for (const inner of candidates) {
-        let p;
-        try { p = await probeArchive(umlsDownloadUrl(inner)); }
-        catch (e) {
-            console.log(`[UMLS-PROBE] release-candidate status=err:${e.message} | inner=${inner}`);
-            continue;
-        }
-        last = { inner, p };
-        const c = classifyArchiveHead(p.head, p.contentLength);
-        console.log(`[UMLS-PROBE] release-candidate status=${p.status} magic=${c.magic_hex} looks_real=${c.looks_real} content-length=${p.contentLength ?? 'none'} content-type=${p.contentType} | inner=${inner}`);
-        if (c.looks_real) return inner;
-    }
-    // No real release: dump the last probed body head as evidence (Bug 2: never discard it).
-    if (last) {
-        const headText = last.p.head.subarray(0, FAIL_DUMP_BYTES).toString('utf-8');
-        console.error('[UMLS-PROBE] DISCOVERY-FAIL no candidate looks like a real ZIP release.');
-        console.error(`[UMLS-PROBE]   last-status=${last.p.status} final-url=${last.p.finalUrl}`);
-        console.error(`[UMLS-PROBE]   content-type=${last.p.contentType} content-length=${last.p.contentLength ?? 'none'}`);
-        console.error(`[UMLS-PROBE]   first-bytes-hex=${last.p.head.subarray(0, 4).toString('hex')}`);
-        console.error(`[UMLS-PROBE]   body-head(<=${FAIL_DUMP_BYTES}B as text):\n${headText}`);
-    }
-    return null;
 }
 
 async function dumpMrconso(tmpZip) {
