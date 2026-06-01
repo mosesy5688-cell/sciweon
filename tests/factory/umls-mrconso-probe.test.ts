@@ -9,6 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import {
     candidateMetathesaurusUrls, newSabTally, addSabTally, DOC_SAB_INDEX, TARGET_SABS,
+    classifyArchiveHead, ZIP_MAGIC, MIN_RELEASE_BYTES,
 } from '../../scripts/factory/lib/umls-mrconso-probe.js';
 
 describe('candidateMetathesaurusUrls', () => {
@@ -48,5 +49,54 @@ describe('addSabTally (tentative DOC_SAB_INDEX)', () => {
     it('DOC_SAB_INDEX is 11 (documented) and TARGET_SABS are the 3 vocab SABs', () => {
         expect(DOC_SAB_INDEX).toBe(11);
         expect(TARGET_SABS).toEqual(['MSH', 'SNOMEDCT_US', 'LNC']);
+    });
+});
+
+describe('classifyArchiveHead (PR-UMLS-0a archive-validity guard)', () => {
+    const pkHead = (extra = 8) => Buffer.concat([ZIP_MAGIC, Buffer.alloc(extra, 0xff)]);
+
+    it('locks the threshold + ZIP magic constants', () => {
+        expect(MIN_RELEASE_BYTES).toBe(100_000_000);
+        expect([...ZIP_MAGIC]).toEqual([0x50, 0x4b, 0x03, 0x04]);
+    });
+
+    it('(a) PK magic + Content-Length >= 100MB -> looks_real true', () => {
+        const c = classifyArchiveHead(pkHead(), '4000000000');
+        expect(c.is_zip).toBe(true);
+        expect(c.size_ok).toBe(true);
+        expect(c.looks_real).toBe(true);
+        expect(c.magic_hex).toBe('504b0304');
+    });
+
+    it('(b) 196-byte non-PK body (proxy false-200) -> is_zip false, looks_real false', () => {
+        const stub = Buffer.from('<html>not found redirect stub</html>'.padEnd(196, ' '));
+        const c = classifyArchiveHead(stub, '196');
+        expect(c.is_zip).toBe(false);
+        expect(c.looks_real).toBe(false);
+        expect(c.magic_hex).not.toBe('504b0304');
+    });
+
+    it('(c) PK magic + small Content-Length -> size_ok false, looks_real false', () => {
+        const c = classifyArchiveHead(pkHead(), '196');
+        expect(c.is_zip).toBe(true);
+        expect(c.size_ok).toBe(false);
+        expect(c.looks_real).toBe(false);
+    });
+
+    it('(d) PK magic + ABSENT Content-Length -> magic-alone fallback, looks_real true', () => {
+        expect(classifyArchiveHead(pkHead(), undefined).looks_real).toBe(true);
+        expect(classifyArchiveHead(pkHead(), null).looks_real).toBe(true);
+        expect(classifyArchiveHead(pkHead(), '').looks_real).toBe(true);
+        // non-numeric Content-Length also falls back to magic-alone (size_ok true)
+        expect(classifyArchiveHead(pkHead(), 'chunked').looks_real).toBe(true);
+    });
+
+    it('(e) buffer < 4 bytes / non-buffer -> is_zip false, never throws', () => {
+        expect(classifyArchiveHead(Buffer.from([0x50, 0x4b]), '4000000000').is_zip).toBe(false);
+        expect(classifyArchiveHead(Buffer.alloc(0), undefined).is_zip).toBe(false);
+        // @ts-expect-error intentionally non-buffer input
+        expect(classifyArchiveHead(null, '4000000000')).toMatchObject({ is_zip: false, looks_real: false });
+        // @ts-expect-error intentionally non-buffer input
+        expect(classifyArchiveHead('PK', '4000000000').is_zip).toBe(false);
     });
 });

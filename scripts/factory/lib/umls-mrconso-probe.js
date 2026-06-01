@@ -14,6 +14,42 @@
 export const DOC_SAB_INDEX = 11;
 export const TARGET_SABS = ['MSH', 'SNOMEDCT_US', 'LNC'];
 
+// ZIP local-file-header magic ("PK\x03\x04"). A real Metathesaurus full release is a
+// ZIP; the apiKey proxy returns 200 + a ~196-byte error/redirect body for a NON-existent
+// inner URL (PR-UMLS-0 Bug 1). Magic is the PRIMARY truth signal: a 196-byte HTML/text
+// body never starts with PK\x03\x04.
+export const ZIP_MAGIC = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+
+// 100 MB floor. The real Metathesaurus full zip is multi-GB; 100 MB is a deliberate
+// secondary corroborator (NOT 1 MB) that any plausible real release clears and any
+// proxy false-200 stub (hundreds of bytes) fails. PM-locked value.
+export const MIN_RELEASE_BYTES = 100_000_000;
+
+/**
+ * Pure archive-head classifier (no I/O, never throws). Given the first bytes of a
+ * candidate download + its Content-Length, decide whether it looks like a real release.
+ *
+ *   is_zip     headBuf is a Buffer of length>=4 whose first 4 bytes equal ZIP_MAGIC.
+ *   size_ok    Content-Length present+numeric -> >= MIN_RELEASE_BYTES; ABSENT/NaN -> true
+ *              (magic-alone fallback: some proxies stream without a length header).
+ *   looks_real is_zip && size_ok (magic PRIMARY, size SECONDARY corroborator).
+ *   magic_hex  hex of the first up-to-4 bytes, for logging.
+ *
+ * @param {Buffer} headBuf        first bytes off the response stream
+ * @param {string|number} contentLength  the Content-Length header value (may be absent)
+ */
+export function classifyArchiveHead(headBuf, contentLength) {
+    const isBuf = Buffer.isBuffer(headBuf);
+    const is_zip = isBuf && headBuf.length >= 4 && headBuf.subarray(0, 4).equals(ZIP_MAGIC);
+    const magic_hex = isBuf ? headBuf.subarray(0, 4).toString('hex') : '';
+    let size_ok = true;
+    if (contentLength !== undefined && contentLength !== null && contentLength !== '') {
+        const n = Number(contentLength);
+        size_ok = Number.isNaN(n) ? true : n >= MIN_RELEASE_BYTES;
+    }
+    return { is_zip, magic_hex, size_ok, looks_real: is_zip && size_ok };
+}
+
 /**
  * Candidate UMLS Metathesaurus full-release inner URLs, NEWEST-FIRST. The probe
  * status-probes each (Range 0-1) and picks the first 200 -- NOT a hardcoded "the" URL.
