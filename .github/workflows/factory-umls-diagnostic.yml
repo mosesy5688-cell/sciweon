@@ -1,0 +1,41 @@
+name: Factory UMLS Diagnostic
+
+# PR-UMLS-0: UMLS Metathesaurus MRCONSO diagnostic row-dump probe (diagnostic-only,
+# per [[external_dataset_diagnostic_first]]). Empirically discovers the release URL,
+# downloads via the apiKey proxy, streams MRCONSO.RRF, dumps RAW positional rows +
+# per-SAB tentative counts + MRCONSO uncompressed size. ZERO extraction / mutation /
+# R2 write. workflow_dispatch only (own per-attempt auth); UMLS-license-gated.
+
+on:
+  workflow_dispatch:
+    inputs:
+      full_url:
+        description: 'Optional: the exact Metathesaurus full-release inner URL from the NLM release page (overrides candidate discovery)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  UMLS_API_KEY: ${{ secrets.UMLS_API_KEY }}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: UMLS MRCONSO diagnostic row-dump
+        run: |
+          ARGS=""
+          if [ -n "${{ github.event.inputs.full_url }}" ]; then
+            ARGS="--full-url=${{ github.event.inputs.full_url }}"
+          fi
+          node scripts/factory/diagnostic-umls-mrconso-probe.js $ARGS
