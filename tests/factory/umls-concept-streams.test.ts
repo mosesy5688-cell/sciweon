@@ -9,10 +9,19 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
-    MRCONSO_COLUMNS, TARGET_SABS, MESH_SAB, MESH_CANONICALIZATION_VERSION, makeRrfParser,
+    MRCONSO_COLUMNS, TARGET_SABS, MESH_SAB, MESH_CANONICALIZATION_VERSION, SNOMED_SAB, makeRrfParser,
     newConceptAccumulator, ingestMrconsoRow, finalizeConcepts,
 } from '../../scripts/factory/lib/umls-concept-streams.js';
+
+// DRIFT GUARD: the SNOMED rehydration tool (tools/snomed-rehydrate) vendors a COPY of
+// the atomRank / collapse precedence below. It asserts the SAME shared fixture's
+// expected_collapsed, so a precedence change in THIS lib that is not mirrored in the
+// tool breaks one of the two tests. Keep the fixture single-sourced here.
+const PRECEDENCE_FIXTURE = JSON.parse(
+    readFileSync(new URL('../../tools/snomed-rehydrate/precedence.fixture.json', import.meta.url), 'utf-8'),
+);
 
 // Build a named-column MRCONSO row object (mirrors what makeRrfParser emits).
 function row(overrides = {}) {
@@ -207,5 +216,23 @@ describe('8. trailing-pipe round-trip through exported makeRrfParser', () => {
         const c = finalizeConcepts(acc).concepts[0];
         expect(c.code).toBe('D012711');
         expect(c.anchor_payload).toBe('MSH:D012711');
+    });
+});
+
+describe('9. SNOMED rehydration-tool drift guard (shared precedence fixture)', () => {
+    it('this pipeline collapse produces the SAME preferred_str + synonyms the tool pins', () => {
+        // Feed the shared synthetic SNOMED fixture (CODE=99999001) through THIS lib's
+        // collapse with target SAB=SNOMEDCT_US. If this precedence ever changes, the
+        // tool's vendored copy must change too or its test fails -- and vice versa.
+        const acc = newConceptAccumulator();
+        for (const row of PRECEDENCE_FIXTURE.rows) ingestMrconsoRow(acc, row, SNOMED_SAB);
+        const concepts = finalizeConcepts(acc, SNOMED_SAB, 'snomed.concept.v1.0').concepts;
+        expect(concepts).toHaveLength(1);
+        const c = concepts[0];
+        const exp = PRECEDENCE_FIXTURE.expected_collapsed;
+        expect(c.code).toBe(exp.code);
+        expect(c.preferred_str).toBe(exp.preferred_str);
+        expect([...c.synonyms].sort()).toEqual(exp.synonyms);
+        expect(c.anchor_payload).toBe(`SNOMEDCT_US:${exp.code}`);
     });
 });
