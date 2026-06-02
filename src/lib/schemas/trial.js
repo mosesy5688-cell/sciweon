@@ -41,6 +41,24 @@ export const TRIAL_SCHEMA = {
     phase: { type: 'number', required: false, min: 0, max: 4 }, // 0=Early Phase 1, 1-4 = Phase 1-4
     conditions: { type: 'array', required: false, itemType: 'string', maxItems: 100 },
 
+    // PR-UMLS-3 SNOMED cross-link (PUBLIC shape). Each link is EXACTLY
+    // { snomed_sid, confidence, match_method } -- snomed_sid is the pure Sciweon SID hash;
+    // confidence (numeric) + match_method (lineage tag) are 100% Sciweon-produced provenance.
+    // NO cui / code / str -- ZERO NLM/SNOMED proprietary content (RULING 1, founder
+    // NON-NEGOTIABLE). Trial conditions resolve via fuzzy_string_resolve (LOW confidence 0.4);
+    // ALL links published incl low-confidence (NOT withheld) -- the consumer filters.
+    snomed_links: {
+        type: 'array', required: false,
+        itemShape: {
+            snomed_sid: { type: 'string', required: true },
+            confidence: { type: 'number', required: true, min: 0, max: 1 },
+            match_method: {
+                type: 'string', required: true,
+                enum: ['exact_code_join', 'cui_join', 'fuzzy_string_resolve'],
+            },
+        },
+    },
+
     // Empirical widening (per primary-source widen-schema policy):
     //   50 → 200. Strategic FDA harvest 2026-05-17 halted at trial
     //   NCT03878524 with 56 interventions. Basket/umbrella oncology

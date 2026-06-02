@@ -89,14 +89,36 @@ describe('AGGREGATED_FILES SSoT (stage-3 bundle)', () => {
         // anchors ship in the daily snapshot.
         expect(AGGREGATED_FILES).toContain('mesh-concepts.jsonl');
     });
+
+    it('includes BOTH snomed files -- PR-UMLS-3 (full internal round-trip + public projection)', () => {
+        // snomed-concepts.jsonl = FULL (STR+CODE+CUI) internal working copy; round-trips
+        // F3->F4 via the aggregated prefix so the cross-link enricher has the proprietary
+        // fields. snomed-concepts-public.jsonl = Born-Clean {sid_s,sid_c} projection.
+        expect(AGGREGATED_FILES).toContain('snomed-concepts.jsonl');
+        expect(AGGREGATED_FILES).toContain('snomed-concepts-public.jsonl');
+    });
 });
 
 describe('SNAPSHOT_FILES SSoT (snapshot-builder publish list)', () => {
-    it('is a frozen superset of AGGREGATED_FILES', () => {
+    it('is frozen and contains every AGGREGATED_FILES entry EXCEPT the SNOMED full file', () => {
+        // PR-UMLS-3 FIRST DIVERGENCE: SNAPSHOT_FILES is no longer a verbatim superset of
+        // AGGREGATED_FILES. It omits snomed-concepts.jsonl (the full STR+CODE+CUI artifact)
+        // per RULING 1 (no SNOMED proprietary content in the public snapshot) while keeping
+        // every other aggregated file.
         expect(Object.isFrozen(SNAPSHOT_FILES)).toBe(true);
         for (const f of AGGREGATED_FILES) {
+            if (f === 'snomed-concepts.jsonl') continue; // the ONE intentional omission
             expect(SNAPSHOT_FILES).toContain(f);
         }
+    });
+
+    it('COMPLIANCE (RULING 1): OMITS the full snomed-concepts.jsonl but KEEPS the public projection', () => {
+        // The most compliance-critical assertion in the repo. If a future change re-unifies
+        // SNAPSHOT_FILES with AGGREGATED_FILES (e.g. `[...AGGREGATED_FILES]`), it would
+        // silently republish the proprietary SNOMED STR+CODE+CUI -> this test catches it.
+        expect(SNAPSHOT_FILES).not.toContain('snomed-concepts.jsonl');
+        expect(SNAPSHOT_FILES).toContain('snomed-concepts-public.jsonl');
+        expect(AGGREGATED_FILES).toContain('snomed-concepts.jsonl'); // present in aggregated (internal round-trip)
     });
 
     it('includes drug-labels.jsonl (now via AGGREGATED_FILES, not separate)', () => {

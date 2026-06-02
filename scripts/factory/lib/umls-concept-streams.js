@@ -36,6 +36,13 @@ export { TARGET_SABS };
 export const MESH_SAB = 'MSH';
 export const MESH_CANONICALIZATION_VERSION = 'mesh.concept.v1.0';
 
+// PR-UMLS-3 SNOMED CT US harvest parameters. The same streaming core
+// (ingestMrconsoRow / finalize) emits a SNOMED concept set when threaded with
+// these; the SAB is EXACT-match (SNOMEDCT_US only -- SNOMEDCT_VET / other
+// SNOMED editions are DISTINCT SABs and must NOT enter).
+export const SNOMED_SAB = 'SNOMEDCT_US';
+export const SNOMED_CANONICALIZATION_VERSION = 'snomed.concept.v1.0';
+
 // Re-export the shared RRF csv-parse factory (named columns, NOT positional split;
 // relax_column_count:true absorbs the trailing-pipe empty 19th field) from its SSoT in
 // rxnorm-rrf-streams.js so the harvest + tests import it from one place.
@@ -126,26 +133,34 @@ export function ingestMrconsoRow(acc, row, targetSab) {
  * Build the one-JSONL-line-per-distinct-CODE concept record. anchor_payload mirrors
  * disease.js:103's `<namespace>:<suffix>` shape -- computed here (the SID-S input),
  * NOT hashed (PR-1 does not stamp). canonicalization_version is the migration lever.
+ *
+ * PR-UMLS-3: parameterized on (sab, canon). Defaults to MeSH (MSH /
+ * mesh.concept.v1.0) so the existing MeSH harvest is UNCHANGED; the SNOMED
+ * harvest threads SNOMED_SAB + SNOMED_CANONICALIZATION_VERSION. The anchor_payload
+ * stays `<SAB>:<CODE>` content-addressed (Correction 1) for whichever SAB is active.
  */
-function toConceptRecord(entry) {
+function toConceptRecord(entry, sab = MESH_SAB, canon = MESH_CANONICALIZATION_VERSION) {
     return {
         code: entry.code,
         cui: entry.cui ?? null,
-        sab: MESH_SAB,
+        sab,
         tty: entry.tty ?? null,
         preferred_str: entry.preferred_str ?? null,
         synonyms: [...entry.synonyms].sort(),
-        anchor_payload: `${MESH_SAB}:${entry.code}`,
-        canonicalization_version: MESH_CANONICALIZATION_VERSION,
+        anchor_payload: `${sab}:${entry.code}`,
+        canonicalization_version: canon,
     };
 }
 
 /**
  * Finalize the stream: emit a code-sorted concept array (byte-stable R2 artifact) + the
  * 3-SAB distinct-CODE counts (Set sizes) for the cursor + telemetry.
+ *
+ * PR-UMLS-3: (sab, canon) default to MeSH (no MeSH regression); the SNOMED harvest
+ * passes finalizeConcepts(acc, SNOMED_SAB, SNOMED_CANONICALIZATION_VERSION).
  */
-export function finalizeConcepts(acc) {
-    const concepts = [...acc.byCode.values()].map(toConceptRecord);
+export function finalizeConcepts(acc, sab = MESH_SAB, canon = MESH_CANONICALIZATION_VERSION) {
+    const concepts = [...acc.byCode.values()].map(e => toConceptRecord(e, sab, canon));
     concepts.sort((a, b) => a.code.localeCompare(b.code));
     return {
         concepts,
@@ -170,6 +185,29 @@ export function buildMeshLicenseMetadata(release, ingestionDate) {
         upstream_source: 'umls_metathesaurus',
         upstream_license: 'umls_cat0',
         extracted_content: 'msh_concepts(code+cui+preferred_str+synonyms)',
+        upstream_release: release,
+        ingestion_date: ingestionDate,
+        attribution: NLM_ATTRIBUTION,
+    };
+}
+
+/**
+ * SNOMED CT US license_metadata (PR-UMLS-3). Bulk tracker #47 is the SSoT; SNOMED
+ * CT is SNOMED Affiliate / UMLS Metathesaurus redistribution-RESTRICTED (CAT3-class,
+ * NOT CAT0 like MeSH). RULING 1 + RULING 2 (founder, NON-NEGOTIABLE): the FULL
+ * STR+CODE+CUI artifact this metadata accompanies is INTERNAL-ONLY (R2 internal/
+ * prefix); the PUBLIC snapshot exposes ZERO SNOMED proprietary content -- only
+ * Sciweon-produced SID hashes + Sciweon-produced provenance. The redistribution
+ * gate is enforced in the publishing boundary (snomed-public-projection.js +
+ * SNAPSHOT_FILES omission), NOT here; this metadata is the audit trail attached to
+ * the internal full artifact.
+ */
+export function buildSnomedLicenseMetadata(release, ingestionDate) {
+    return {
+        upstream_source: 'umls_metathesaurus',
+        upstream_license: 'snomed_ct_affiliate',
+        extracted_content: 'snomedct_us_concepts(code+cui+preferred_str+synonyms)',
+        redistribution: 'internal_only_full_artifact_public_snapshot_is_sid_hashes_only',
         upstream_release: release,
         ingestion_date: ingestionDate,
         attribution: NLM_ATTRIBUTION,
