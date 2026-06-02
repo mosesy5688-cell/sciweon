@@ -1,0 +1,18 @@
+{
+  "_comment": "Shared synthetic MRCONSO precedence fixture (NO real SNOMED strings). Consumed by BOTH tests/tools/snomed-rehydrate.test.ts AND (drift-guard) tests/factory/umls-concept-streams.test.ts so a future precedence change in the pipeline collapse breaks the rehydration tool's test. CODE 99999001 is a synthetic SCTID; sid_s pin matches scripts/factory/lib/sid-snomed-stamping.js derivation formula.",
+  "target_sab": "SNOMEDCT_US",
+  "rows": [
+    { "CUI": "C9990001", "LAT": "ENG", "TS": "S", "LUI": "L1", "STT": "VO", "SUI": "S1", "ISPREF": "N", "AUI": "A1", "SAUI": "", "SCUI": "", "SDUI": "", "SAB": "SNOMEDCT_US", "TTY": "SY", "CODE": "99999001", "STR": "Synthetic Concept lower rank", "SRL": "0", "SUPPRESS": "N", "CVF": "" },
+    { "CUI": "C9990001", "LAT": "ENG", "TS": "P", "LUI": "L2", "STT": "PF", "SUI": "S2", "ISPREF": "Y", "AUI": "A2", "SAUI": "", "SCUI": "", "SDUI": "", "SAB": "SNOMEDCT_US", "TTY": "PT", "CODE": "99999001", "STR": "Synthetic Concept Preferred", "SRL": "0", "SUPPRESS": "N", "CVF": "" },
+    { "CUI": "C9990001", "LAT": "ENG", "TS": "P", "LUI": "L3", "STT": "VO", "SUI": "S3", "ISPREF": "Y", "AUI": "A3", "SAUI": "", "SCUI": "", "SDUI": "", "SAB": "SNOMEDCT_US", "TTY": "SY", "CODE": "99999001", "STR": "Synthetic Concept mid rank", "SRL": "0", "SUPPRESS": "N", "CVF": "" },
+    { "CUI": "C9990002", "LAT": "FRE", "TS": "P", "LUI": "L4", "STT": "PF", "SUI": "S4", "ISPREF": "Y", "AUI": "A4", "SAUI": "", "SCUI": "", "SDUI": "", "SAB": "SNOMEDCT_US", "TTY": "PT", "CODE": "99999001", "STR": "Concept francais (non-ENG, dropped)", "SRL": "0", "SUPPRESS": "N", "CVF": "" },
+    { "CUI": "C9990003", "LAT": "ENG", "TS": "P", "LUI": "L5", "STT": "PF", "SUI": "S5", "ISPREF": "Y", "AUI": "A5", "SAUI": "", "SCUI": "", "SDUI": "", "SAB": "SNOMEDCT_VET", "TTY": "PT", "CODE": "99999001", "STR": "Vet edition (wrong SAB, dropped)", "SRL": "0", "SUPPRESS": "N", "CVF": "" },
+    { "CUI": "C9990004", "LAT": "ENG", "TS": "S", "LUI": "L6", "STT": "VO", "SUI": "S6", "ISPREF": "N", "AUI": "A6", "SAUI": "", "SCUI": "", "SDUI": "", "SAB": "SNOMEDCT_US", "TTY": "SY", "CODE": "99999001", "STR": "Suppressed atom (dropped)", "SRL": "0", "SUPPRESS": "O", "CVF": "" }
+  ],
+  "expected_collapsed": {
+    "code": "99999001",
+    "preferred_str": "Synthetic Concept Preferred",
+    "synonyms": ["Synthetic Concept lower rank", "Synthetic Concept mid rank"],
+    "sid_s": "09f49d1dcdc362886b5c8f6f8e78ac08"
+  }
+}
