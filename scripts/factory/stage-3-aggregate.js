@@ -39,6 +39,9 @@ import { buildIndex as buildTargetIndex, OUTPUT_FILE as TARGET_INDEX_FILE } from
 import { writeFirstRunSentinel } from './lib/aggregated-sentinel.js';
 import { AGGREGATED_FILES, ENRICHED_FILES } from './lib/aggregated-files.js';
 import { enforceCompletenessInvariant } from './lib/aggregated-invariant.js';
+import { runSidStampingCascade } from './lib/stage-3-stampers.js';
+import { makeR2Client } from './lib/sid-stage3-shared.js';
+import { isSnomedColdStart, warnSnomedColdStart } from './lib/snomed-cold-start.js';
 
 const SCRIPT_DIR = 'scripts/factory';
 
@@ -89,10 +92,18 @@ async function main() {
         process.exit(2);
     }
 
+    // PR-UMLS-3 cold-start guard (see lib/snomed-cold-start.js for both invariants): determine
+    // SNOMED cold-start ONCE via a single R2 HEAD on the bulk cursor. cursor ABSENT (404) -> skip
+    // the WHOLE SNOMED sub-pipeline gracefully (Invariant 1, snapshot still ships); cursor PRESENT
+    // + broken artifact -> each stage HARD-FAILS in place (Invariant 2, untouched here). The one
+    // flag threads to BOTH the linker phase and runSidStampingCascade so all 4 stages agree.
+    const snomedColdStart = await isSnomedColdStart({ client: makeR2Client('STAGE-3'), bucket: process.env.R2_BUCKET });
+    if (snomedColdStart) warnSnomedColdStart();
+
     // V0.5.x: trial scripts run sequentially (last-writer-wins on trials.jsonl);
     // papers/targets/diseases each own disjoint output files so parallel-safe.
     // PR-UMLS-2: mesh-concept-linker owns mesh-concepts.jsonl (disjoint) -> parallel-safe.
-    const [trialResults, paperResults, targetResults, diseaseResults, meshResults] = await Promise.all([
+    const [trialResults, paperResults, targetResults, diseaseResults, meshResults, snomedResults] = await Promise.all([
         runSequential('Trials', [
             { name: 'trial-linker', fn: () => runScript('trial-linker.js') },
             { name: 'ctis-trial-linker', fn: () => runScript('ctis-trial-linker.js') },
@@ -108,6 +119,12 @@ async function main() {
             { name: 'disease-linker', fn: () => runScript('disease-linker.js') },
         ]),
         runSequential('MeSH', [{ name: 'mesh-concept-linker', fn: () => runScript('mesh-concept-linker.js') }]),
+        // PR-UMLS-3: snomed-concept-linker owns snomed-concepts.jsonl (disjoint) -> parallel-safe.
+        // Cold-start guard: skipped (no R2 cursor) so the linker's no-catch cursor read can never
+        // throw and meltdown the daily cascade before the first SNOMED harvest materializes.
+        snomedColdStart
+            ? Promise.resolve([{ task: 'snomed-concept-linker', ok: true, error: null, skipped: 'snomed-cold-start' }])
+            : runSequential('SNOMED', [{ name: 'snomed-concept-linker', fn: () => runScript('snomed-concept-linker.js') }]),
     ]);
 
     const crossLinkResults = await runSequential('Cross-link + Negative Evidence', [
@@ -150,28 +167,13 @@ async function main() {
         console.error(`[STAGE-3] OT merge failed (non-fatal, F3 continues with un-OT-enriched compounds): ${err.message}`);
     }
 
-    // PR-SID-1.1c..1.5 (cycle 23): SID stamping per V1.0 §35 — HARD-FAIL on any failure.
-    // SID stamping cascade: 7 Layer-1 atomic classes + 1 Layer-3 assertion class.
-    for (const stamper of [
-        ['1.1c compound', 'stage-3-sid-stamp.js'],
-        ['1.2 trial', 'stage-3-trial-sid-stamp.js'],
-        ['1.3 paper', 'stage-3-paper-sid-stamp.js'],
-        ['1.4 target', 'stage-3-target-sid-stamp.js'],
-        ['1.5 bioactivity', 'stage-3-bioactivity-sid-stamp.js'],
-        ['1.6b disease', 'stage-3-disease-sid-stamp.js'],
-        ['1.6a SAL', 'stage-3-sal-sid-stamp.js'],
-        ['1.7 NegEvidence', 'stage-3-negevidence-sid-stamp.js'],
-        // PR-UMLS-2: mesh_concept stamper (9th hard-fail entry; first stamp auto-provisions the class).
-        ['1.8 mesh', 'stage-3-mesh-sid-stamp.js'],
-    ]) {
-        console.log(`\n[STAGE-3] === PR-SID-${stamper[0]} stamping ===`);
-        await runScript(stamper[1]);
-    }
-
-    // PR-UMLS-2: F2 paper<->mesh_concept cross-link, AFTER stamping (so mesh-concepts.jsonl
-    // carries sid_s). HARD-FAIL; paper-only (DECISION 5); idempotent overwrite of mesh_links.
-    console.log('\n[STAGE-3] === PR-UMLS-2 MeSH cross-link enricher ===');
-    await runScript('mesh-crosslink-enricher.js');
+    // PR-SID-1.1c..1.9 (cycle 23 + UMLS): SID stamping cascade (HARD-FAIL) + the post-stamp
+    // UMLS phases (SNOMED public projection per RULING 1 + the MeSH/SNOMED cross-link
+    // enrichers). Extracted to lib/stage-3-stampers.js for Art 5.1. The snomed stamper is the
+    // 10th cascade entry; the public projection + snomed cross-link run after it. Cold-start
+    // guard (Invariant 1): when snomedColdStart, the 3 SNOMED cascade entries are excluded and
+    // the 9 non-SNOMED stampers + MeSH cross-link still run; the snapshot ships without SNOMED.
+    await runSidStampingCascade(runScript, { skipSnomed: snomedColdStart });
 
     // V0.5.3 Tier 1.5 search index — rebuild SQLite FTS5 over cumulative
     // aggregated. Runs AFTER the cumulative merge so the index reflects

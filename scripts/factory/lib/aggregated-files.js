@@ -76,6 +76,19 @@ export const AGGREGATED_FILES = Object.freeze([
     // their CUI cross-link anchors reach researchers in the daily snapshot; consumed by
     // the F2 mesh-crosslink-enricher (paper.mesh_links).
     'mesh-concepts.jsonl',
+    // PR-UMLS-3: snomed-concepts.jsonl is the FULL (STR + raw CODE + CUI + sid_s + sid_c)
+    // INTERNAL working copy -- snomed-concept-linker.js places it, stage-3-snomed-sid-stamp.js
+    // stamps it, the cross-link enricher reads it. It is in AGGREGATED_FILES ONLY so it
+    // round-trips F3->F4 via the aggregated prefix (the cross-link enricher in F3 needs the
+    // full STR/CODE/CUI to build byCode/byCui/byString). It is DELIBERATELY ABSENT from
+    // SNAPSHOT_FILES (RULING 1: no SNOMED proprietary content in the public snapshot --
+    // SNOMED CT Affiliate redistribution). See the SNAPSHOT_FILES divergence note below.
+    'snomed-concepts.jsonl',
+    // PR-UMLS-3 COMPLIANCE CORE: snomed-concepts-public.jsonl is the "Born-Clean" public
+    // projection -- EXACTLY {sid_s, sid_c} per concept (snomed-public-builder.js via the
+    // projectSnomedPublic allowlist; CUI annihilated, no STR/CODE). This is the ONLY
+    // SNOMED-derived file permitted into the public snapshot (it is in BOTH lists).
+    'snomed-concepts-public.jsonl',
     // Phase 1.6a: sal-assertions.jsonl produced by scripts/factory/stage-3-sal-sid-stamp.js
     // (content-addressed UUID v5 anchored assertions; bioactivity-as-assertion in
     // PR 1.6a, OT clinical_indication additively appended in PR 1.6c).
@@ -87,13 +100,27 @@ export const AGGREGATED_FILES = Object.freeze([
 ]);
 
 /**
- * SNAPSHOT_FILES — what snapshot-builder.js bundles into snapshots/<date>/.
+ * SNAPSHOT_FILES — what snapshot-builder.js bundles into the PUBLIC snapshots/<date>/.
  *
- * Currently equal to AGGREGATED_FILES (drug-labels.jsonl now flows
- * through the aggregated bundle as of 2026-05-23, no longer a separate
- * out-of-band file). Kept as a distinct export so snapshot-builder doesn't
- * need to know about the stage-3 boundary; if future snapshot-only
- * artifacts emerge (e.g. derived analytics) they can be appended here
- * without affecting upstream stages.
+ * ============================ FIRST DIVERGENCE FROM AGGREGATED_FILES ============================
+ * Until PR-UMLS-3, SNAPSHOT_FILES === AGGREGATED_FILES verbatim. PR-UMLS-3 makes this an
+ * EXPLICIT ALLOWLIST that DIVERGES: it OMITS `snomed-concepts.jsonl` (the FULL STR + raw CODE +
+ * CUI artifact) while KEEPING `snomed-concepts-public.jsonl` (the Born-Clean {sid_s,sid_c}
+ * projection).
+ *
+ * WHY (RULING 1 + RULING 2, founder NON-NEGOTIABLE -- the most compliance-critical line in the
+ * repo): SNOMED CT is SNOMED Affiliate / UMLS Metathesaurus redistribution-RESTRICTED. The
+ * public snapshot is served to NON-licensee researchers, so it must expose ZERO SNOMED
+ * proprietary content (no STR, no raw CODE, no CUI). The full snomed-concepts.jsonl carries all
+ * three -> it MUST NOT enter the public snapshot. The public projection exposes only
+ * Sciweon-original SID hashes (redistribution-safe). If a future change re-unifies these lists
+ * (`[...AGGREGATED_FILES]`), it would silently republish the proprietary SNOMED payload -- the
+ * aggregated-files-ssot test pins this omission so any such re-unify is caught in CI.
+ *
+ * This is an EXPLICIT, per-file allowlist (NOT a spread of AGGREGATED_FILES) precisely so the
+ * SNOMED omission is intentional, visible, and reviewable rather than an accidental inclusion.
+ * ===============================================================================================
  */
-export const SNAPSHOT_FILES = Object.freeze([...AGGREGATED_FILES]);
+export const SNAPSHOT_FILES = Object.freeze(
+    AGGREGATED_FILES.filter(f => f !== 'snomed-concepts.jsonl'),
+);

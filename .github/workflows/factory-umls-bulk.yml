@@ -142,3 +142,43 @@ jobs:
         run: |
           echo "## PR-UMLS-1 ingest" >> $GITHUB_STEP_SUMMARY
           echo "- dry-run: ${{ github.event.inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
+
+  # PR-UMLS-3: SNOMED CT US harvest (SAB=SNOMEDCT_US). Shares the check-version probe
+  # manifest; its OWN cursor (state/umls-snomed-bulk-cursor.json) gates re-ingest. Longer
+  # timeout than MeSH: 537,716 distinct SNOMEDCT_US CODE (vs ~30k MSH) over the same 18M-row
+  # MRCONSO stream. LICENSE FENCE (RULING 2): the FULL artifact is written to the internal/
+  # R2 prefix (internal/processed/bulk/umls/<release>/snomed-concepts.jsonl.zst), NEVER a
+  # publicly-servable path; the public snapshot exposes only Sciweon SID hashes (RULING 1).
+  ingest-snomed:
+    needs: check-version
+    if: needs.check-version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    # Heavier than MeSH: SNOMEDCT_US carries ~1.73M atoms -> 537,716 distinct CODE,
+    # collapsed over the same 2.34GB / 18M-row MRCONSO stream + the ~5.82GB release download.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install deps
+        run: npm ci
+      - name: Install zstd CLI
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zstd
+      - name: Download probe manifest (Rail 8)
+        uses: actions/download-artifact@v4
+        with:
+          name: umls-probe-manifest
+          path: /tmp
+      - name: Run streaming SNOMED harvester (SAB=SNOMEDCT_US, internal/ prefix)
+        run: |
+          set -e
+          ARGS="--probe-json=/tmp/umls-probe.json"
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          node scripts/factory/umls-snomed-harvest.js $ARGS
+      - name: Ingest-snomed summary
+        if: always()
+        run: |
+          echo "## PR-UMLS-3 ingest-snomed (SAB=SNOMEDCT_US, internal/ prefix)" >> $GITHUB_STEP_SUMMARY
+          echo "- dry-run: ${{ github.event.inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
