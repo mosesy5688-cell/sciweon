@@ -15,7 +15,12 @@
  *   3. snomed-crosslink-enricher-- F2 disease+trial<->snomed_concept (idempotent
  *      snomed_links; ALL links published incl low-confidence; {snomed_sid,confidence,
  *      match_method} only -- ZERO NLM/SNOMED content).
+ *
+ * COLD-START GUARD (PR-UMLS-3): runSidStampingCascade honors a skipSnomed flag that excludes
+ * the 3 SNOMED entries (see SNOMED_CASCADE_SCRIPTS) when the SNOMED bulk cursor is absent.
  */
+
+import { SNOMED_CASCADE_SCRIPTS } from './snomed-cold-start.js';
 
 // SID stamping cascade order. Each entry = [label, script]. Order is load-bearing
 // (the cross-link enrichers below assume the concept files are stamped).
@@ -45,14 +50,28 @@ export const POST_STAMP_UMLS_PHASES = Object.freeze([
 
 /**
  * Run the SID stamping cascade then the post-stamp UMLS phases, all HARD-FAIL.
+ *
+ * PR-UMLS-3 cold-start guard (Invariant 1): when `skipSnomed` is true (the SNOMED bulk
+ * cursor does NOT yet exist in R2), the 3 SNOMED cascade entries (the `1.9 snomed` stamper
+ * + the snomed-public-builder + the snomed-crosslink-enricher) are EXCLUDED so the daily
+ * cascade + snapshot still complete WITHOUT SNOMED this cycle. The 9 non-SNOMED stampers +
+ * the MeSH cross-link enricher run UNCONDITIONALLY. When `skipSnomed` is false (cursor
+ * exists), every entry runs and a broken downstream artifact HARD-FAILS in place (Invariant
+ * 2) -- the guard is purely additive and never weakens that throw.
+ *
  * @param {(name:string)=>Promise<void>} runScript  the orchestrator's spawn-node helper.
+ * @param {{skipSnomed?: boolean}} [opts]
  */
-export async function runSidStampingCascade(runScript) {
+export async function runSidStampingCascade(runScript, opts = {}) {
+    const skipSnomed = opts.skipSnomed === true;
+    const skip = (script) => skipSnomed && SNOMED_CASCADE_SCRIPTS.includes(script);
     for (const [label, script] of SID_STAMPERS) {
+        if (skip(script)) { console.log(`\n[STAGE-3] === PR-SID-${label} stamping SKIPPED (SNOMED cold start) ===`); continue; }
         console.log(`\n[STAGE-3] === PR-SID-${label} stamping ===`);
         await runScript(script);
     }
     for (const [label, script] of POST_STAMP_UMLS_PHASES) {
+        if (skip(script)) { console.log(`\n[STAGE-3] === ${label} SKIPPED (SNOMED cold start) ===`); continue; }
         console.log(`\n[STAGE-3] === ${label} ===`);
         await runScript(script);
     }
