@@ -9,6 +9,11 @@
  * (D-descriptors + Q-qualifiers + C-supplementary, ALL record types per triple-lock),
  * zstd-compresses, uploads to R2, writes the cursor with the 3-SAB distinct-CODE telemetry.
  *
+ * PR-UMLS-2a LICENSE FENCE: the FULL artifact carries `cui` (UMLS-proprietary), so it is
+ * uploaded to the internal/ R2 prefix (internal/processed/bulk/umls/<release>/
+ * mesh-concepts.jsonl.zst), NEVER a publicly-servable path. The public snapshot receives only
+ * the cui-free projection (mesh-concepts-public.jsonl) built in F3 by mesh-public-builder.js.
+ *
  * Phase boundary (RATIFIED): PR-1 = ARTIFACT ONLY. NO SID ledger / crosswalk / generator
  * touch; NO LANDED/LINKED claim (those are PR-2 gates). The anchor fields are computed into
  * each record (lib) for PR-2's stamper to consume.
@@ -158,7 +163,10 @@ async function main() {
         }
         const client = makeR2Client();
         const bucket = process.env.R2_BUCKET;
-        const dataKey = `processed/bulk/umls/${release}/mesh-concepts.jsonl.zst`;
+        // PR-UMLS-2a LICENSE FENCE: the FULL artifact carries `cui` (UMLS-proprietary). It is
+        // written to the internal/ R2 prefix (never publicly servable), mirroring the SNOMED
+        // harvest. The public snapshot exposes only the cui-free mesh-concepts-public.jsonl.
+        const dataKey = `internal/processed/bulk/umls/${release}/mesh-concepts.jsonl.zst`;
         await uploadR2(client, bucket, dataKey, readFileSync(tmpZst), 'application/zstd');
         const cursor = {
             release, inner_url,

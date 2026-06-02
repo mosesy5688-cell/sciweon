@@ -56,7 +56,7 @@ describe('buildMeshLinksForPaper -- Part A code_join', () => {
         const paper = { mesh_descriptors: [{ ui: 'D000818', name: 'Adipose Tissue' }], mesh_terms: ['Adipose Tissue'] };
         const links = buildMeshLinksForPaper(paper, { byCode, byString }, tel);
         expect(links).toHaveLength(1);
-        expect(links[0]).toEqual({ mesh_sid: '40374b17c32e1493bd60b96c1c2bd2c6', code: 'D000818', match: 'code_join', confidence: 'high' });
+        expect(links[0]).toEqual({ mesh_sid: '40374b17c32e1493bd60b96c1c2bd2c6', code: 'D000818', confidence: 'high', match_method: 'code_join' });
         expect(tel.code_join_hits).toBe(1);
         // mesh_terms entry whose concept is already code-joined must NOT double-link
         expect(tel.string_resolve_hits).toBe(0);
@@ -71,9 +71,12 @@ describe('buildMeshLinksForPaper -- Part B string_resolve fallback', () => {
         const paper = { mesh_terms: ['Adipose Tissue'] }; // no mesh_descriptors
         const links = buildMeshLinksForPaper(paper, { byCode, byString }, tel);
         expect(links).toHaveLength(1);
-        expect(links[0].match).toBe('string_resolve');
+        expect(links[0].match_method).toBe('string_resolve');
         expect(links[0].confidence).toBe('low');
         expect(links[0].mesh_sid).toBe('40374b17c32e1493bd60b96c1c2bd2c6');
+        // PR-UMLS-2a: NO cui in any link; old `match` key gone (renamed to match_method).
+        expect(links[0]).not.toHaveProperty('cui');
+        expect(links[0]).not.toHaveProperty('match');
         expect(tel.string_resolve_hits).toBe(1);
     });
 });
@@ -119,8 +122,8 @@ describe('enrichPapersWithMeshLinks -- telemetry + idempotent overwrite', () => 
         expect(tel.code_join_hits).toBe(1);
         expect(tel.string_resolve_hits).toBe(1);
         expect(tel.no_match).toBe(1);
-        expect(papers[0].mesh_links[0].match).toBe('code_join');
-        expect(papers[1].mesh_links[0].match).toBe('string_resolve');
+        expect(papers[0].mesh_links[0].match_method).toBe('code_join');
+        expect(papers[1].mesh_links[0].match_method).toBe('string_resolve');
         expect(papers[2].mesh_links).toEqual([]);
     });
 

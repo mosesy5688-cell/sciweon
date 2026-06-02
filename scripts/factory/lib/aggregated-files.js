@@ -72,10 +72,18 @@ export const AGGREGATED_FILES = Object.freeze([
     'diseases.jsonl',
     // PR-UMLS-2: mesh-concepts.jsonl produced by scripts/factory/mesh-concept-linker.js
     // (F3 placement of the ~355K MSH concept corpus from R2) and stamped in place by
-    // stage-3-mesh-sid-stamp.js (mesh_concept class). Bundled so the stamped concepts +
-    // their CUI cross-link anchors reach researchers in the daily snapshot; consumed by
-    // the F2 mesh-crosslink-enricher (paper.mesh_links).
+    // stage-3-mesh-sid-stamp.js (mesh_concept class). This is the FULL (code + cui +
+    // preferred_str + sid_s + sid_c) INTERNAL working copy: it is in AGGREGATED_FILES ONLY
+    // (internal F3->F4 round-trip so the F2 mesh-crosslink-enricher has the full code/cui/
+    // string indices). PR-UMLS-2a: it is DELIBERATELY OMITTED from SNAPSHOT_FILES because
+    // its `cui` is a UMLS-Metathesaurus-proprietary identifier whose public redistribution
+    // the license forbids (the prior breach). See the SNAPSHOT_FILES divergence note below.
     'mesh-concepts.jsonl',
+    // PR-UMLS-2a COMPLIANCE REMEDIATION: mesh-concepts-public.jsonl is the public projection
+    // of the MeSH corpus -- EXACTLY {sid_s, sid_c, code, str} per concept (mesh-public-
+    // builder.js via projectUmlsPublic('MESH', ...); cui DROPPED, Cat-0 code+str KEPT). This
+    // is the ONLY MeSH-derived file permitted into the public snapshot (it is in BOTH lists).
+    'mesh-concepts-public.jsonl',
     // PR-UMLS-3: snomed-concepts.jsonl is the FULL (STR + raw CODE + CUI + sid_s + sid_c)
     // INTERNAL working copy -- snomed-concept-linker.js places it, stage-3-snomed-sid-stamp.js
     // stamps it, the cross-link enricher reads it. It is in AGGREGATED_FILES ONLY so it
@@ -102,25 +110,33 @@ export const AGGREGATED_FILES = Object.freeze([
 /**
  * SNAPSHOT_FILES — what snapshot-builder.js bundles into the PUBLIC snapshots/<date>/.
  *
- * ============================ FIRST DIVERGENCE FROM AGGREGATED_FILES ============================
- * Until PR-UMLS-3, SNAPSHOT_FILES === AGGREGATED_FILES verbatim. PR-UMLS-3 makes this an
- * EXPLICIT ALLOWLIST that DIVERGES: it OMITS `snomed-concepts.jsonl` (the FULL STR + raw CODE +
- * CUI artifact) while KEEPING `snomed-concepts-public.jsonl` (the Born-Clean {sid_s,sid_c}
- * projection).
+ * ============================ DIVERGENCE FROM AGGREGATED_FILES ============================
+ * Until PR-UMLS-3, SNAPSHOT_FILES === AGGREGATED_FILES verbatim. PR-UMLS-3 made this an
+ * EXPLICIT ALLOWLIST that omitted the FULL `snomed-concepts.jsonl`. PR-UMLS-2a EXTENDS the
+ * divergence: BOTH full UMLS concept files are now SNAPSHOT-omitted for CUI/license reasons,
+ * while their cui-free public projections are KEPT:
  *
- * WHY (RULING 1 + RULING 2, founder NON-NEGOTIABLE -- the most compliance-critical line in the
- * repo): SNOMED CT is SNOMED Affiliate / UMLS Metathesaurus redistribution-RESTRICTED. The
- * public snapshot is served to NON-licensee researchers, so it must expose ZERO SNOMED
- * proprietary content (no STR, no raw CODE, no CUI). The full snomed-concepts.jsonl carries all
- * three -> it MUST NOT enter the public snapshot. The public projection exposes only
- * Sciweon-original SID hashes (redistribution-safe). If a future change re-unifies these lists
- * (`[...AGGREGATED_FILES]`), it would silently republish the proprietary SNOMED payload -- the
- * aggregated-files-ssot test pins this omission so any such re-unify is caught in CI.
+ *   OMITTED:  snomed-concepts.jsonl  (FULL: STR + raw CODE + CUI)
+ *             mesh-concepts.jsonl    (FULL: code + CUI + preferred_str)
+ *   KEPT:     snomed-concepts-public.jsonl  (Born-Clean {sid_s,sid_c})
+ *             mesh-concepts-public.jsonl    (Cat-0 {sid_s,sid_c,code,str}; cui DROPPED)
+ *
+ * WHY (founder NON-NEGOTIABLE -- the most compliance-critical line in the repo): the CUI is an
+ * NLM-proprietary UMLS Metathesaurus structural identifier whose public redistribution the
+ * UMLS License FORBIDS (universal -- it applies to MeSH as well as SNOMED). The public snapshot
+ * is served to NON-licensee researchers. SNOMED is ADDITIONALLY Affiliate-restricted on its STR
+ * + raw CODE (so its public projection is Sciweon SID hashes ONLY); MeSH code+str are Cat-0 /
+ * NLM-public-domain and are KEPT. The PR-UMLS-2a breach: mesh-concepts.jsonl (355,249 records)
+ * shipped into the public snapshot WITH cui -> an active redistribution breach. The fix moves
+ * the full file to AGGREGATED-only and publishes only the cui-free mesh-concepts-public.jsonl.
+ * If a future change re-unifies these lists (`[...AGGREGATED_FILES]`), it would silently
+ * republish BOTH proprietary payloads -- the aggregated-files-ssot test pins both omissions so
+ * any such re-unify is caught in CI.
  *
  * This is an EXPLICIT, per-file allowlist (NOT a spread of AGGREGATED_FILES) precisely so the
- * SNOMED omission is intentional, visible, and reviewable rather than an accidental inclusion.
+ * two omissions are intentional, visible, and reviewable rather than an accidental inclusion.
  * ===============================================================================================
  */
 export const SNAPSHOT_FILES = Object.freeze(
-    AGGREGATED_FILES.filter(f => f !== 'snomed-concepts.jsonl'),
+    AGGREGATED_FILES.filter(f => f !== 'snomed-concepts.jsonl' && f !== 'mesh-concepts.jsonl'),
 );

@@ -93,17 +93,22 @@ export const PAPER_SCHEMA = {
         },
     },
 
-    // PR-UMLS-2: the F2 cross-link output -- one entry per resolved MeSH term, linking
-    // this paper to a mesh_concept SID. match='code_join' (Part A, MSH D-code -> sid_s,
-    // confidence high) or 'string_resolve' (Part B, preferred/synonym string fallback for
-    // historical no-code papers, confidence low). Overwritten idempotently each F3 run.
+    // PR-UMLS-2 / PR-UMLS-2a: the F2 cross-link output -- one entry per resolved MeSH term,
+    // linking this paper to a mesh_concept SID. PUBLIC itemShape (founder ruling):
+    // { mesh_sid, code, confidence, match_method } -- mesh_sid is the pure Sciweon SID hash;
+    // code is the MSH D-code (Cat-0 / NLM-public-domain, physically RETAINED); NO cui (the
+    // UMLS-proprietary identifier is withheld). match_method='code_join' (Part A, MSH D-code
+    // -> sid_s, confidence high) or 'string_resolve' (Part B, preferred/synonym string
+    // fallback for historical no-code papers, confidence low). `match_method` was renamed from
+    // the old `match` key for consistency with the snomed/loinc cross-link shape. Overwritten
+    // idempotently each F3 run.
     mesh_links: {
         type: 'array', required: false, maxItems: 200,
         itemShape: {
             mesh_sid: { type: 'string', required: true, maxLength: 64 },
             code: { type: 'string', required: true, maxLength: 100 },
-            match: { type: 'string', required: true, enum: ['code_join', 'string_resolve'] },
             confidence: { type: 'string', required: true, enum: ['high', 'low'] },
+            match_method: { type: 'string', required: true, enum: ['code_join', 'string_resolve'] },
         },
     },
 

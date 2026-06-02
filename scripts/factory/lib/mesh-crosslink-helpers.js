@@ -12,6 +12,12 @@
  *     that predate the descriptor_ui re-plumb); resolve against the normalized
  *     preferred_str + synonym map (byString).
  *
+ * COMPLIANCE (PR-UMLS-2a): each link is EXACTLY { mesh_sid, code, confidence, match_method }.
+ * mesh_sid = pure Sciweon SID hash; code = MSH D-code (Cat-0 / NLM-public-domain, KEPT);
+ * NO cui (the proprietary UMLS identifier never enters the link). `match_method` is the
+ * lineage tag (code_join / string_resolve), renamed from the old `match` key for consistency
+ * with the snomed/loinc cross-link shape.
+ *
  * Fail-soft per [[scope_vs_quality_validation_segregation]]: one unresolved term
  * increments a bucket + continues; it NEVER aborts the paper's other links.
  * No-silent-drop per [[cross_cycle_silent_data_loss]]: every term either
@@ -95,7 +101,10 @@ export function buildMeshLinksForPaper(paper, { byCode, byString }, telemetry) {
         const hit = byCode.get(ui);
         if (hit && !seenSid.has(hit.sid_s)) {
             seenSid.add(hit.sid_s);
-            links.push({ mesh_sid: hit.sid_s, code: ui, match: 'code_join', confidence: 'high' });
+            // PR-UMLS-2a public link allowlist: { mesh_sid, code, confidence, match_method }.
+            // mesh_sid = pure Sciweon SID hash; code = MSH D-code (Cat-0, KEPT); NO cui.
+            // `match_method` (renamed from `match`) aligns with snomed/loinc link naming.
+            links.push({ mesh_sid: hit.sid_s, code: ui, confidence: 'high', match_method: 'code_join' });
             telemetry.code_join_hits++;
         } else if (!hit) {
             telemetry.no_match++;
@@ -115,7 +124,8 @@ export function buildMeshLinksForPaper(paper, { byCode, byString }, telemetry) {
         telemetry.terms_total++;
         if (resolved && !seenSid.has(resolved.sid_s)) {
             seenSid.add(resolved.sid_s);
-            links.push({ mesh_sid: resolved.sid_s, code: resolved.code, match: 'string_resolve', confidence: 'low' });
+            // PR-UMLS-2a public link allowlist: { mesh_sid, code, confidence, match_method }; NO cui.
+            links.push({ mesh_sid: resolved.sid_s, code: resolved.code, confidence: 'low', match_method: 'string_resolve' });
             telemetry.string_resolve_hits++;
         } else if (!resolved) {
             telemetry.no_match++;

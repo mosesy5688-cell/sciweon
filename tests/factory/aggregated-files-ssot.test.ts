@@ -82,12 +82,12 @@ describe('AGGREGATED_FILES SSoT (stage-3 bundle)', () => {
         }
     });
 
-    it('includes mesh-concepts.jsonl -- PR-UMLS-2 F3 placement + stamped corpus', () => {
-        // mesh-concept-linker.js writes it (F3 placement of the ~355K MSH corpus);
-        // stage-3-mesh-sid-stamp.js stamps it in place; the F2 enricher consumes it.
-        // It must reach the aggregated bundle so stamped concepts + CUI cross-link
-        // anchors ship in the daily snapshot.
+    it('includes BOTH mesh files -- PR-UMLS-2/2a (full internal round-trip + public projection)', () => {
+        // mesh-concepts.jsonl = FULL (code + cui + preferred_str) internal working copy;
+        // round-trips F3->F4 via the aggregated prefix so the cross-link enricher has the
+        // full indices. mesh-concepts-public.jsonl = cui-free {sid_s,sid_c,code,str} projection.
         expect(AGGREGATED_FILES).toContain('mesh-concepts.jsonl');
+        expect(AGGREGATED_FILES).toContain('mesh-concepts-public.jsonl');
     });
 
     it('includes BOTH snomed files -- PR-UMLS-3 (full internal round-trip + public projection)', () => {
@@ -100,25 +100,33 @@ describe('AGGREGATED_FILES SSoT (stage-3 bundle)', () => {
 });
 
 describe('SNAPSHOT_FILES SSoT (snapshot-builder publish list)', () => {
-    it('is frozen and contains every AGGREGATED_FILES entry EXCEPT the SNOMED full file', () => {
-        // PR-UMLS-3 FIRST DIVERGENCE: SNAPSHOT_FILES is no longer a verbatim superset of
-        // AGGREGATED_FILES. It omits snomed-concepts.jsonl (the full STR+CODE+CUI artifact)
-        // per RULING 1 (no SNOMED proprietary content in the public snapshot) while keeping
-        // every other aggregated file.
+    const SNAPSHOT_OMITTED = ['snomed-concepts.jsonl', 'mesh-concepts.jsonl'];
+
+    it('is frozen and contains every AGGREGATED_FILES entry EXCEPT the two full UMLS files', () => {
+        // PR-UMLS-3 + PR-UMLS-2a DIVERGENCE: SNAPSHOT_FILES is no longer a verbatim superset of
+        // AGGREGATED_FILES. It omits BOTH full UMLS concept files (snomed-concepts.jsonl and
+        // mesh-concepts.jsonl) -- both carry the UMLS-proprietary cui that the license forbids
+        // redistributing publicly -- while keeping every other aggregated file.
         expect(Object.isFrozen(SNAPSHOT_FILES)).toBe(true);
         for (const f of AGGREGATED_FILES) {
-            if (f === 'snomed-concepts.jsonl') continue; // the ONE intentional omission
+            if (SNAPSHOT_OMITTED.includes(f)) continue; // the two intentional omissions
             expect(SNAPSHOT_FILES).toContain(f);
         }
     });
 
-    it('COMPLIANCE (RULING 1): OMITS the full snomed-concepts.jsonl but KEEPS the public projection', () => {
+    it('COMPLIANCE: OMITS BOTH full UMLS files (cui) but INCLUDES BOTH cui-free public projections', () => {
         // The most compliance-critical assertion in the repo. If a future change re-unifies
-        // SNAPSHOT_FILES with AGGREGATED_FILES (e.g. `[...AGGREGATED_FILES]`), it would
-        // silently republish the proprietary SNOMED STR+CODE+CUI -> this test catches it.
+        // SNAPSHOT_FILES with AGGREGATED_FILES (e.g. `[...AGGREGATED_FILES]`), it would silently
+        // republish the proprietary cui (SNOMED + MeSH) -> this test catches it.
+        // PR-UMLS-2a: mesh-concepts.jsonl OMISSION is the direct breach fix (it previously
+        // shipped 355,249 cui-bearing records into the public snapshot).
         expect(SNAPSHOT_FILES).not.toContain('snomed-concepts.jsonl');
+        expect(SNAPSHOT_FILES).not.toContain('mesh-concepts.jsonl');
         expect(SNAPSHOT_FILES).toContain('snomed-concepts-public.jsonl');
-        expect(AGGREGATED_FILES).toContain('snomed-concepts.jsonl'); // present in aggregated (internal round-trip)
+        expect(SNAPSHOT_FILES).toContain('mesh-concepts-public.jsonl');
+        // both full files remain in aggregated (internal F3->F4 round-trip)
+        expect(AGGREGATED_FILES).toContain('snomed-concepts.jsonl');
+        expect(AGGREGATED_FILES).toContain('mesh-concepts.jsonl');
     });
 
     it('includes drug-labels.jsonl (now via AGGREGATED_FILES, not separate)', () => {

@@ -2,7 +2,9 @@ name: Factory UMLS Bulk
 
 # PR-UMLS-1: first UMLS Metathesaurus ingest -- MeSH (SAB=MSH) concept harvest +
 # 3-SAB distinct-CODE de-risk measurement. Produces the ARTIFACT ONLY
-# (processed/bulk/umls/<release>/mesh-concepts.jsonl.zst + cursor); the SID stamp /
+# (PR-UMLS-2a: internal/processed/bulk/umls/<release>/mesh-concepts.jsonl.zst + cursor --
+# the FULL cui-bearing artifact lives behind the internal/ license fence; the public
+# snapshot receives only the cui-free mesh-concepts-public.jsonl); the SID stamp /
 # cross-link is PR-2. License SSoT = bulk acquisition tracker #47 (UMLS CAT0).
 #
 # Two-job rail (RxNorm template):

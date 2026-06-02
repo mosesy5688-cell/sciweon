@@ -1,16 +1,24 @@
 /**
  * MeSH Concept Linker -- PR-UMLS-2 F3 placement orchestrator.
  *
- * Reads the R2 MeSH bulk artifact (processed/bulk/umls/<release>/
- * mesh-concepts.jsonl.zst per PR-UMLS-1), decompresses (zstd CLI), parses each
- * JSONL line SKIPPING the leading `#`-prefixed license header + blank lines, and
- * writes a pass-through copy to output/linked/mesh-concepts.jsonl for the
- * PR-UMLS-2 SID mesh stamper to consume.
+ * Reads the R2 MeSH bulk artifact via the cursor's r2_data_key (PR-UMLS-2a:
+ * internal/processed/bulk/umls/<release>/mesh-concepts.jsonl.zst -- the FULL
+ * cui-bearing artifact lives behind the internal/ license fence, mirroring SNOMED),
+ * decompresses (zstd CLI), parses each JSONL line SKIPPING the leading `#`-prefixed
+ * license header + blank lines, and writes a pass-through copy to
+ * output/linked/mesh-concepts.jsonl for the PR-UMLS-2 SID mesh stamper to consume.
+ *
+ * LICENSE NOTE (PR-UMLS-2a): the local working copy output/linked/mesh-concepts.jsonl is
+ * the FULL internal artifact (code + cui + preferred_str). It is stamped in place, cross-
+ * linked, and then PROJECTED to a public cui-free file (mesh-concepts-public.jsonl,
+ * {sid_s,sid_c,code,str}) by the F3 mesh-public-builder. The full file is in
+ * AGGREGATED_FILES (internal F3->F4 round-trip) but OMITTED from SNAPSHOT_FILES.
  *
  * Records already carry the SID-S anchor fields (anchor_payload = `MSH:<CODE>`,
  * canonicalization_version) from the PR-1 harvest lib; this linker does NOT
  * transform them -- it is a faithful R2->local placement (the disease-linker
- * shape), the F3 leg of the daily cascade.
+ * shape), the F3 leg of the daily cascade. The read key comes from the cursor
+ * (r2_data_key), so the internal/ path change is honored without a code edit here.
  *
  * DECISION 4 (locked): assert records.length === cursor.record_count. The cursor
  * (written by umls-harvest.js) is the count-of-record truth; on mismatch FAIL
