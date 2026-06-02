@@ -28,8 +28,8 @@ describe('PAPER_SCHEMA -- mesh_descriptors + mesh_links additive fields', () => 
                 { ui: 'D006801', name: 'Humans' },
             ],
             mesh_links: [
-                { mesh_sid: '40374b17c32e1493bd60b96c1c2bd2c6', code: 'D000818', match: 'code_join', confidence: 'high' },
-                { mesh_sid: 'abc', code: 'D006801', match: 'string_resolve', confidence: 'low' },
+                { mesh_sid: '40374b17c32e1493bd60b96c1c2bd2c6', code: 'D000818', confidence: 'high', match_method: 'code_join' },
+                { mesh_sid: 'abc', code: 'D006801', confidence: 'low', match_method: 'string_resolve' },
             ],
         });
         const result = gate(paper, PAPER_SCHEMA, `paper:${paper.id}`);
@@ -46,13 +46,25 @@ describe('PAPER_SCHEMA -- mesh_descriptors + mesh_links additive fields', () => 
         expect(validate(paper, PAPER_SCHEMA).valid).toBe(true);
     });
 
-    it('mesh_links with a bad match enum value fails validation', () => {
+    it('mesh_links with a bad match_method enum value fails validation', () => {
         const paper = basePaper({
-            mesh_links: [{ mesh_sid: 's', code: 'c', match: 'not_a_mode', confidence: 'high' }],
+            mesh_links: [{ mesh_sid: 's', code: 'c', confidence: 'high', match_method: 'not_a_mode' }],
         });
         const { valid, errors } = validate(paper, PAPER_SCHEMA);
         expect(valid).toBe(false);
         expect(errors.some(e => e.path.includes('mesh_links') && /enum/.test(e.error))).toBe(true);
+    });
+
+    it('COMPLIANCE (PR-UMLS-2a): mesh_links itemShape = {mesh_sid, code, confidence, match_method}; NO cui', () => {
+        // The itemShape keys are exactly the 4 public allowlist fields; the proprietary
+        // `cui` is NOT a declared field (and the builder never emits it). A link carrying
+        // `cui` is an extra field; the schema's mesh_sid/code/confidence/match_method are
+        // the only declared keys.
+        const shape = PAPER_SCHEMA.mesh_links.itemShape;
+        expect(Object.keys(shape).sort()).toEqual(['code', 'confidence', 'match_method', 'mesh_sid']);
+        expect(shape).not.toHaveProperty('cui');
+        expect(shape).not.toHaveProperty('match');
+        expect(shape.match_method.enum).toEqual(['code_join', 'string_resolve']);
     });
 
     it('mesh_descriptors entry missing required ui fails validation', () => {

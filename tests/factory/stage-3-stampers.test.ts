@@ -22,13 +22,18 @@ describe('SID_STAMPERS cascade', () => {
 });
 
 describe('POST_STAMP_UMLS_PHASES order', () => {
-    it('public projection runs BEFORE the snomed cross-link enricher', () => {
+    it('public projections run BEFORE the cross-link enrichers (PR-UMLS-2a adds mesh-public-builder)', () => {
         const scripts = POST_STAMP_UMLS_PHASES.map(p => p[1]);
         expect(scripts).toEqual([
+            'mesh-public-builder.js',
             'snomed-public-builder.js',
             'mesh-crosslink-enricher.js',
             'snomed-crosslink-enricher.js',
         ]);
+        // the public builders (which read the FULL cui-bearing files) run before the
+        // cross-link enrichers, both AFTER the stampers seeded sid_s/sid_c.
+        expect(scripts.indexOf('mesh-public-builder.js')).toBeLessThan(scripts.indexOf('mesh-crosslink-enricher.js'));
+        expect(scripts.indexOf('snomed-public-builder.js')).toBeLessThan(scripts.indexOf('snomed-crosslink-enricher.js'));
     });
 });
 

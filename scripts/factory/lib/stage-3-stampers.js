@@ -8,11 +8,15 @@
  * Each new class auto-provisions its counter bucket + crosswalk on first stamp.
  *
  * Post-stamp UMLS phases (also HARD-FAIL), in order:
- *   1. snomed-public-builder   -- project the FULL stamped snomed-concepts.jsonl down to
+ *   1. mesh-public-builder      -- PR-UMLS-2a: project the FULL stamped mesh-concepts.jsonl
+ *      down to the public {sid_s,sid_c,code,str} artifact (CUI DROPPED -- UMLS proprietary
+ *      identifier withheld). MUST run after the MeSH stamper (every concept carries
+ *      sid_s+sid_c) and before the F4 upload. Remediates the CUI-in-public-snapshot breach.
+ *   2. snomed-public-builder   -- project the FULL stamped snomed-concepts.jsonl down to
  *      the Born-Clean public {sid_s,sid_c} artifact (RULING 1). MUST run after the SNOMED
  *      stamper (every concept carries sid_s+sid_c) and before the F4 upload.
- *   2. mesh-crosslink-enricher  -- F2 paper<->mesh_concept (idempotent paper.mesh_links).
- *   3. snomed-crosslink-enricher-- F2 disease+trial<->snomed_concept (idempotent
+ *   3. mesh-crosslink-enricher  -- F2 paper<->mesh_concept (idempotent paper.mesh_links).
+ *   4. snomed-crosslink-enricher-- F2 disease+trial<->snomed_concept (idempotent
  *      snomed_links; ALL links published incl low-confidence; {snomed_sid,confidence,
  *      match_method} only -- ZERO NLM/SNOMED content).
  *
@@ -43,6 +47,7 @@ export const SID_STAMPERS = Object.freeze([
 
 // Post-stamp UMLS phases (HARD-FAIL), run in array order AFTER the stamping cascade.
 export const POST_STAMP_UMLS_PHASES = Object.freeze([
+    ['PR-UMLS-2a MeSH public projection ({sid_s,sid_c,code,str}; cui DROPPED)', 'mesh-public-builder.js'],
     ['PR-UMLS-3 SNOMED public projection (Born-Clean {sid_s,sid_c})', 'snomed-public-builder.js'],
     ['PR-UMLS-2 MeSH cross-link enricher', 'mesh-crosslink-enricher.js'],
     ['PR-UMLS-3 SNOMED cross-link enricher (ALL links + provenance)', 'snomed-crosslink-enricher.js'],
