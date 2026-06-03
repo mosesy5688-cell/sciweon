@@ -51,14 +51,17 @@ describe('SOURCE_REQUIRED_FIELDS registry shape', () => {
         }
     });
 
-    it('gated sources: chembl (drug_status) + rxnorm + openfda_faers (UNII) + open_targets (chembl_id) + fda_srs (inchi_key)', () => {
+    it('gated sources: chembl + open_targets (both drug_status) + rxnorm + openfda_faers (UNII) + fda_srs (inchi_key)', () => {
         const gated = Object.entries(SOURCE_REQUIRED_FIELDS)
             .filter(([, e]) => e.denominator_gate !== null)
             .map(([id]) => id)
             .sort();
         expect(gated).toEqual(['chembl', 'fda_srs', 'open_targets', 'openfda_faers', 'rxnorm']);
         expect(SOURCE_REQUIRED_FIELDS.chembl.denominator_gate).toBe('drug_status');
-        expect((SOURCE_REQUIRED_FIELDS as any).open_targets.denominator_gate).toBe('chembl_id');
+        // PR-OT-6: open_targets re-scoped chembl_id -> drug_status (OT-eligible =
+        // known-drug set, mirrors chembl); wider chembl_id set -> scope_boundary_gate.
+        expect((SOURCE_REQUIRED_FIELDS as any).open_targets.denominator_gate).toBe('drug_status');
+        expect((SOURCE_REQUIRED_FIELDS as any).open_targets.scope_boundary_gate).toBe('chembl_id');
         expect((SOURCE_REQUIRED_FIELDS as any).fda_srs.denominator_gate).toBe('inchi_key');
     });
 

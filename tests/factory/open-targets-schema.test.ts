@@ -6,9 +6,12 @@
  *   - top-level field naming (known_drug_info, target_associations[],
  *     genetic_evidence[]) - matches existing chembl_id / drug_status
  *     convention, NOT nested under external_ids
- *   - chembl_id denominator gate - OT bridges through ChEMBL ID, not
- *     PubChem CID directly (although crossReferences may bypass via
- *     PubChem xref in PR-OT-4 merge implementation)
+ *   - drug_status denominator gate (PR-OT-6 re-scope from chembl_id) -
+ *     OT only enriches KNOWN DRUGS, so the eligible denominator mirrors
+ *     the chembl source's drug_status gate; the wider chembl_id-bearing
+ *     set is surfaced as scope_boundary_gate telemetry, not the denominator.
+ *     (OT still bridges through the ChEMBL molecule key at merge time; the
+ *     gate is the completeness DENOMINATOR, not the join key.)
  *   - confidence weight=8 per SCIWEON_DATA_SOURCES_GLOBAL.md §619
  *   - aggregated bundle file = compounds-enriched.jsonl (OT enriches
  *     the compound entity, not new entity types per DATA_SOURCES §672)
@@ -34,8 +37,12 @@ describe('Open Targets registry entry (PR-OT-2)', () => {
         expect(ot.file).toBe('compounds-enriched.jsonl');
     });
 
-    it('gates by chembl_id (top-level, OT bridges through ChEMBL molecule key)', () => {
-        expect(ot.denominator_gate).toBe('chembl_id');
+    it('gates by drug_status (PR-OT-6 re-scope: OT-eligible = known-drug set, mirrors chembl)', () => {
+        expect(ot.denominator_gate).toBe('drug_status');
+    });
+
+    it('surfaces the wider chembl_id-bearing set as scope_boundary_gate telemetry (PR-OT-6)', () => {
+        expect(ot.scope_boundary_gate).toBe('chembl_id');
     });
 
     it('required_paths uses known_drug_info.chembl_id as strict-enriched proxy', () => {

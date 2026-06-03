@@ -151,9 +151,19 @@ export function pct(numer, denom) {
     return +(100 * numer / denom).toFixed(2);
 }
 
-// Initialize a per-source counter object.
+// Initialize a per-source counter object. PR-OT-6: when a source declares a
+// `scope_boundary_gate` (a WIDER predicate than its denominator_gate, e.g.
+// open_targets chembl_id vs the re-scoped drug_status), two ADDITIVE counters
+// surface the excluded set so the scope boundary stays auditable:
+//   scope_boundary_pass     -- records passing the wider boundary gate.
+//   scope_boundary_excluded -- records passing the boundary gate but NOT the
+//                              denominator_gate (in-the-wider-set yet out of
+//                              this source's in-scope set; never silently lost).
+// Fields are APPENDED (superset of the legacy shape) and only emitted for
+// sources that declare scope_boundary_gate (others keep the exact prior shape),
+// so downstream trend analyzers that read the existing keys are unaffected.
 export function initStat(sourceEntry) {
-    return {
+    const stat = {
         file: sourceEntry.file,
         total: 0,
         gate_pass: 0,
@@ -161,6 +171,12 @@ export function initStat(sourceEntry) {
         raw_pct: 0,
         gate_adjusted_pct: 0,
     };
+    if (sourceEntry.scope_boundary_gate != null) {
+        stat.scope_boundary_gate = sourceEntry.scope_boundary_gate;
+        stat.scope_boundary_pass = 0;
+        stat.scope_boundary_excluded = 0;
+    }
+    return stat;
 }
 
 // One streaming pass over a file, updating all source counters whose
@@ -184,11 +200,23 @@ export async function scanFile(lineStream, sourcesForThisFile) {
         total++;
         for (const [, entry] of sourcesForThisFile) {
             entry._stat.total++;
-            if (checkGate(rec, entry.denominator_gate)) {
+            const inScope = checkGate(rec, entry.denominator_gate);
+            if (inScope) {
                 entry._stat.gate_pass++;
                 if (isFullyEnriched(rec, entry)) {
                     entry._stat.fully_enriched++;
                 }
+            }
+            // PR-OT-6 scope-boundary telemetry: count records inside the wider
+            // boundary set (scope_boundary_gate) but OUTSIDE the in-scope
+            // denominator_gate -- the explicit "matched-but-out-of-scope" set
+            // (e.g. open_targets: chembl_id-bearing but drug_status=null).
+            // gate read from _stat (stamped by initStat) so buildWorking stays
+            // unchanged. Additive: only runs for sources declaring the gate.
+            const boundaryGate = entry._stat.scope_boundary_gate;
+            if (boundaryGate != null && checkGate(rec, boundaryGate)) {
+                entry._stat.scope_boundary_pass++;
+                if (!inScope) entry._stat.scope_boundary_excluded++;
             }
         }
         if (trackDailyMedLinked && Array.isArray(rec.drug_labels) && rec.drug_labels.length > 0) {
