@@ -199,6 +199,10 @@ async function main() {
         // Fix 4: per-source body preserves RAW historical metrics. Deferral
         // telemetry isolated in metadata block so downstream trend analyzers
         // see actual coverage history, not adjusted values.
+        // PR-OT-6: each per-source stat is an ADDITIVE SUPERSET of the legacy
+        // shape -- sources declaring a scope_boundary_gate (open_targets) gain
+        // scope_boundary_{gate,pass,excluded} APPENDED after gate_adjusted_pct;
+        // existing keys are never renamed/removed (downstream unaffected).
         sources,
         dailymed_linked_compounds_pct: totals.dailymedLinkedPct,
         severity_tier: severityTier,

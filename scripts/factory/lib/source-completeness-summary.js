@@ -28,6 +28,11 @@ export function printSummary(rawSources, adjustedSources, telemetry, totals, bel
         const note = telemetry.deferrals_applied.includes(sourceId) ? ' (deferred)'
             : telemetry.expired_deferrals.includes(sourceId) ? ' (deferral EXPIRED)' : '';
         console.log(`  ${sourceId.padEnd(22)} raw=${String(s.raw_pct).padStart(6)}%  gate=${String(s.gate_adjusted_pct).padStart(6)}%  (${s.fully_enriched}/${s.gate_pass} of ${s.total}) [${flag}]${note}`);
+        // PR-OT-6 scope-boundary line: make the matched-but-out-of-scope set
+        // explicit for sources that declare a scope_boundary_gate (e.g. OT).
+        if (s.scope_boundary_gate != null) {
+            console.log(`  ${''.padEnd(22)} scope: enriched ${s.fully_enriched} of ${s.gate_pass} eligible; ${s.scope_boundary_excluded} further ${s.scope_boundary_gate}-bearing out of scope (${s.scope_boundary_pass} ${s.scope_boundary_gate}-bearing total)`);
+        }
     }
     console.log(`  --`);
     console.log(`  Deferrals applied:       ${telemetry.deferrals_applied.length === 0 ? 'none' : telemetry.deferrals_applied.join(', ')}`);
