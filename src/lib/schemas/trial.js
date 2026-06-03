@@ -59,6 +59,27 @@ export const TRIAL_SCHEMA = {
         },
     },
 
+    // PR-UMLS-4b LOINC cross-link (PUBLIC shape). Each link is EXACTLY
+    // { loinc_sid, confidence, match_method } -- loinc_sid is the pure Sciweon SID hash;
+    // confidence (numeric Jaccard) + match_method (lineage tag) are 100% Sciweon-produced
+    // provenance. NO cui / code / str -- ZERO NLM/LOINC proprietary content (RULING 1, founder
+    // NON-NEGOTIABLE; the researcher recovers code/str by joining loinc_sid into
+    // loinc-concepts-public.jsonl). ANCHOR = primary outcome MEASURE titles
+    // (results.primary_outcomes[].title), NOT conditions (that disease axis = SNOMED). Each
+    // outcome title resolves via deterministic token_set_jaccard; ALL links published incl low
+    // confidence (NOT withheld -- the ONLY floor is Jaccard > 0; the consumer filters).
+    loinc_links: {
+        type: 'array', required: false,
+        itemShape: {
+            loinc_sid: { type: 'string', required: true },
+            confidence: { type: 'number', required: true, min: 0, max: 1 },
+            match_method: {
+                type: 'string', required: true,
+                enum: ['token_set_jaccard'],
+            },
+        },
+    },
+
     // Empirical widening (per primary-source widen-schema policy):
     //   50 → 200. Strategic FDA harvest 2026-05-17 halted at trial
     //   NCT03878524 with 56 interventions. Basket/umbrella oncology

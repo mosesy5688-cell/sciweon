@@ -24,7 +24,7 @@ describe('SID_STAMPERS cascade', () => {
 });
 
 describe('POST_STAMP_UMLS_PHASES order', () => {
-    it('all public projections run BEFORE the cross-link enrichers (PR-UMLS-4 adds loinc-public-builder)', () => {
+    it('all public projections run BEFORE the cross-link enrichers (PR-UMLS-4b adds loinc-crosslink-enricher last)', () => {
         const scripts = POST_STAMP_UMLS_PHASES.map(p => p[1]);
         expect(scripts).toEqual([
             'mesh-public-builder.js',
@@ -32,14 +32,16 @@ describe('POST_STAMP_UMLS_PHASES order', () => {
             'loinc-public-builder.js',
             'mesh-crosslink-enricher.js',
             'snomed-crosslink-enricher.js',
+            'loinc-crosslink-enricher.js',
         ]);
         // the public builders (which read the FULL cui-bearing files) run before the
         // cross-link enrichers, both AFTER the stampers seeded sid_s/sid_c.
         expect(scripts.indexOf('mesh-public-builder.js')).toBeLessThan(scripts.indexOf('mesh-crosslink-enricher.js'));
         expect(scripts.indexOf('snomed-public-builder.js')).toBeLessThan(scripts.indexOf('snomed-crosslink-enricher.js'));
         expect(scripts.indexOf('loinc-public-builder.js')).toBeLessThan(scripts.indexOf('mesh-crosslink-enricher.js'));
-        // NO loinc crosslink enricher exists (concept-class only; trial crosslink = PR-4b).
-        expect(scripts).not.toContain('loinc-crosslink-enricher.js');
+        // PR-UMLS-4b: the loinc crosslink enricher NOW exists and runs AFTER loinc-public-builder.
+        expect(scripts).toContain('loinc-crosslink-enricher.js');
+        expect(scripts.indexOf('loinc-public-builder.js')).toBeLessThan(scripts.indexOf('loinc-crosslink-enricher.js'));
     });
 });
 
