@@ -4,7 +4,7 @@
  *
  * Two LOCKED invariants (mirroring snomed-cold-start.test.ts):
  *   Invariant 1 -- cursor MISSING (404) -> the LOINC sub-pipeline (linker + 1.10 stamp +
- *     public-builder; NO crosslink -- that is PR-4b) is skipped GRACEFULLY; NO uncaught
+ *     public-builder + crosslink-enricher [PR-4b]) is skipped GRACEFULLY; NO uncaught
  *     exception; the cascade + the other stampers + the MeSH cross-link still proceed; the
  *     loud-warning path runs.
  *   Invariant 2 -- cursor EXISTS but the downstream artifact read fails -> HARD FAIL (throws).
@@ -53,21 +53,22 @@ describe('isLoincColdStart -- the single cursor-existence discriminator', () => 
     });
 });
 
-describe('LOINC_CASCADE_SCRIPTS membership -- concept-class only (NO crosslink)', () => {
-    it('contains the stamper + public-builder, frozen, length 2', () => {
+describe('LOINC_CASCADE_SCRIPTS membership -- stamper + public-builder + crosslink (PR-4b)', () => {
+    it('contains the stamper + public-builder + crosslink enricher, frozen, length 3', () => {
         expect(Object.isFrozen(LOINC_CASCADE_SCRIPTS)).toBe(true);
         expect(LOINC_CASCADE_SCRIPTS).toContain('stage-3-loinc-sid-stamp.js');
         expect(LOINC_CASCADE_SCRIPTS).toContain('loinc-public-builder.js');
-        expect(LOINC_CASCADE_SCRIPTS).toHaveLength(2);
+        expect(LOINC_CASCADE_SCRIPTS).toContain('loinc-crosslink-enricher.js');
+        expect(LOINC_CASCADE_SCRIPTS).toHaveLength(3);
     });
-    it('contains NO crosslink enricher (PR-4b split)', () => {
-        for (const s of LOINC_CASCADE_SCRIPTS) expect(s).not.toContain('crosslink');
+    it('contains the crosslink enricher (PR-4b -- no longer split out)', () => {
+        expect(LOINC_CASCADE_SCRIPTS.some(s => s.includes('crosslink'))).toBe(true);
     });
     it('the LOINC entries appear in the actual cascade SSoT', () => {
         const fullSeq = [...SID_STAMPERS.map(s => s[1]), ...POST_STAMP_UMLS_PHASES.map(p => p[1])];
         for (const s of LOINC_CASCADE_SCRIPTS) expect(fullSeq).toContain(s);
-        // there is NO loinc-crosslink-enricher.js anywhere in the cascade
-        expect(fullSeq).not.toContain('loinc-crosslink-enricher.js');
+        // the loinc-crosslink-enricher.js is wired into the cascade (PR-4b)
+        expect(fullSeq).toContain('loinc-crosslink-enricher.js');
     });
 });
 

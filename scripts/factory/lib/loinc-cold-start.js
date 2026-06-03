@@ -8,7 +8,7 @@
  * written ONLY by a successful harvest):
  *
  *   INVARIANT 1 -- cursor MISSING (NoSuchKey / 404) = cold start = GRACEFUL SKIP.
- *     The whole LOINC sub-pipeline (all 3 stages: linker, 1.10 stamp, public-builder) is
+ *     The whole LOINC sub-pipeline (linker, 1.10 stamp, public-builder, crosslink-enricher) is
  *     excluded for this cycle so the snapshot still publishes (without LOINC data). A LOUD
  *     multi-line warning banner is emitted so the skip is never silent.
  *
@@ -20,8 +20,9 @@
  * The discriminator is CURSOR EXISTENCE (a single R2 HEAD), determined ONCE and threaded so
  * all stages honor it consistently -- one stage must never skip while another throws.
  *
- * NOTE (Decision A, SPLIT): PR-UMLS-4 ships the concept class ONLY. The trial<->LOINC
- * crosslink is DEFERRED to PR-4b, so LOINC_CASCADE_SCRIPTS contains NO crosslink enricher.
+ * NOTE (Decision A, SPLIT): PR-UMLS-4 shipped the concept class; PR-UMLS-4b adds the
+ * trial<->LOINC crosslink, so LOINC_CASCADE_SCRIPTS now also carries the crosslink enricher
+ * (it shares the LOINC cold-start cursor -- skipped together when the bulk cursor is absent).
  */
 
 import { HeadObjectCommand } from '@aws-sdk/client-s3';
@@ -50,12 +51,13 @@ export async function isLoincColdStart({ client, bucket }) {
 export function warnLoincColdStart() {
     console.warn('============= [CRITICAL LAUNCH WARNING] =============');
     console.warn('LOINC initial harvest data not yet materialized in R2.');
-    console.warn('Skipping LOINC sub-pipeline (linker, 1.10 stamp, public-builder) for this cycle.');
+    console.warn('Skipping LOINC sub-pipeline (linker, 1.10 stamp, public-builder, crosslink-enricher) for this cycle.');
     console.warn('=====================================================');
 }
 
-/** Cascade entries (stamper + post-stamp UMLS phase) that belong to the LOINC sub-pipeline. */
+/** Cascade entries (stamper + post-stamp UMLS phases) that belong to the LOINC sub-pipeline. */
 export const LOINC_CASCADE_SCRIPTS = Object.freeze([
     'stage-3-loinc-sid-stamp.js',
     'loinc-public-builder.js',
+    'loinc-crosslink-enricher.js',
 ]);

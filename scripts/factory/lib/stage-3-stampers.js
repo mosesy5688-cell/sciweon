@@ -22,7 +22,9 @@
  *   5. snomed-crosslink-enricher-- F2 disease+trial<->snomed_concept (idempotent
  *      snomed_links; ALL links published incl low-confidence; {snomed_sid,confidence,
  *      match_method} only -- ZERO NLM/SNOMED content).
- *   (NO loinc crosslink: the trial<->LOINC crosslink is DEFERRED to PR-4b per Decision A SPLIT.)
+ *   6. loinc-crosslink-enricher -- PR-UMLS-4b: F2 trial<->loinc_concept (idempotent loinc_links;
+ *      deterministic token_set_jaccard over primary outcome titles; ALL links published incl low
+ *      confidence; {loinc_sid,confidence,match_method} only -- ZERO NLM/LOINC content).
  *
  * COLD-START GUARD: runSidStampingCascade honors a skipSnomed flag (PR-UMLS-3; excludes the 3
  * SNOMED_CASCADE_SCRIPTS entries) and a skipLoinc flag (PR-UMLS-4; excludes the 2
@@ -62,6 +64,7 @@ export const POST_STAMP_UMLS_PHASES = Object.freeze([
     ['PR-UMLS-4 LOINC public projection ({sid_s,sid_c,code,str}; cui DROPPED)', 'loinc-public-builder.js'],
     ['PR-UMLS-2 MeSH cross-link enricher', 'mesh-crosslink-enricher.js'],
     ['PR-UMLS-3 SNOMED cross-link enricher (ALL links + provenance)', 'snomed-crosslink-enricher.js'],
+    ['PR-UMLS-4b LOINC cross-link enricher', 'loinc-crosslink-enricher.js'],
 ]);
 
 /**
@@ -70,8 +73,8 @@ export const POST_STAMP_UMLS_PHASES = Object.freeze([
  * Cold-start guard (Invariant 1), independent per vocabulary:
  *   - `skipSnomed` true (PR-UMLS-3): the 3 SNOMED cascade entries (the `1.9 snomed` stamper +
  *     the snomed-public-builder + the snomed-crosslink-enricher) are EXCLUDED.
- *   - `skipLoinc` true (PR-UMLS-4): the 2 LOINC cascade entries (the `1.10 loinc` stamper +
- *     the loinc-public-builder; NO crosslink -- that is PR-4b) are EXCLUDED.
+ *   - `skipLoinc` true (PR-UMLS-4 + PR-4b): the 3 LOINC cascade entries (the `1.10 loinc`
+ *     stamper + the loinc-public-builder + the loinc-crosslink-enricher) are EXCLUDED.
  * Excluding a vocabulary lets the daily cascade + snapshot still complete WITHOUT it this
  * cycle; every other stamper + the MeSH cross-link enricher run UNCONDITIONALLY. When a flag
  * is false (its bulk cursor exists), its entries run and a broken downstream artifact
