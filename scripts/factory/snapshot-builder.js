@@ -29,6 +29,7 @@ import path from 'path';
 import { createHash } from 'crypto';
 import { gzipSync } from 'zlib';
 import { SNAPSHOT_FILES } from './lib/aggregated-files.js';
+import { LOINC_ATTRIBUTION } from './lib/umls-concept-streams.js';
 
 const SOURCE_DIR = './output/linked';
 const SNAPSHOT_ROOT = './snapshots';
@@ -103,6 +104,18 @@ async function main() {
         manifest.total_compressed_bytes += compressed.length;
         manifest.total_records += lines;
         console.log(`  ${fname.padEnd(35)} ${lines.toString().padStart(7)} records  ${(raw.length / 1024).toFixed(1).padStart(8)} KB -> ${(compressed.length / 1024).toFixed(1).padStart(8)} KB (${(100 - 100 * compressed.length / raw.length).toFixed(0)}% savings)`);
+    }
+
+    // PR-UMLS-4: emit the verbatim Regenstrief LOINC attribution into a manifest
+    // license_notices block when the LOINC public projection is present in this snapshot.
+    // The LOINC license REQUIRES this notice on products that include LOINC codes; this
+    // manifest block is one of the two real public-facing layers carrying it (the other is
+    // the loinc-concepts-public.jsonl `#`-comment header). Additive + minimal: when LOINC is
+    // absent (cold start) the block is simply not added.
+    if (manifest.files.some(f => f.filename === 'loinc-concepts-public.jsonl.gz')) {
+        manifest.license_notices = [
+            { source: 'loinc', artifact: 'loinc-concepts-public.jsonl', notice: LOINC_ATTRIBUTION },
+        ];
     }
 
     const manifestPath = path.join(snapshotDir, 'manifest.json');

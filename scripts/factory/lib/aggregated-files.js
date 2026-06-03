@@ -97,6 +97,20 @@ export const AGGREGATED_FILES = Object.freeze([
     // projectSnomedPublic allowlist; CUI annihilated, no STR/CODE). This is the ONLY
     // SNOMED-derived file permitted into the public snapshot (it is in BOTH lists).
     'snomed-concepts-public.jsonl',
+    // PR-UMLS-4: loinc-concepts.jsonl is the FULL (code + cui + preferred_str + sid_s + sid_c)
+    // INTERNAL working copy -- loinc-concept-linker.js places it, stage-3-loinc-sid-stamp.js
+    // stamps it. It is in AGGREGATED_FILES ONLY so it round-trips F3->F4 via the aggregated
+    // prefix (a future PR-4b cross-link enricher needs the full code/cui/string indices). It is
+    // DELIBERATELY OMITTED from SNAPSHOT_FILES because its `cui` is the UMLS-Metathesaurus-
+    // proprietary identifier whose public redistribution the license forbids. See the
+    // SNAPSHOT_FILES divergence note below (3-way omission: mesh + snomed + loinc).
+    'loinc-concepts.jsonl',
+    // PR-UMLS-4 COMPLIANCE CORE: loinc-concepts-public.jsonl is the Cat-0 public projection --
+    // EXACTLY {sid_s, sid_c, code, str} per concept (loinc-public-builder.js via
+    // projectUmlsPublic('LOINC', ...); cui DROPPED, Cat-0 code+str KEPT under the Regenstrief
+    // no-cost license). This is the ONLY LOINC-derived file permitted into the public snapshot
+    // (it is in BOTH lists) and carries the verbatim Regenstrief attribution header.
+    'loinc-concepts-public.jsonl',
     // Phase 1.6a: sal-assertions.jsonl produced by scripts/factory/stage-3-sal-sid-stamp.js
     // (content-addressed UUID v5 anchored assertions; bioactivity-as-assertion in
     // PR 1.6a, OT clinical_indication additively appended in PR 1.6c).
@@ -112,31 +126,37 @@ export const AGGREGATED_FILES = Object.freeze([
  *
  * ============================ DIVERGENCE FROM AGGREGATED_FILES ============================
  * Until PR-UMLS-3, SNAPSHOT_FILES === AGGREGATED_FILES verbatim. PR-UMLS-3 made this an
- * EXPLICIT ALLOWLIST that omitted the FULL `snomed-concepts.jsonl`. PR-UMLS-2a EXTENDS the
- * divergence: BOTH full UMLS concept files are now SNAPSHOT-omitted for CUI/license reasons,
- * while their cui-free public projections are KEPT:
+ * EXPLICIT ALLOWLIST that omitted the FULL `snomed-concepts.jsonl`. PR-UMLS-2a + PR-UMLS-4
+ * EXTEND the divergence: ALL THREE full UMLS concept files are now SNAPSHOT-omitted for
+ * CUI/license reasons, while their cui-free public projections are KEPT:
  *
  *   OMITTED:  snomed-concepts.jsonl  (FULL: STR + raw CODE + CUI)
  *             mesh-concepts.jsonl    (FULL: code + CUI + preferred_str)
+ *             loinc-concepts.jsonl   (FULL: code + CUI + preferred_str)  [PR-UMLS-4]
  *   KEPT:     snomed-concepts-public.jsonl  (Born-Clean {sid_s,sid_c})
  *             mesh-concepts-public.jsonl    (Cat-0 {sid_s,sid_c,code,str}; cui DROPPED)
+ *             loinc-concepts-public.jsonl   (Cat-0 {sid_s,sid_c,code,str}; cui DROPPED)  [PR-UMLS-4]
  *
  * WHY (founder NON-NEGOTIABLE -- the most compliance-critical line in the repo): the CUI is an
  * NLM-proprietary UMLS Metathesaurus structural identifier whose public redistribution the
- * UMLS License FORBIDS (universal -- it applies to MeSH as well as SNOMED). The public snapshot
+ * UMLS License FORBIDS (universal -- it applies to MeSH, SNOMED, AND LOINC). The public snapshot
  * is served to NON-licensee researchers. SNOMED is ADDITIONALLY Affiliate-restricted on its STR
  * + raw CODE (so its public projection is Sciweon SID hashes ONLY); MeSH code+str are Cat-0 /
- * NLM-public-domain and are KEPT. The PR-UMLS-2a breach: mesh-concepts.jsonl (355,249 records)
- * shipped into the public snapshot WITH cui -> an active redistribution breach. The fix moves
- * the full file to AGGREGATED-only and publishes only the cui-free mesh-concepts-public.jsonl.
- * If a future change re-unifies these lists (`[...AGGREGATED_FILES]`), it would silently
- * republish BOTH proprietary payloads -- the aggregated-files-ssot test pins both omissions so
- * any such re-unify is caught in CI.
+ * NLM-public-domain and LOINC code+str are no-cost under the Regenstrief license -- both KEPT.
+ * The PR-UMLS-2a breach: mesh-concepts.jsonl (355,249 records) shipped into the public snapshot
+ * WITH cui -> an active redistribution breach. The fix moves each full file to AGGREGATED-only
+ * and publishes only the cui-free *-public.jsonl projections. If a future change re-unifies these
+ * lists (`[...AGGREGATED_FILES]`), it would silently republish ALL THREE proprietary cui payloads
+ * -- the aggregated-files-ssot test pins all three omissions so any such re-unify is caught in CI.
  *
  * This is an EXPLICIT, per-file allowlist (NOT a spread of AGGREGATED_FILES) precisely so the
- * two omissions are intentional, visible, and reviewable rather than an accidental inclusion.
+ * three omissions are intentional, visible, and reviewable rather than an accidental inclusion.
  * ===============================================================================================
  */
 export const SNAPSHOT_FILES = Object.freeze(
-    AGGREGATED_FILES.filter(f => f !== 'snomed-concepts.jsonl' && f !== 'mesh-concepts.jsonl'),
+    AGGREGATED_FILES.filter(f =>
+        f !== 'snomed-concepts.jsonl'
+        && f !== 'mesh-concepts.jsonl'
+        && f !== 'loinc-concepts.jsonl', // PR-UMLS-4: 3-way omission (all three full cui-bearing files)
+    ),
 );

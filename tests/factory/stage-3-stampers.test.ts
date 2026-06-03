@@ -11,22 +11,25 @@ import {
 } from '../../scripts/factory/lib/stage-3-stampers.js';
 
 describe('SID_STAMPERS cascade', () => {
-    it('is a frozen array; the 10th entry is the snomed_concept stamper', () => {
+    it('is a frozen array; the 10th entry is snomed, the 11th is the loinc_concept stamper', () => {
         expect(Object.isFrozen(SID_STAMPERS)).toBe(true);
         const scripts = SID_STAMPERS.map(s => s[1]);
         expect(scripts).toContain('stage-3-mesh-sid-stamp.js');
         expect(scripts).toContain('stage-3-snomed-sid-stamp.js');
-        // snomed stamps AFTER mesh.
+        expect(scripts).toContain('stage-3-loinc-sid-stamp.js');
+        // snomed stamps AFTER mesh; loinc stamps AFTER snomed (PR-UMLS-4 11th entry).
         expect(scripts.indexOf('stage-3-snomed-sid-stamp.js')).toBeGreaterThan(scripts.indexOf('stage-3-mesh-sid-stamp.js'));
+        expect(scripts.indexOf('stage-3-loinc-sid-stamp.js')).toBeGreaterThan(scripts.indexOf('stage-3-snomed-sid-stamp.js'));
     });
 });
 
 describe('POST_STAMP_UMLS_PHASES order', () => {
-    it('public projections run BEFORE the cross-link enrichers (PR-UMLS-2a adds mesh-public-builder)', () => {
+    it('all public projections run BEFORE the cross-link enrichers (PR-UMLS-4 adds loinc-public-builder)', () => {
         const scripts = POST_STAMP_UMLS_PHASES.map(p => p[1]);
         expect(scripts).toEqual([
             'mesh-public-builder.js',
             'snomed-public-builder.js',
+            'loinc-public-builder.js',
             'mesh-crosslink-enricher.js',
             'snomed-crosslink-enricher.js',
         ]);
@@ -34,6 +37,9 @@ describe('POST_STAMP_UMLS_PHASES order', () => {
         // cross-link enrichers, both AFTER the stampers seeded sid_s/sid_c.
         expect(scripts.indexOf('mesh-public-builder.js')).toBeLessThan(scripts.indexOf('mesh-crosslink-enricher.js'));
         expect(scripts.indexOf('snomed-public-builder.js')).toBeLessThan(scripts.indexOf('snomed-crosslink-enricher.js'));
+        expect(scripts.indexOf('loinc-public-builder.js')).toBeLessThan(scripts.indexOf('mesh-crosslink-enricher.js'));
+        // NO loinc crosslink enricher exists (concept-class only; trial crosslink = PR-4b).
+        expect(scripts).not.toContain('loinc-crosslink-enricher.js');
     });
 });
 

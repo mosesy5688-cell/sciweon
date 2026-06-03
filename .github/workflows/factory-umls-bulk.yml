@@ -184,3 +184,47 @@ jobs:
         run: |
           echo "## PR-UMLS-3 ingest-snomed (SAB=SNOMEDCT_US, internal/ prefix)" >> $GITHUB_STEP_SUMMARY
           echo "- dry-run: ${{ github.event.inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
+
+  # PR-UMLS-4: LOINC harvest (SAB=LNC). Shares the check-version probe manifest; its OWN
+  # cursor (state/umls-loinc-bulk-cursor.json) gates re-ingest. The distinct-LNC count is
+  # MEASURED at harvest (upper bound 306,528, NOT assumed; de-risked < 1e6 -> NO sharding)
+  # over the same 18M-row MRCONSO stream. LICENSE FENCE (RULING 2): the FULL artifact is
+  # written to the internal/ R2 prefix (internal/processed/bulk/umls/<release>/
+  # loinc-concepts.jsonl.zst), NEVER a publicly-servable path; the public snapshot exposes
+  # only the Cat-0 projection {sid_s,sid_c,code,str} (cui DROPPED) + the verbatim Regenstrief
+  # attribution. NON-CONFLATION: this LNC concept axis is DISTINCT from spl-parser.js
+  # LOINC_SECTIONS (SPL document-section codes) -- a different axis that never joins.
+  # Concept-class only; the trial<->LOINC crosslink is DEFERRED to PR-4b (Decision A SPLIT).
+  ingest-loinc:
+    needs: check-version
+    if: needs.check-version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    # Comparable to MeSH: LNC carries fewer atoms than SNOMED, collapsed over the same 2.34GB /
+    # 18M-row MRCONSO stream + the ~5.82GB release download.
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install deps
+        run: npm ci
+      - name: Install zstd CLI
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zstd
+      - name: Download probe manifest (Rail 8)
+        uses: actions/download-artifact@v4
+        with:
+          name: umls-probe-manifest
+          path: /tmp
+      - name: Run streaming LOINC harvester (SAB=LNC, internal/ prefix)
+        run: |
+          set -e
+          ARGS="--probe-json=/tmp/umls-probe.json"
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          node scripts/factory/umls-loinc-harvest.js $ARGS
+      - name: Ingest-loinc summary
+        if: always()
+        run: |
+          echo "## PR-UMLS-4 ingest-loinc (SAB=LNC, internal/ prefix)" >> $GITHUB_STEP_SUMMARY
+          echo "- dry-run: ${{ github.event.inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
