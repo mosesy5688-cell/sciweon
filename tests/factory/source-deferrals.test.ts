@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import {
     SOURCE_DEFERRALS, isDeferralExpired, applyDeferrals,
 } from '../../scripts/factory/lib/source-deferrals.js';
-import { aggregateSeverity } from '../../scripts/factory/lib/source-completeness-helpers.js';
+import { aggregateSeverity, severityTierForPct } from '../../scripts/factory/lib/source-completeness-helpers.js';
 
 const TEST_DEFERRALS = Object.freeze({
     rxnorm: { expected_coverage_pct: 8.0, due_date: '2026-06-15', responsible_pr: 'X', note: 'n' },
@@ -11,9 +11,9 @@ const TEST_DEFERRALS = Object.freeze({
 });
 
 describe('SOURCE_DEFERRALS SSoT shape', () => {
-    it('has 6 first-class entries (PR-FDA-SRS-3 adds fda_srs)', () => {
+    it('has 5 first-class entries (PR-OT-7 removes open_targets; passes on merit)', () => {
         expect(Object.keys(SOURCE_DEFERRALS).sort()).toEqual(
-            ['fda_srs', 'open_targets', 'openfda_faers', 'pubchem_bioassay', 'rxnorm', 'unichem']
+            ['fda_srs', 'openfda_faers', 'pubchem_bioassay', 'rxnorm', 'unichem']
         );
     });
     it('every entry has expected_coverage_pct + due_date + responsible_pr + note', () => {
@@ -104,14 +104,39 @@ describe('Happy path + non-deferred sources', () => {
             unichem:          { gate_adjusted_pct: 40.16 },
             openfda_faers:    { gate_adjusted_pct: 3.04 },
             pubchem_bioassay: { gate_adjusted_pct: 5.45 },
-            open_targets:     { gate_adjusted_pct: 22.6 },
         };
         const r = applyDeferrals(raw, SOURCE_DEFERRALS, '2026-05-25T00:00:00.000Z');
         expect(r.telemetry.deferrals_applied.sort()).toEqual(
-            ['open_targets', 'openfda_faers', 'pubchem_bioassay', 'rxnorm', 'unichem']
+            ['openfda_faers', 'pubchem_bioassay', 'rxnorm', 'unichem']
         );
         expect(r.telemetry.new_regressions).toEqual([]);
         expect(aggregateSeverity(r.adjustedStats)).toBe(0);
+    });
+});
+
+describe('PR-OT-7: open_targets passes on merit, no deferral; thresholds = tripwire', () => {
+    it('open_targets has NO deferral entry (removed PR-OT-7)', () => {
+        expect(SOURCE_DEFERRALS).not.toHaveProperty('open_targets');
+    });
+    it('applyDeferrals leaves an open_targets stat untouched (no deferral path)', () => {
+        const raw = { open_targets: { gate_adjusted_pct: 73.45, severity_tier: 7 } };
+        const r = applyDeferrals(raw, SOURCE_DEFERRALS, '2026-05-25T00:00:00.000Z');
+        // severity_tier is NOT overwritten by a deferral; stays as-is
+        expect(r.adjustedStats.open_targets.severity_tier).toBe(7);
+        expect(r.telemetry.deferrals_applied).toEqual([]);
+        expect(r.telemetry.new_regressions).toEqual([]);
+    });
+    it('re-scoped baseline B=73.45% -> base severity_tier 0 (passes on merit via {10,20,35})', () => {
+        // Same path source-completeness.js uses: severityTierForPct(pct, source)
+        // with the open_targets per-source {hardfail:10,warn:20,info:35}.
+        expect(severityTierForPct(73.45, 'open_targets')).toBe(0);
+    });
+    it('a real OT-ingest regression (5.0% < hardfail 10) -> tier 1 HARDFAIL tripwire still fires', () => {
+        expect(severityTierForPct(5.0, 'open_targets')).toBe(1);
+    });
+    it('the OT hardfail boundary behaves as a tripwire', () => {
+        expect(severityTierForPct(9.99, 'open_targets')).toBe(1);   // < hardfail=10 -> HARDFAIL tripwire
+        expect(severityTierForPct(10.0, 'open_targets')).toBe(2);   // >= hardfail, < warn=20 -> WARN
     });
 });
 

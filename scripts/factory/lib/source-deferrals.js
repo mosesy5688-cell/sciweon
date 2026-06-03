@@ -105,10 +105,12 @@ export const SOURCE_DEFERRALS = Object.freeze({
         responsible_pr: 'Phase-1.5-pre.2',
         note: 'PubChem BioAssay ingest gated by bioactivity multi-canon upgrade. Currently 5.45% gate-adjusted; floor at 5.0% surfaces if PubChem source revoked.',
     }),
-    open_targets: Object.freeze({
-        expected_coverage_pct: 20.0,
-        due_date: '2026-08-15',
-        responsible_pr: 'PR-OT-5',
-        note: 'OT evidence table (10M+ rows) ingest deferred post-Phase-1.6. Currently 22.6% gate-adjusted; floor at 20.0% surfaces 2.6pp drift.',
-    }),
+    // PR-OT-7 (2026-06-03) REMOVED the open_targets deferral: PR-OT-6 re-scoped
+    // the OT denominator (chembl_id -> drug_status) and Source Completeness run
+    // 26897035381 measured the re-scoped baseline B = 73.45% (4141/5638), well
+    // above OT's per-source info threshold (35; source-required-fields.js). OT
+    // now passes on MERIT via the standard severity path, so the deferral floor
+    // was vestigial machinery. NOT a floor-lower -- the real metric passes. The
+    // OT {hardfail:10,warn:20,info:35} thresholds remain as the regression
+    // tripwire (a real OT-ingest break drops the % below hardfail=10).
 });

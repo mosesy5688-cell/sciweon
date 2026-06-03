@@ -217,14 +217,13 @@ export const SOURCE_REQUIRED_FIELDS = Object.freeze({
         // (drug_status) gate, surfaced as an explicit scope_boundary_excluded
         // count so the "ChEMBL-matched but out of OT scope" set stays visible.
         scope_boundary_gate: 'chembl_id',
-        // DEFERRED CALIBRATION (PR-OT-6 founder ruling): these thresholds (and
-        // the 20.0% open_targets floor in source-deferrals.js, NOT touched
-        // here) were calibrated against the OLD chembl_id denominator (PR-OT-2
-        // estimate: ~7% of 69977 have chembl_id, ceiling ~40-50% over that
-        // wider base) and are now MIS-CALIBRATED against the smaller, stationary
-        // drug_status denominator B. VALUES are LEFT UNCHANGED this PR;
-        // re-calibration against the measured re-scoped baseline B is DEFERRED
-        // to a follow-up PR after the first post-merge cascade run.
+        // PR-OT-7 (2026-06-03) measured the re-scoped baseline B = 73.45%
+        // (4141/5638, drug_status denominator) on Source Completeness run
+        // 26897035381. The open_targets deferral (source-deferrals.js) is
+        // REMOVED: OT now passes ON MERIT via the standard severity path
+        // (73.45% > info=35 -> tier 0). The {hardfail:10,warn:20,info:35}
+        // VALUES are LEFT UNCHANGED and remain the regression tripwire -- a
+        // real OT-ingest break drops the % below hardfail=10 -> tier 1 HARDFAIL.
         severity_thresholds: Object.freeze({ hardfail: 10, warn: 20, info: 35 }),
     }),
 });
