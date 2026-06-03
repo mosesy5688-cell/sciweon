@@ -23,15 +23,9 @@ import { gate } from './lib/validation-gate.js';
 import { buildTrialNegEvidence } from './lib/neg-builders-trial.js';
 import { buildBioassayInactive, buildPaperRetraction } from './lib/neg-builders-paper-bio.js';
 import { buildFdaSignals } from './lib/neg-builders-fda.js';
+import { loadJsonlStrict } from './lib/jsonl-io.js';
 
 const DATA_DIR = './output/linked';
-
-async function loadJsonl(file) {
-    try {
-        const c = await fs.readFile(file, 'utf-8');
-        return c.split('\n').filter(Boolean).map(l => JSON.parse(l));
-    } catch { return []; }
-}
 
 async function writeJsonl(file, records) {
     await fs.writeFile(file, records.map(r => JSON.stringify(r)).join('\n'));
@@ -41,11 +35,11 @@ async function main() {
     console.log('[NEG-BUILDER] V0.4.2 — synthesize NegEvidence entity');
 
     const [trials, papers, bioactivities, compounds, negRaw] = await Promise.all([
-        loadJsonl(path.join(DATA_DIR, 'trials.jsonl')),
-        loadJsonl(path.join(DATA_DIR, 'papers.jsonl')),
-        loadJsonl(path.join(DATA_DIR, 'bioactivities.jsonl')),
-        loadJsonl(path.join(DATA_DIR, 'compounds-enriched.jsonl')),
-        loadJsonl(path.join(DATA_DIR, 'negative-evidence-raw.jsonl')),
+        loadJsonlStrict(path.join(DATA_DIR, 'trials.jsonl')),
+        loadJsonlStrict(path.join(DATA_DIR, 'papers.jsonl')),
+        loadJsonlStrict(path.join(DATA_DIR, 'bioactivities.jsonl')),
+        loadJsonlStrict(path.join(DATA_DIR, 'compounds-enriched.jsonl')),
+        loadJsonlStrict(path.join(DATA_DIR, 'negative-evidence-raw.jsonl')),
     ]);
     console.log(`[NEG-BUILDER] Inputs loaded: ${trials.length} trials, ${papers.length} papers, ${bioactivities.length} bioactivities, ${compounds.length} compounds, ${negRaw.length} raw neg evidence`);
 

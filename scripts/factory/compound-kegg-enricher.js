@@ -20,17 +20,11 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { searchDrugByName, fetchDrugEntry, REQUEST_DELAY_MS } from '../ingestion/adapters/kegg-adapter.js';
+import { loadJsonlStrict } from './lib/jsonl-io.js';
 
 const DATA_DIR = './output/linked';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-async function loadJsonl(file) {
-    try {
-        const c = await fs.readFile(file, 'utf-8');
-        return c.split('\n').filter(Boolean).map(l => JSON.parse(l));
-    } catch { return []; }
-}
 
 async function writeJsonl(file, records) {
     await fs.writeFile(file, records.map(r => JSON.stringify(r)).join('\n'));
@@ -75,7 +69,7 @@ async function main() {
     console.log('[KEGG-ENRICHER] V0.3.5 #3 — drug-target-pathway network');
 
     const file = path.join(DATA_DIR, 'compounds-enriched.jsonl');
-    const compounds = await loadJsonl(file);
+    const compounds = await loadJsonlStrict(file);
     console.log(`[KEGG-ENRICHER] Loaded ${compounds.length} compounds`);
 
     // C2-10: gate KEGG queries to compounds with chembl_id or unii. Without

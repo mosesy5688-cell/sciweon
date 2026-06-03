@@ -20,16 +20,10 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { enrichPapersWithMeshLinks } from './lib/mesh-crosslink-helpers.js';
+import { loadJsonlStrict, assertLoaded } from './lib/jsonl-io.js';
 
 const OUTPUT_DIR = './output/linked';
 const LABEL = 'MESH-XLINK';
-
-async function loadJsonl(file) {
-    try {
-        const c = await fs.readFile(file, 'utf-8');
-        return c.split('\n').filter(Boolean).map(l => JSON.parse(l));
-    } catch { return []; }
-}
 
 async function writeJsonl(file, records) {
     // join() is stack-safe at any size (Defect-15 lesson).
@@ -41,13 +35,15 @@ async function main() {
 
     const papersPath = path.join(OUTPUT_DIR, 'papers.jsonl');
     const meshPath = path.join(OUTPUT_DIR, 'mesh-concepts.jsonl');
-    const papers = await loadJsonl(papersPath);
-    const concepts = await loadJsonl(meshPath);
+    const papers = await loadJsonlStrict(papersPath);
+    const concepts = await loadJsonlStrict(meshPath);
     console.log(`[${LABEL}] Loaded ${papers.length} papers, ${concepts.length} stamped MeSH concepts`);
 
-    if (concepts.length === 0) {
-        throw new Error(`[${LABEL}] HALT: 0 MeSH concepts loaded from ${meshPath} -- the F3 placement + stamper must run first; refusing to zero every paper's mesh_links (no silent drop)`);
-    }
+    // HALT loud (no silent data loss): papers is overwritten in place, so 0 papers is an anomaly --
+    // refuse to truncate it. Then HALT on 0 concepts (would zero every paper's mesh_links). Both
+    // run BEFORE writeJsonl.
+    assertLoaded(papers, LABEL, papersPath);
+    assertLoaded(concepts, LABEL, meshPath);
 
     const telemetry = enrichPapersWithMeshLinks(papers, concepts);
 

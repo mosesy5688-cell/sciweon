@@ -24,15 +24,9 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { fetchFingerprint2DBatch } from '../ingestion/adapters/pubchem-adapter.js';
+import { loadJsonlStrict } from './lib/jsonl-io.js';
 
 const DATA_DIR = './output/linked';
-
-async function loadJsonl(file) {
-    try {
-        const c = await fs.readFile(file, 'utf-8');
-        return c.split('\n').filter(Boolean).map(l => JSON.parse(l));
-    } catch { return []; }
-}
 
 async function writeJsonl(file, records) {
     await fs.writeFile(file, records.map(r => JSON.stringify(r)).join('\n'));
@@ -42,7 +36,7 @@ async function main() {
     console.log('[FINGERPRINT-ENRICHER] V0.3.5 — PubChem CACTVS 881-bit keys');
 
     const file = path.join(DATA_DIR, 'compounds-enriched.jsonl');
-    const compounds = await loadJsonl(file);
+    const compounds = await loadJsonlStrict(file);
     console.log(`[FINGERPRINT-ENRICHER] Loaded ${compounds.length} compounds`);
 
     const cids = [];

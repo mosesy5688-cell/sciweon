@@ -25,7 +25,6 @@
  * bioactivity.target.uniprot_accession).
  */
 
-import fs from 'fs/promises';
 import { createWriteStream } from 'fs';
 import { once } from 'events';
 import path from 'path';
@@ -34,18 +33,12 @@ import {
     readCursor, writeCursor, chunkIterator, buildNextCursor, DEFAULT_CHUNK_SIZE,
 } from './lib/enrichment-cursor.js';
 import { drainAdapterBacklog, DEFAULT_CHUNK_DURATION_ESTIMATE_MS } from './lib/drain-adapter-backlog.js';
+import { loadJsonlStrict } from './lib/jsonl-io.js';
 
 const SOURCE = 'pubchem_bioassay';
 const DATA_DIR = './output/linked';
 const DRAIN_BUDGET_MS = Number(process.env.ADAPTER_DRAIN_BUDGET_MS) || 25 * 60 * 1000;
 const COLD_START_MS = Number(process.env.ADAPTER_DRAIN_COLD_START_MS) || DEFAULT_CHUNK_DURATION_ESTIMATE_MS;
-
-async function loadJsonl(file) {
-    try {
-        const c = await fs.readFile(file, 'utf-8');
-        return c.split('\n').filter(Boolean).map(l => JSON.parse(l));
-    } catch { return []; }
-}
 
 // Streaming JSONL writer (V5 architect-locked V8-thread defense).
 async function writeJsonl(file, records) {
@@ -93,7 +86,7 @@ async function main() {
     console.log('[CROSS-VALIDATOR] V0.4 - cycle 22 PR-CORE-2 cursor-driven');
 
     const bioFile = path.join(DATA_DIR, 'bioactivities.jsonl');
-    const bioacts = await loadJsonl(bioFile);
+    const bioacts = await loadJsonlStrict(bioFile);
     console.log(`[CROSS-VALIDATOR] Loaded ${bioacts.length} bioactivities`);
 
     const unstamped = unstampedBioactivities(bioacts);

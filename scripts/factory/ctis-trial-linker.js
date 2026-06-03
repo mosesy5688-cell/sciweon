@@ -16,6 +16,7 @@ import path from 'path';
 import { searchByQuery, normalizeToTrial, REQUEST_DELAY_MS } from '../ingestion/adapters/ctis-adapter.js';
 import { TRIAL_SCHEMA } from '../../src/lib/schemas/trial.js';
 import { gate } from './lib/validation-gate.js';
+import { loadJsonlStrict } from './lib/jsonl-io.js';
 
 const LIMIT = parseInt(process.argv.find(a => a.startsWith('--limit='))?.split('=')[1] || '50');
 const INPUT = process.argv.find(a => a.startsWith('--input='))?.split('=')[1]
@@ -24,13 +25,6 @@ const OUTPUT_DIR = './output/linked';
 const TRIALS_PER_COMPOUND = 30;
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-async function loadJsonl(file) {
-    try {
-        const c = await fs.readFile(file, 'utf-8');
-        return c.split('\n').filter(Boolean).map(l => JSON.parse(l));
-    } catch { return []; }
-}
 
 async function appendJsonl(file, records) {
     if (records.length === 0) return;
@@ -45,12 +39,12 @@ function pickSearchName(compound) {
 async function main() {
     console.log(`[CTIS-LINKER] V0.3.4 — EU CTIS as Trial 2nd source`);
 
-    const compounds = (await loadJsonl(INPUT))
+    const compounds = (await loadJsonlStrict(INPUT))
         .filter(c => c.drug_status?.max_phase != null && c.drug_status.max_phase >= 1)
         .slice(0, LIMIT);
     console.log(`[CTIS-LINKER] Clinical-only compounds: ${compounds.length}`);
 
-    const existingTrials = await loadJsonl(path.join(OUTPUT_DIR, 'trials.jsonl'));
+    const existingTrials = await loadJsonlStrict(path.join(OUTPUT_DIR, 'trials.jsonl'));
     const existingCtNumbers = new Set(existingTrials
         .filter(t => t.ct_number)
         .map(t => t.ct_number));

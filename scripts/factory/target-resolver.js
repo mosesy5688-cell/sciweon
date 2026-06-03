@@ -23,18 +23,12 @@ import fs from 'fs/promises';
 import path from 'path';
 import { fetchTargetByChemblId, extractTargetPrimary } from '../ingestion/adapters/chembl-adapter.js';
 import { fetchByAccessionBatch, extractPrimary as uniprotExtractPrimary } from '../ingestion/adapters/uniprot-adapter.js';
+import { loadJsonlStrict } from './lib/jsonl-io.js';
 
 const DATA_DIR = './output/linked';
 const REQUEST_DELAY_MS = 250;
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-async function loadJsonl(file) {
-    try {
-        const c = await fs.readFile(file, 'utf-8');
-        return c.split('\n').filter(Boolean).map(l => JSON.parse(l));
-    } catch { return []; }
-}
 
 async function writeJsonl(file, records) {
     await fs.writeFile(file, records.map(r => JSON.stringify(r)).join('\n'));
@@ -125,7 +119,7 @@ async function main() {
     console.log('[TARGET-RESOLVER] V0.2.2 — cross-source target metadata');
 
     const bioFile = path.join(DATA_DIR, 'bioactivities.jsonl');
-    const bioacts = await loadJsonl(bioFile);
+    const bioacts = await loadJsonlStrict(bioFile);
     console.log(`[TARGET-RESOLVER] Loaded ${bioacts.length} bioactivities`);
 
     const uniqueChemblTargets = [...new Set(bioacts

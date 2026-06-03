@@ -26,16 +26,10 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { enrichWithSnomedLinks } from './lib/snomed-crosslink-helpers.js';
+import { loadJsonlStrict, assertLoaded } from './lib/jsonl-io.js';
 
 const OUTPUT_DIR = './output/linked';
 const LABEL = 'SNOMED-XLINK';
-
-async function loadJsonl(file) {
-    try {
-        const c = await fs.readFile(file, 'utf-8');
-        return c.split('\n').filter(Boolean).filter(l => !l.startsWith('#')).map(l => JSON.parse(l));
-    } catch { return []; }
-}
 
 async function writeJsonl(file, records) {
     // join() is stack-safe at any size (Defect-15 lesson).
@@ -48,14 +42,17 @@ async function main() {
     const diseasesPath = path.join(OUTPUT_DIR, 'diseases.jsonl');
     const trialsPath = path.join(OUTPUT_DIR, 'trials.jsonl');
     const snomedPath = path.join(OUTPUT_DIR, 'snomed-concepts.jsonl');
-    const diseases = await loadJsonl(diseasesPath);
-    const trials = await loadJsonl(trialsPath);
-    const concepts = await loadJsonl(snomedPath);
+    const diseases = await loadJsonlStrict(diseasesPath, { skipComments: true });
+    const trials = await loadJsonlStrict(trialsPath, { skipComments: true });
+    const concepts = await loadJsonlStrict(snomedPath, { skipComments: true });
     console.log(`[${LABEL}] Loaded ${diseases.length} diseases, ${trials.length} trials, ${concepts.length} stamped SNOMED concepts`);
 
-    if (concepts.length === 0) {
-        throw new Error(`[${LABEL}] HALT: 0 SNOMED concepts loaded from ${snomedPath} -- the F3 placement + stamper must run first; refusing to zero every record's snomed_links (no silent drop)`);
-    }
+    // HALT loud (no silent data loss): diseases AND trials are both overwritten in place, so 0 of
+    // either is an anomaly -- refuse to truncate them. Then HALT on 0 concepts (would zero every
+    // record's snomed_links). All three run BEFORE any writeJsonl.
+    assertLoaded(diseases, LABEL, diseasesPath);
+    assertLoaded(trials, LABEL, trialsPath);
+    assertLoaded(concepts, LABEL, snomedPath);
 
     const telemetry = enrichWithSnomedLinks(diseases, trials, concepts);
 

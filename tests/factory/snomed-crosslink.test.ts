@@ -9,6 +9,10 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import {
     parseDiseaseXref, normalizeSnomedString,
     buildSnomedByCode, buildSnomedByCui, buildSnomedByString,
@@ -177,5 +181,54 @@ describe('enrichWithSnomedLinks -- telemetry + idempotent overwrite + ALL links 
         expect(diseases[0].snomed_links).toHaveLength(1);
         expect(diseases[0].sid_s).toBe('D_SID_S');
         expect(diseases[0].sid_c).toBe('D_SID_C');
+    });
+});
+
+// --- PR-HARDEN-1: the two-file assertLoaded regression. The enricher OVERWRITES BOTH
+// diseases.jsonl AND trials.jsonl in place, so empty EITHER must HALT before any writeJsonl
+// (PR-4b's LOINC fix guarded only trials; this is the missing disease+trial coverage). Run the
+// REAL enricher in a temp cwd with controlled output/linked/*.jsonl, assert exit + the loud HALT.
+const SNOMED_ENRICHER = resolve('scripts/factory/snomed-crosslink-enricher.js');
+function runSnomedEnricher({ diseases, trials, concepts }) {
+    const workDir = mkdtempSync(join(tmpdir(), 'snomed-xlink-halt-'));
+    const linked = join(workDir, 'output', 'linked');
+    mkdirSync(linked, { recursive: true });
+    const dump = (recs) => recs.map(r => JSON.stringify(r)).join('\n') + (recs.length ? '\n' : '');
+    writeFileSync(join(linked, 'diseases.jsonl'), dump(diseases), 'utf-8');
+    writeFileSync(join(linked, 'trials.jsonl'), dump(trials), 'utf-8');
+    writeFileSync(join(linked, 'snomed-concepts.jsonl'), dump(concepts), 'utf-8');
+    const result = spawnSync(process.execPath, [SNOMED_ENRICHER], { cwd: workDir, encoding: 'utf-8' });
+    return { workDir, result, linked };
+}
+
+describe('PR-HARDEN-1 -- SNOMED two-file assertLoaded HALT (no silent truncation)', () => {
+    it('EMPTY diseases (trials + concepts populated) HALTs -- refuses to truncate diseases.jsonl', () => {
+        const { workDir, result } = runSnomedEnricher({ diseases: [], trials: [{ id: 't1' }], concepts: [concept()] });
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toMatch(/HALT: 0 records loaded from .*diseases\.jsonl/);
+        rmSync(workDir, { recursive: true, force: true });
+    });
+    it('EMPTY trials (diseases + concepts populated) HALTs -- refuses to truncate trials.jsonl', () => {
+        const { workDir, result } = runSnomedEnricher({ diseases: [{ id: 'd1' }], trials: [], concepts: [concept()] });
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toMatch(/HALT: 0 records loaded from .*trials\.jsonl/);
+        rmSync(workDir, { recursive: true, force: true });
+    });
+    it('EMPTY concepts (diseases + trials populated) HALTs -- would zero every record snomed_links', () => {
+        const { workDir, result } = runSnomedEnricher({ diseases: [{ id: 'd1' }], trials: [{ id: 't1' }], concepts: [] });
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toMatch(/HALT: 0 records loaded from .*snomed-concepts\.jsonl/);
+        rmSync(workDir, { recursive: true, force: true });
+    });
+    it('all three populated -> exit 0 + diseases.jsonl/trials.jsonl preserved (NOT truncated)', () => {
+        const diseases = [{ id: 'd1', db_xrefs: ['SNOMEDCT_US:73211009'] }];
+        const trials = [{ id: 't1', conditions: ['condition-placeholder'] }];
+        const { workDir, result, linked } = runSnomedEnricher({ diseases, trials, concepts: [concept()] });
+        expect(result.status).toBe(0);
+        const outDiseases = readFileSync(join(linked, 'diseases.jsonl'), 'utf-8').split('\n').filter(Boolean);
+        const outTrials = readFileSync(join(linked, 'trials.jsonl'), 'utf-8').split('\n').filter(Boolean);
+        expect(outDiseases).toHaveLength(1); // preserved, not truncated to empty
+        expect(outTrials).toHaveLength(1);
+        rmSync(workDir, { recursive: true, force: true });
     });
 });

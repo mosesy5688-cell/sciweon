@@ -18,7 +18,6 @@
  * cumulative DailyMed re-link on the resident array before writeback.
  */
 
-import fs from 'fs/promises';
 import { createWriteStream } from 'fs';
 import { once } from 'events';
 import path from 'path';
@@ -43,6 +42,7 @@ import { loadRxnormBulkMaps } from '../ingestion/adapters/rxnorm-bulk-adapter.js
 import { relinkCumulativeDailymed } from './lib/dailymed-crosslink.js';
 import { formatDailymedRelinkLog } from './lib/dailymed-relink-log.js';
 import { buildCorpusAddList, emitCorpusAddList } from './lib/corpus-add-list-emit.js';
+import { loadJsonlStrict } from './lib/jsonl-io.js';
 
 const DATA_DIR = './output/linked';
 const COMPOUNDS_FILE = path.join(DATA_DIR, 'compounds-enriched.jsonl');
@@ -58,13 +58,6 @@ const SOURCE_CONFIG = Object.freeze({
     rxnorm:        { delayMs: 150, enrichOne: enrichOneRxnorm,  isEligible: isEligibleRxnorm, bulkEnrichOne: bulkEnrichOneRxnorm },
     openfda_faers: { delayMs: 250, enrichOne: enrichOneFaers,   isEligible: isEligibleFaers   },
 });
-
-async function loadJsonl(file) {
-    try {
-        const c = await fs.readFile(file, 'utf-8');
-        return c.split('\n').filter(Boolean).map(l => JSON.parse(l));
-    } catch { return []; }
-}
 
 // Streaming JSONL writer (V5 architect-locked V8-thread defense + architect
 // Lock 3 backpressure honor). Per-record write with conditional drain await
@@ -188,7 +181,7 @@ export async function backfillOneSource(sourceId, compounds, bulkMaps = null) {
 async function main() {
     console.log('[BACKFILL] V1 cycle 22 PR-CORE-3 - aggregated cumulative enrichment');
 
-    const compounds = await loadJsonl(COMPOUNDS_FILE);
+    const compounds = await loadJsonlStrict(COMPOUNDS_FILE);
     if (compounds.length === 0) {
         console.error(`[BACKFILL] FATAL: ${COMPOUNDS_FILE} empty - refusing to write back nothing.`);
         process.exit(1);
@@ -220,7 +213,7 @@ async function main() {
     // F3's upload step uses the unchanged-but-not-wrong merged cumulative.
     if (anySuccess) {
         // PR-RXN-1g Fix B re-link + PR-MD-1e harm telemetry + PR-MD-2a corpus add-list emit.
-        const labels = await loadJsonl(DRUG_LABELS_FILE);
+        const labels = await loadJsonlStrict(DRUG_LABELS_FILE);
         const rl = relinkCumulativeDailymed(compounds, labels, bulkMaps);
         console.log(formatDailymedRelinkLog(rl));
         await emitCorpusAddList(buildCorpusAddList(rl), { generatedFrom: process.env.GITHUB_RUN_ID ?? null });
