@@ -42,6 +42,7 @@ import { enforceCompletenessInvariant } from './lib/aggregated-invariant.js';
 import { runSidStampingCascade } from './lib/stage-3-stampers.js';
 import { makeR2Client } from './lib/sid-stage3-shared.js';
 import { isSnomedColdStart, warnSnomedColdStart } from './lib/snomed-cold-start.js';
+import { isLoincColdStart, warnLoincColdStart } from './lib/loinc-cold-start.js';
 
 const SCRIPT_DIR = 'scripts/factory';
 
@@ -95,15 +96,19 @@ async function main() {
     // PR-UMLS-3 cold-start guard (see lib/snomed-cold-start.js for both invariants): determine
     // SNOMED cold-start ONCE via a single R2 HEAD on the bulk cursor. cursor ABSENT (404) -> skip
     // the WHOLE SNOMED sub-pipeline gracefully (Invariant 1, snapshot still ships); cursor PRESENT
-    // + broken artifact -> each stage HARD-FAILS in place (Invariant 2, untouched here). The one
-    // flag threads to BOTH the linker phase and runSidStampingCascade so all 4 stages agree.
+    // + broken artifact -> each stage HARD-FAILS in place (Invariant 2). Threads to linker + cascade.
     const snomedColdStart = await isSnomedColdStart({ client: makeR2Client('STAGE-3'), bucket: process.env.R2_BUCKET });
     if (snomedColdStart) warnSnomedColdStart();
+
+    // PR-UMLS-4 cold-start guard (see lib/loinc-cold-start.js): same single-R2-HEAD discriminator
+    // on the LOINC bulk cursor, independent of SNOMED. Threads to the linker + cascade identically.
+    const loincColdStart = await isLoincColdStart({ client: makeR2Client('STAGE-3'), bucket: process.env.R2_BUCKET });
+    if (loincColdStart) warnLoincColdStart();
 
     // V0.5.x: trial scripts run sequentially (last-writer-wins on trials.jsonl);
     // papers/targets/diseases each own disjoint output files so parallel-safe.
     // PR-UMLS-2: mesh-concept-linker owns mesh-concepts.jsonl (disjoint) -> parallel-safe.
-    const [trialResults, paperResults, targetResults, diseaseResults, meshResults, snomedResults] = await Promise.all([
+    const [trialResults, paperResults, targetResults, diseaseResults, meshResults, snomedResults, loincResults] = await Promise.all([
         runSequential('Trials', [
             { name: 'trial-linker', fn: () => runScript('trial-linker.js') },
             { name: 'ctis-trial-linker', fn: () => runScript('ctis-trial-linker.js') },
@@ -125,6 +130,12 @@ async function main() {
         snomedColdStart
             ? Promise.resolve([{ task: 'snomed-concept-linker', ok: true, error: null, skipped: 'snomed-cold-start' }])
             : runSequential('SNOMED', [{ name: 'snomed-concept-linker', fn: () => runScript('snomed-concept-linker.js') }]),
+        // PR-UMLS-4: loinc-concept-linker owns loinc-concepts.jsonl (disjoint) -> parallel-safe.
+        // Cold-start guard: skipped (no R2 cursor) so the linker's no-catch cursor read can never
+        // throw and meltdown the daily cascade before the first LOINC harvest materializes.
+        loincColdStart
+            ? Promise.resolve([{ task: 'loinc-concept-linker', ok: true, error: null, skipped: 'loinc-cold-start' }])
+            : runSequential('LOINC', [{ name: 'loinc-concept-linker', fn: () => runScript('loinc-concept-linker.js') }]),
     ]);
 
     const crossLinkResults = await runSequential('Cross-link + Negative Evidence', [
@@ -132,15 +143,13 @@ async function main() {
         { name: 'neg-evidence-builder', fn: () => runScript('neg-evidence-builder.js') },
     ]);
 
-    // V0.5.2.1 cumulative aggregation extracted to lib/stage-3-merge.js
-    // (cycle 22 PR-CORE-3 split for Art 5.1). Hard-fails via process.exit
-    // on the suspicious-prior-state cases (codes 4/5/6/7); see helper
-    // module header for the full code table.
+    // V0.5.2.1 cumulative aggregation extracted to lib/stage-3-merge.js (cycle 22 PR-CORE-3
+    // split for Art 5.1). Hard-fails via process.exit on the suspicious-prior-state cases
+    // (codes 4/5/6/7); see the helper module header for the full code table.
     await executeCumulativeMerge(runId);
 
-    // PR-CORE-3 (cycle 22): aggregated cumulative backfill, AFTER the merge (post-merge
-    // cumulative) and BEFORE the indices (so they reflect backfilled records). Closes the
-    // wiring arc PR-CORE-2 missed (F2 cursors saw only ~5k deltas, never the ~70k backlog).
+    // PR-CORE-3 (cycle 22): aggregated cumulative backfill, AFTER the merge and BEFORE the
+    // indices (so they reflect backfilled records). Closes the wiring arc PR-CORE-2 missed.
     // Per D7: non-fatal to F3 - failure logs but the stage still ships downstream output.
     console.log('\n[STAGE-3] === PR-CORE-3 cumulative backfill ===');
     try {
@@ -150,15 +159,10 @@ async function main() {
         console.error(`[STAGE-3] Backfill failed (non-fatal, F3 continues with un-backfilled cumulative): ${err.message}`);
     }
 
-    // PR-OT-4 (cycle 23): Open Targets bulk merge into compound entity.
-    // Reads OT bulk artifact from R2 (per [[project_cycle23_pr_ot_1_shipped]])
-    // and folds known_drug_info + target_associations into chembl_id-bearing
-    // compounds. Closes the researcher-experience gap where OT data sat in
-    // R2 staging but did not surface at the API compound entity (per
-    // [[researcher_needs_anchor]] 2026-05-24 decision). Non-fatal: OT-merge
-    // failure leaves compounds-enriched.jsonl in un-OT-enriched state but
-    // does not block search/target indices or R2 upload (researchers degrade
-    // gracefully; OT data resurfaces on the next successful run).
+    // PR-OT-4 (cycle 23): Open Targets bulk merge into compound entity. Reads the OT bulk
+    // artifact from R2 and folds known_drug_info + target_associations into chembl_id-bearing
+    // compounds (per [[researcher_needs_anchor]] 2026-05-24). Non-fatal: OT-merge failure leaves
+    // compounds un-OT-enriched but does not block indices or R2 upload (resurfaces next run).
     console.log('\n[STAGE-3] === PR-OT-4 Open Targets stage-3 merge ===');
     try {
         await runScript('open-targets-stage3-merge.js');
@@ -167,19 +171,16 @@ async function main() {
         console.error(`[STAGE-3] OT merge failed (non-fatal, F3 continues with un-OT-enriched compounds): ${err.message}`);
     }
 
-    // PR-SID-1.1c..1.9 (cycle 23 + UMLS): SID stamping cascade (HARD-FAIL) + the post-stamp
-    // UMLS phases (SNOMED public projection per RULING 1 + the MeSH/SNOMED cross-link
-    // enrichers). Extracted to lib/stage-3-stampers.js for Art 5.1. The snomed stamper is the
-    // 10th cascade entry; the public projection + snomed cross-link run after it. Cold-start
-    // guard (Invariant 1): when snomedColdStart, the 3 SNOMED cascade entries are excluded and
-    // the 9 non-SNOMED stampers + MeSH cross-link still run; the snapshot ships without SNOMED.
-    await runSidStampingCascade(runScript, { skipSnomed: snomedColdStart });
+    // PR-SID-1.1c..1.10 (cycle 23 + UMLS): SID stamping cascade (HARD-FAIL) + the post-stamp
+    // UMLS phases (MeSH/SNOMED/LOINC public projections + MeSH/SNOMED cross-link enrichers).
+    // Extracted to lib/stage-3-stampers.js for Art 5.1. Cold-start guard (Invariant 1): when
+    // snomedColdStart / loincColdStart, that vocabulary's cascade entries are excluded while the
+    // rest still run; the snapshot ships without the cold vocabulary. (LOINC crosslink = PR-4b.)
+    await runSidStampingCascade(runScript, { skipSnomed: snomedColdStart, skipLoinc: loincColdStart });
 
-    // V0.5.3 Tier 1.5 search index — rebuild SQLite FTS5 over cumulative
-    // aggregated. Runs AFTER the cumulative merge so the index reflects
-    // historical + current compounds together. Failure here is non-fatal:
-    // search endpoint returns "index unavailable, fallback to ID lookup"
-    // rather than halting the chain (search is enhancement, not lifeline).
+    // V0.5.3 Tier 1.5 search index — rebuild SQLite FTS5 over cumulative aggregated, AFTER the
+    // merge so it reflects historical + current compounds. Non-fatal: search endpoint falls
+    // back to ID lookup rather than halting the chain (search is enhancement, not lifeline).
     console.log('\n[STAGE-3] === Build Tier 1.5 search index (FTS5) ===');
     try {
         const stats = await buildSearchIndex({
@@ -191,8 +192,7 @@ async function main() {
         console.error('[STAGE-3] Will upload aggregated bundle without search index; previous cycle\'s index remains current in R2 until next successful build.');
     }
 
-    // C2-3 target inverse-pivot index. Non-fatal: /api/v1/target/* 404s
-    // if absent, rest of bundle ships.
+    // C2-3 target inverse-pivot index. Non-fatal: /api/v1/target/* 404s if absent, rest ships.
     console.log('\n[STAGE-3] === Build target inverse-pivot index ===');
     try {
         const s = await buildTargetIndex({ outputPath: path.join('./output/linked', TARGET_INDEX_FILE) });

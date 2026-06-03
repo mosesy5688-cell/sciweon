@@ -4,8 +4,8 @@
  *
  * SID stamping cascade (HARD-FAIL on any failure per V1.0 Sec 35 +
  * [[cross_cycle_silent_data_loss]]): 7 Layer-1 atomic classes + 1 Layer-3 assertion
- * class + 1 NegEvidence + the 2 UMLS vocabulary classes (mesh_concept, snomed_concept).
- * Each new class auto-provisions its counter bucket + crosswalk on first stamp.
+ * class + 1 NegEvidence + the 3 UMLS vocabulary classes (mesh_concept, snomed_concept,
+ * loinc_concept). Each new class auto-provisions its counter bucket + crosswalk on first stamp.
  *
  * Post-stamp UMLS phases (also HARD-FAIL), in order:
  *   1. mesh-public-builder      -- PR-UMLS-2a: project the FULL stamped mesh-concepts.jsonl
@@ -15,16 +15,22 @@
  *   2. snomed-public-builder   -- project the FULL stamped snomed-concepts.jsonl down to
  *      the Born-Clean public {sid_s,sid_c} artifact (RULING 1). MUST run after the SNOMED
  *      stamper (every concept carries sid_s+sid_c) and before the F4 upload.
- *   3. mesh-crosslink-enricher  -- F2 paper<->mesh_concept (idempotent paper.mesh_links).
- *   4. snomed-crosslink-enricher-- F2 disease+trial<->snomed_concept (idempotent
+ *   3. loinc-public-builder    -- PR-UMLS-4: project the FULL stamped loinc-concepts.jsonl down
+ *      to the Cat-0 public {sid_s,sid_c,code,str} artifact (CUI DROPPED) + verbatim Regenstrief
+ *      attribution header. MUST run after the LOINC stamper. Concept-class only (no crosslink).
+ *   4. mesh-crosslink-enricher  -- F2 paper<->mesh_concept (idempotent paper.mesh_links).
+ *   5. snomed-crosslink-enricher-- F2 disease+trial<->snomed_concept (idempotent
  *      snomed_links; ALL links published incl low-confidence; {snomed_sid,confidence,
  *      match_method} only -- ZERO NLM/SNOMED content).
+ *   (NO loinc crosslink: the trial<->LOINC crosslink is DEFERRED to PR-4b per Decision A SPLIT.)
  *
- * COLD-START GUARD (PR-UMLS-3): runSidStampingCascade honors a skipSnomed flag that excludes
- * the 3 SNOMED entries (see SNOMED_CASCADE_SCRIPTS) when the SNOMED bulk cursor is absent.
+ * COLD-START GUARD: runSidStampingCascade honors a skipSnomed flag (PR-UMLS-3; excludes the 3
+ * SNOMED_CASCADE_SCRIPTS entries) and a skipLoinc flag (PR-UMLS-4; excludes the 2
+ * LOINC_CASCADE_SCRIPTS entries) when the respective bulk cursor is absent.
  */
 
 import { SNOMED_CASCADE_SCRIPTS } from './snomed-cold-start.js';
+import { LOINC_CASCADE_SCRIPTS } from './loinc-cold-start.js';
 
 // SID stamping cascade order. Each entry = [label, script]. Order is load-bearing
 // (the cross-link enrichers below assume the concept files are stamped).
@@ -43,12 +49,17 @@ export const SID_STAMPERS = Object.freeze([
     // Runs on the FULL internal snomed-concepts.jsonl; the sid_s/sid_c it writes are the ONLY
     // SNOMED-derived values that reach the public snapshot (RULING 1).
     ['1.9 snomed', 'stage-3-snomed-sid-stamp.js'],
+    // PR-UMLS-4: loinc_concept stamper (11th hard-fail entry; first stamp auto-provisions).
+    // Runs on the FULL internal loinc-concepts.jsonl; the public projection keeps the Cat-0
+    // {sid_s,sid_c,code,str} (cui DROPPED). Concept-class only; trial crosslink is PR-4b.
+    ['1.10 loinc', 'stage-3-loinc-sid-stamp.js'],
 ]);
 
 // Post-stamp UMLS phases (HARD-FAIL), run in array order AFTER the stamping cascade.
 export const POST_STAMP_UMLS_PHASES = Object.freeze([
     ['PR-UMLS-2a MeSH public projection ({sid_s,sid_c,code,str}; cui DROPPED)', 'mesh-public-builder.js'],
     ['PR-UMLS-3 SNOMED public projection (Born-Clean {sid_s,sid_c})', 'snomed-public-builder.js'],
+    ['PR-UMLS-4 LOINC public projection ({sid_s,sid_c,code,str}; cui DROPPED)', 'loinc-public-builder.js'],
     ['PR-UMLS-2 MeSH cross-link enricher', 'mesh-crosslink-enricher.js'],
     ['PR-UMLS-3 SNOMED cross-link enricher (ALL links + provenance)', 'snomed-crosslink-enricher.js'],
 ]);
@@ -56,27 +67,37 @@ export const POST_STAMP_UMLS_PHASES = Object.freeze([
 /**
  * Run the SID stamping cascade then the post-stamp UMLS phases, all HARD-FAIL.
  *
- * PR-UMLS-3 cold-start guard (Invariant 1): when `skipSnomed` is true (the SNOMED bulk
- * cursor does NOT yet exist in R2), the 3 SNOMED cascade entries (the `1.9 snomed` stamper
- * + the snomed-public-builder + the snomed-crosslink-enricher) are EXCLUDED so the daily
- * cascade + snapshot still complete WITHOUT SNOMED this cycle. The 9 non-SNOMED stampers +
- * the MeSH cross-link enricher run UNCONDITIONALLY. When `skipSnomed` is false (cursor
- * exists), every entry runs and a broken downstream artifact HARD-FAILS in place (Invariant
- * 2) -- the guard is purely additive and never weakens that throw.
+ * Cold-start guard (Invariant 1), independent per vocabulary:
+ *   - `skipSnomed` true (PR-UMLS-3): the 3 SNOMED cascade entries (the `1.9 snomed` stamper +
+ *     the snomed-public-builder + the snomed-crosslink-enricher) are EXCLUDED.
+ *   - `skipLoinc` true (PR-UMLS-4): the 2 LOINC cascade entries (the `1.10 loinc` stamper +
+ *     the loinc-public-builder; NO crosslink -- that is PR-4b) are EXCLUDED.
+ * Excluding a vocabulary lets the daily cascade + snapshot still complete WITHOUT it this
+ * cycle; every other stamper + the MeSH cross-link enricher run UNCONDITIONALLY. When a flag
+ * is false (its bulk cursor exists), its entries run and a broken downstream artifact
+ * HARD-FAILS in place (Invariant 2) -- the guards are purely additive and never weaken that.
  *
  * @param {(name:string)=>Promise<void>} runScript  the orchestrator's spawn-node helper.
- * @param {{skipSnomed?: boolean}} [opts]
+ * @param {{skipSnomed?: boolean, skipLoinc?: boolean}} [opts]
  */
 export async function runSidStampingCascade(runScript, opts = {}) {
     const skipSnomed = opts.skipSnomed === true;
-    const skip = (script) => skipSnomed && SNOMED_CASCADE_SCRIPTS.includes(script);
+    const skipLoinc = opts.skipLoinc === true;
+    // Return the cold-start reason for a script, or null if it must run.
+    const skipReason = (script) => {
+        if (skipSnomed && SNOMED_CASCADE_SCRIPTS.includes(script)) return 'SNOMED cold start';
+        if (skipLoinc && LOINC_CASCADE_SCRIPTS.includes(script)) return 'LOINC cold start';
+        return null;
+    };
     for (const [label, script] of SID_STAMPERS) {
-        if (skip(script)) { console.log(`\n[STAGE-3] === PR-SID-${label} stamping SKIPPED (SNOMED cold start) ===`); continue; }
+        const reason = skipReason(script);
+        if (reason) { console.log(`\n[STAGE-3] === PR-SID-${label} stamping SKIPPED (${reason}) ===`); continue; }
         console.log(`\n[STAGE-3] === PR-SID-${label} stamping ===`);
         await runScript(script);
     }
     for (const [label, script] of POST_STAMP_UMLS_PHASES) {
-        if (skip(script)) { console.log(`\n[STAGE-3] === ${label} SKIPPED (SNOMED cold start) ===`); continue; }
+        const reason = skipReason(script);
+        if (reason) { console.log(`\n[STAGE-3] === ${label} SKIPPED (${reason}) ===`); continue; }
         console.log(`\n[STAGE-3] === ${label} ===`);
         await runScript(script);
     }

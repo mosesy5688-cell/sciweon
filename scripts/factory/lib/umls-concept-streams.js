@@ -43,6 +43,13 @@ export const MESH_CANONICALIZATION_VERSION = 'mesh.concept.v1.0';
 export const SNOMED_SAB = 'SNOMEDCT_US';
 export const SNOMED_CANONICALIZATION_VERSION = 'snomed.concept.v1.0';
 
+// PR-UMLS-4 LOINC harvest parameters (EXACT-match SAB=LNC). Distinct-LNC CODE count is
+// MEASURED at harvest (upper bound 306,528, NOT assumed). NON-CONFLATION: LNC here is the
+// UMLS LOINC *concept vocabulary* -- DISTINCT from spl-parser.js LOINC_SECTIONS (SPL
+// document-section codes), a different axis that never joins.
+export const LOINC_SAB = 'LNC';
+export const LOINC_CANONICALIZATION_VERSION = 'loinc.concept.v1.0';
+
 // Re-export the shared RRF csv-parse factory (named columns, NOT positional split;
 // relax_column_count:true absorbs the trailing-pipe empty 19th field) from its SSoT in
 // rxnorm-rrf-streams.js so the harvest + tests import it from one place.
@@ -192,15 +199,13 @@ export function buildMeshLicenseMetadata(release, ingestionDate) {
 }
 
 /**
- * SNOMED CT US license_metadata (PR-UMLS-3). Bulk tracker #47 is the SSoT; SNOMED
- * CT is SNOMED Affiliate / UMLS Metathesaurus redistribution-RESTRICTED (CAT3-class,
- * NOT CAT0 like MeSH). RULING 1 + RULING 2 (founder, NON-NEGOTIABLE): the FULL
- * STR+CODE+CUI artifact this metadata accompanies is INTERNAL-ONLY (R2 internal/
- * prefix); the PUBLIC snapshot exposes ZERO SNOMED proprietary content -- only
- * Sciweon-produced SID hashes + Sciweon-produced provenance. The redistribution
- * gate is enforced in the publishing boundary (snomed-public-projection.js +
- * SNAPSHOT_FILES omission), NOT here; this metadata is the audit trail attached to
- * the internal full artifact.
+ * SNOMED CT US license_metadata (PR-UMLS-3). Bulk tracker #47 is the SSoT; SNOMED CT is
+ * SNOMED Affiliate / UMLS Metathesaurus redistribution-RESTRICTED (CAT3-class, NOT CAT0 like
+ * MeSH). RULING 1 + RULING 2 (founder, NON-NEGOTIABLE): the FULL STR+CODE+CUI artifact this
+ * metadata accompanies is INTERNAL-ONLY (R2 internal/ prefix); the PUBLIC snapshot exposes
+ * ZERO SNOMED proprietary content -- only Sciweon-produced SID hashes + provenance. The
+ * redistribution gate is enforced in the publishing boundary (snomed-public-projection.js +
+ * SNAPSHOT_FILES omission), NOT here; this metadata is the audit trail on the internal file.
  */
 export function buildSnomedLicenseMetadata(release, ingestionDate) {
     return {
@@ -211,5 +216,35 @@ export function buildSnomedLicenseMetadata(release, ingestionDate) {
         upstream_release: release,
         ingestion_date: ingestionDate,
         attribution: NLM_ATTRIBUTION,
+    };
+}
+
+/**
+ * Regenstrief LOINC attribution (PR-UMLS-4, founder-locked VERBATIM). The LOINC license
+ * REQUIRES this exact notice. It rides into the TWO real public-facing layers PR-UMLS-4
+ * produces: the loinc-concepts-public.jsonl metadata header (loinc-public-builder.js) + the
+ * snapshot manifest license_notices block (snapshot-builder.js). The (c)/(R) signs are
+ * intentional UTF-8 literals (Latin-1 supplement, NOT CJK -- CES English-mandate-safe).
+ */
+export const LOINC_ATTRIBUTION = 'This product includes all or a portion of the LOINC table and/or LOINC codes, or LOINC panels and forms, which are copyright © 1995-2026, Regenstrief Institute, Inc. and the Logical Observation Identifiers Names and Codes (LOINC) Committee and are available at no cost under the license at loinc.org/license. LOINC® is a registered United States trademark of Regenstrief Institute, Inc.';
+
+/**
+ * LOINC license_metadata (PR-UMLS-4). Bulk tracker #47 is the SSoT; LOINC code+str are
+ * redistributable at NO COST under the Regenstrief license (Cat-0-like -- KEPT in the public
+ * projection) while the NLM-proprietary CUI is ALWAYS dropped. Mirrors buildSnomedLicenseMetadata
+ * but Cat-0 + carries the verbatim Regenstrief notice in `loinc_attribution`. The full
+ * STR+CODE+CUI artifact this accompanies is INTERNAL-ONLY; the public snapshot gets the Cat-0
+ * projection {sid_s,sid_c,code,str} via projectUmlsPublic('LOINC',...) + SNAPSHOT_FILES omission.
+ */
+export function buildLoincLicenseMetadata(release, ingestionDate) {
+    return {
+        upstream_source: 'umls_metathesaurus',
+        upstream_license: 'loinc_regenstrief_no_cost',
+        extracted_content: 'lnc_concepts(code+cui+preferred_str+synonyms)',
+        redistribution: 'internal_full_artifact_public_snapshot_is_cat0_sid_code_str_no_cui',
+        upstream_release: release,
+        ingestion_date: ingestionDate,
+        attribution: NLM_ATTRIBUTION,
+        loinc_attribution: LOINC_ATTRIBUTION,
     };
 }

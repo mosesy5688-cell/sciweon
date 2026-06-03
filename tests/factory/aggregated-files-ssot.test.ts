@@ -97,36 +97,48 @@ describe('AGGREGATED_FILES SSoT (stage-3 bundle)', () => {
         expect(AGGREGATED_FILES).toContain('snomed-concepts.jsonl');
         expect(AGGREGATED_FILES).toContain('snomed-concepts-public.jsonl');
     });
+
+    it('includes BOTH loinc files -- PR-UMLS-4 (full internal round-trip + Cat-0 public projection)', () => {
+        // loinc-concepts.jsonl = FULL (code+cui+preferred_str) internal working copy; round-trips
+        // F3->F4 via the aggregated prefix (a future PR-4b cross-link enricher needs the full
+        // indices). loinc-concepts-public.jsonl = Cat-0 {sid_s,sid_c,code,str} projection (cui DROPPED).
+        expect(AGGREGATED_FILES).toContain('loinc-concepts.jsonl');
+        expect(AGGREGATED_FILES).toContain('loinc-concepts-public.jsonl');
+    });
 });
 
 describe('SNAPSHOT_FILES SSoT (snapshot-builder publish list)', () => {
-    const SNAPSHOT_OMITTED = ['snomed-concepts.jsonl', 'mesh-concepts.jsonl'];
+    // PR-UMLS-4: 3-way omission (all three full cui-bearing UMLS concept files).
+    const SNAPSHOT_OMITTED = ['snomed-concepts.jsonl', 'mesh-concepts.jsonl', 'loinc-concepts.jsonl'];
 
-    it('is frozen and contains every AGGREGATED_FILES entry EXCEPT the two full UMLS files', () => {
-        // PR-UMLS-3 + PR-UMLS-2a DIVERGENCE: SNAPSHOT_FILES is no longer a verbatim superset of
-        // AGGREGATED_FILES. It omits BOTH full UMLS concept files (snomed-concepts.jsonl and
-        // mesh-concepts.jsonl) -- both carry the UMLS-proprietary cui that the license forbids
-        // redistributing publicly -- while keeping every other aggregated file.
+    it('is frozen and contains every AGGREGATED_FILES entry EXCEPT the three full UMLS files', () => {
+        // PR-UMLS-3 + PR-UMLS-2a + PR-UMLS-4 DIVERGENCE: SNAPSHOT_FILES is no longer a verbatim
+        // superset of AGGREGATED_FILES. It omits ALL THREE full UMLS concept files
+        // (snomed/mesh/loinc-concepts.jsonl) -- each carries the UMLS-proprietary cui that the
+        // license forbids redistributing publicly -- while keeping every other aggregated file.
         expect(Object.isFrozen(SNAPSHOT_FILES)).toBe(true);
         for (const f of AGGREGATED_FILES) {
-            if (SNAPSHOT_OMITTED.includes(f)) continue; // the two intentional omissions
+            if (SNAPSHOT_OMITTED.includes(f)) continue; // the three intentional omissions
             expect(SNAPSHOT_FILES).toContain(f);
         }
     });
 
-    it('COMPLIANCE: OMITS BOTH full UMLS files (cui) but INCLUDES BOTH cui-free public projections', () => {
+    it('COMPLIANCE: OMITS ALL THREE full UMLS files (cui) but INCLUDES all three cui-free public projections', () => {
         // The most compliance-critical assertion in the repo. If a future change re-unifies
         // SNAPSHOT_FILES with AGGREGATED_FILES (e.g. `[...AGGREGATED_FILES]`), it would silently
-        // republish the proprietary cui (SNOMED + MeSH) -> this test catches it.
+        // republish the proprietary cui (SNOMED + MeSH + LOINC) -> this test catches it.
         // PR-UMLS-2a: mesh-concepts.jsonl OMISSION is the direct breach fix (it previously
         // shipped 355,249 cui-bearing records into the public snapshot).
         expect(SNAPSHOT_FILES).not.toContain('snomed-concepts.jsonl');
         expect(SNAPSHOT_FILES).not.toContain('mesh-concepts.jsonl');
+        expect(SNAPSHOT_FILES).not.toContain('loinc-concepts.jsonl');
         expect(SNAPSHOT_FILES).toContain('snomed-concepts-public.jsonl');
         expect(SNAPSHOT_FILES).toContain('mesh-concepts-public.jsonl');
-        // both full files remain in aggregated (internal F3->F4 round-trip)
+        expect(SNAPSHOT_FILES).toContain('loinc-concepts-public.jsonl');
+        // all three full files remain in aggregated (internal F3->F4 round-trip)
         expect(AGGREGATED_FILES).toContain('snomed-concepts.jsonl');
         expect(AGGREGATED_FILES).toContain('mesh-concepts.jsonl');
+        expect(AGGREGATED_FILES).toContain('loinc-concepts.jsonl');
     });
 
     it('includes drug-labels.jsonl (now via AGGREGATED_FILES, not separate)', () => {

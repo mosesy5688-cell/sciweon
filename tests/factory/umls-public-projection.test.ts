@@ -87,6 +87,16 @@ describe('projectUmlsPublic(LOINC) -- same allowlist as MESH', () => {
         expect(pub.code).toBe('34084-4');
         expect(pub.cui).toBeUndefined();
     });
+
+    it('PR-UMLS-4 COMPLIANCE: the input cui string NEVER appears in the LOINC projection output', () => {
+        // Explicit cui-withhold assertion for the LOINC vocab (the founder-locked universal rule).
+        const input = fullConcept({ code: '2951-2', sab: 'LNC', cui: 'C0337438' });
+        const pub = projectUmlsPublic('LOINC', input);
+        expect(JSON.stringify(pub)).not.toContain('C0337438');
+        expect(Object.prototype.hasOwnProperty.call(pub, 'cui')).toBe(false);
+        // str maps from preferred_str (NEVER from a cui-adjacent field)
+        expect(pub.str).toBe('PREFERRED-STR-PLACEHOLDER');
+    });
 });
 
 describe('cui is ALWAYS dropped + allowlist never leaks an extra field', () => {
