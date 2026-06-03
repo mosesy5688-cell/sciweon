@@ -32,6 +32,7 @@ import {
     readCursor, writeCursor, chunkIterator, buildNextCursor, DEFAULT_CHUNK_SIZE,
 } from './lib/enrichment-cursor.js';
 import { drainAdapterBacklog, DEFAULT_CHUNK_DURATION_ESTIMATE_MS } from './lib/drain-adapter-backlog.js';
+import { loadJsonlStrict } from './lib/jsonl-io.js';
 
 const SOURCE = 'rxnorm';
 const DATA_DIR = './output/linked';
@@ -39,13 +40,6 @@ const REQUEST_DELAY_MS = 150;
 // Per-adapter drain wall-time budget (env override per [[solo_repo_branch_protection]]).
 const DRAIN_BUDGET_MS = Number(process.env.ADAPTER_DRAIN_BUDGET_MS) || 25 * 60 * 1000;
 const COLD_START_MS = Number(process.env.ADAPTER_DRAIN_COLD_START_MS) || DEFAULT_CHUNK_DURATION_ESTIMATE_MS;
-
-async function loadJsonl(file) {
-    try {
-        const c = await fs.readFile(file, 'utf-8');
-        return c.split('\n').filter(Boolean).map(l => JSON.parse(l));
-    } catch { return []; }
-}
 
 // Streaming JSONL writer (V5 architect-locked V8-thread defense). Releases
 // the event loop between record writes via drain backpressure; avoids the
@@ -127,7 +121,7 @@ async function main() {
     console.log(`[RXNORM-ENRICHER] V1 - cycle 22 PR-CORE-2 cursor-driven`);
 
     const file = path.join(DATA_DIR, 'compounds-enriched.jsonl');
-    const compounds = await loadJsonl(file);
+    const compounds = await loadJsonlStrict(file);
     console.log(`[RXNORM-ENRICHER] Loaded ${compounds.length} compounds`);
 
     const eligible = compounds.filter(isEligible);

@@ -30,16 +30,10 @@ import { scoreEntity } from './lib/confidence-scorer.js';
 import {
     loadNegativeCache, saveNegativeCache, partitionInchiKeys,
 } from './lib/chembl-negative-cache.js';
+import { loadJsonlStrict } from './lib/jsonl-io.js';
 
 const DATA_DIR = './output/linked';
 const CACHE_FILE = path.join(DATA_DIR, 'chembl-negative-cache.json');
-
-async function loadJsonl(file) {
-    try {
-        const c = await fs.readFile(file, 'utf-8');
-        return c.split('\n').filter(Boolean).map(l => JSON.parse(l));
-    } catch { return []; }
-}
 
 async function writeJsonl(file, records) {
     await fs.writeFile(file, records.map(r => JSON.stringify(r)).join('\n'));
@@ -78,7 +72,7 @@ function applyEnrichment(c, mol) {
 async function main() {
     console.log('[CHEMBL-ENRICHER] V0.5.7 — batch InChIKey lookup + negative cache');
     const file = path.join(DATA_DIR, 'compounds-enriched.jsonl');
-    const compounds = await loadJsonl(file);
+    const compounds = await loadJsonlStrict(file);
     console.log(`[CHEMBL-ENRICHER] Loaded ${compounds.length} compounds`);
 
     const negativeCache = await loadNegativeCache(CACHE_FILE);

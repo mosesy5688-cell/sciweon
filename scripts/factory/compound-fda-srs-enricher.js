@@ -19,7 +19,6 @@
  *             conflicts atomic-counted only, summary emitted at drain end
  */
 
-import fs from 'fs/promises';
 import { createWriteStream } from 'fs';
 import { once } from 'events';
 import path from 'path';
@@ -28,6 +27,7 @@ import {
 } from './lib/enrichment-cursor.js';
 import { drainAdapterBacklog } from './lib/drain-adapter-backlog.js';
 import { loadLookupFromR2, lookupByInchiKey } from '../ingestion/adapters/fda-srs-adapter.js';
+import { loadJsonlStrict } from './lib/jsonl-io.js';
 
 const SOURCE = 'fda_srs';
 const DATA_DIR = './output/linked';
@@ -43,13 +43,6 @@ const DRAIN_BUDGET_MS = Number(process.env.ADAPTER_DRAIN_BUDGET_MS) || 5 * 60 * 
 // realistic chunk wall <1s.
 const COLD_START_MS = Number(process.env.ADAPTER_DRAIN_COLD_START_MS) || 30 * 1000;
 const MAX_CONFLICT_WARN = 10;  // Rail 10b truncation ceiling per F2 run
-
-async function loadJsonl(file) {
-    try {
-        const c = await fs.readFile(file, 'utf-8');
-        return c.split('\n').filter(Boolean).map(l => JSON.parse(l));
-    } catch { return []; }
-}
 
 // Streaming JSONL writer (V5 architect-locked V8-thread defense).
 async function writeJsonl(file, records) {
@@ -105,7 +98,7 @@ async function main() {
     console.log(`[FDA-SRS-ENRICHER] V1 - Phase 1.8 PR-FDA-SRS-2 cursor + drain template`);
 
     const file = path.join(DATA_DIR, 'compounds-enriched.jsonl');
-    const compounds = await loadJsonl(file);
+    const compounds = await loadJsonlStrict(file);
     console.log(`[FDA-SRS-ENRICHER] Loaded ${compounds.length} compounds`);
 
     const eligible = compounds.filter(isEligible);

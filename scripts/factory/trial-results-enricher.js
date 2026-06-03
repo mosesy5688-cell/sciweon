@@ -16,18 +16,13 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { fetchResultsByNctId } from '../ingestion/adapters/clinicaltrials-adapter.js';
+import { loadJsonlStrict, assertLoaded } from './lib/jsonl-io.js';
 
 const DATA_DIR = './output/linked';
 const REQUEST_DELAY_MS = 200;
+const LABEL = 'RESULTS-ENRICHER';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-async function loadJsonl(file) {
-    try {
-        const c = await fs.readFile(file, 'utf-8');
-        return c.split('\n').filter(Boolean).map(l => JSON.parse(l));
-    } catch { return []; }
-}
 
 async function writeJsonl(file, records) {
     await fs.writeFile(file, records.map(r => JSON.stringify(r)).join('\n'));
@@ -42,7 +37,10 @@ async function main() {
     console.log('[RESULTS-ENRICHER] V0.3.5 — fill CT.gov ResultsSection for existing trials');
 
     const file = path.join(DATA_DIR, 'trials.jsonl');
-    const trials = await loadJsonl(file);
+    const trials = await loadJsonlStrict(file);
+    // HALT loud (no silent data loss): trials.jsonl is overwritten in place, so 0 trials is an
+    // anomaly -- refuse to truncate it. Runs BEFORE writeJsonl.
+    assertLoaded(trials, LABEL, file);
     console.log(`[RESULTS-ENRICHER] Loaded ${trials.length} trials`);
 
     const ctgovTrials = trials.filter(isCtGovTrial);

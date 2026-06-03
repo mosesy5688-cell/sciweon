@@ -1,5 +1,9 @@
 // @ts-nocheck
 import { describe, it, expect } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import {
     normalizeMeshString, buildMeshByCode, buildMeshByString,
     buildMeshLinksForPaper, enrichPapersWithMeshLinks,
@@ -138,5 +142,43 @@ describe('enrichPapersWithMeshLinks -- telemetry + idempotent overwrite', () => 
         // paper identity preserved
         expect(papers[0].sid_s).toBe('PAPER_SID_S');
         expect(papers[0].sid_c).toBe('PAPER_SID_C');
+    });
+});
+
+// --- PR-HARDEN-1: the papers assertLoaded regression. The enricher OVERWRITES papers.jsonl in
+// place, so empty papers must HALT before writeJsonl (refuse to truncate a real populated file).
+// Run the REAL enricher in a temp cwd with controlled output/linked/*.jsonl, assert the loud HALT.
+const MESH_ENRICHER = resolve('scripts/factory/mesh-crosslink-enricher.js');
+function runMeshEnricher({ papers, concepts }) {
+    const workDir = mkdtempSync(join(tmpdir(), 'mesh-xlink-halt-'));
+    const linked = join(workDir, 'output', 'linked');
+    mkdirSync(linked, { recursive: true });
+    const dump = (recs) => recs.map(r => JSON.stringify(r)).join('\n') + (recs.length ? '\n' : '');
+    writeFileSync(join(linked, 'papers.jsonl'), dump(papers), 'utf-8');
+    writeFileSync(join(linked, 'mesh-concepts.jsonl'), dump(concepts), 'utf-8');
+    const result = spawnSync(process.execPath, [MESH_ENRICHER], { cwd: workDir, encoding: 'utf-8' });
+    return { workDir, result, linked };
+}
+
+describe('PR-HARDEN-1 -- MeSH papers assertLoaded HALT (no silent truncation)', () => {
+    it('EMPTY papers (concepts populated) HALTs -- refuses to truncate papers.jsonl', () => {
+        const { workDir, result } = runMeshEnricher({ papers: [], concepts: [stampedConcept()] });
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toMatch(/HALT: 0 records loaded from .*papers\.jsonl/);
+        rmSync(workDir, { recursive: true, force: true });
+    });
+    it('EMPTY concepts (papers populated) HALTs -- would zero every paper mesh_links', () => {
+        const { workDir, result } = runMeshEnricher({ papers: [{ id: 'p1' }], concepts: [] });
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toMatch(/HALT: 0 records loaded from .*mesh-concepts\.jsonl/);
+        rmSync(workDir, { recursive: true, force: true });
+    });
+    it('both populated -> exit 0 + papers.jsonl preserved (NOT truncated)', () => {
+        const papers = [{ id: 'p1', mesh_descriptors: [{ ui: 'D000818' }] }];
+        const { workDir, result, linked } = runMeshEnricher({ papers, concepts: [stampedConcept()] });
+        expect(result.status).toBe(0);
+        const outPapers = readFileSync(join(linked, 'papers.jsonl'), 'utf-8').split('\n').filter(Boolean);
+        expect(outPapers).toHaveLength(1); // preserved, not truncated to empty
+        rmSync(workDir, { recursive: true, force: true });
     });
 });

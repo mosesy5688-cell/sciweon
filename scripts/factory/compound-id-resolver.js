@@ -19,7 +19,6 @@
  * Pipeline position: runs after cross-source-linker. Operates in place.
  */
 
-import fs from 'fs/promises';
 import { createWriteStream } from 'fs';
 import { once } from 'events';
 import path from 'path';
@@ -28,6 +27,7 @@ import {
     readCursor, writeCursor, chunkIterator, buildNextCursor, DEFAULT_CHUNK_SIZE,
 } from './lib/enrichment-cursor.js';
 import { drainAdapterBacklog, DEFAULT_CHUNK_DURATION_ESTIMATE_MS } from './lib/drain-adapter-backlog.js';
+import { loadJsonlStrict } from './lib/jsonl-io.js';
 
 const SOURCE = 'unichem';
 const DATA_DIR = './output/linked';
@@ -35,13 +35,6 @@ const DATA_DIR = './output/linked';
 // faster fast-RTT adapters (e.g. RxNorm bulk file reader) to tune downward.
 const DRAIN_BUDGET_MS = Number(process.env.ADAPTER_DRAIN_BUDGET_MS) || 25 * 60 * 1000;
 const COLD_START_MS = Number(process.env.ADAPTER_DRAIN_COLD_START_MS) || DEFAULT_CHUNK_DURATION_ESTIMATE_MS;
-
-async function loadJsonl(file) {
-    try {
-        const c = await fs.readFile(file, 'utf-8');
-        return c.split('\n').filter(Boolean).map(l => JSON.parse(l));
-    } catch { return []; }
-}
 
 // Streaming JSONL writer (V5 architect-locked V8-thread defense). Releases
 // the event loop between record writes via drain backpressure; avoids the
@@ -119,7 +112,7 @@ async function main() {
     console.log('[ID-RESOLVER] V0.3.4 - UniChem (cycle 22 PR-CORE-2 cursor)');
 
     const file = path.join(DATA_DIR, 'compounds-enriched.jsonl');
-    const compounds = await loadJsonl(file);
+    const compounds = await loadJsonlStrict(file);
     console.log(`[ID-RESOLVER] Loaded ${compounds.length} compounds`);
 
     // PR-FDA-SRS-2c one-time bootstrap: backfill unichem_matched on existing

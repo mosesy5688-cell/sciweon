@@ -31,25 +31,14 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { enrichTrialsWithLoincLinks, assertLoincConceptsLoaded, assertTrialsLoaded } from './lib/loinc-crosslink-helpers.js';
+// PR-HARDEN-1: the PR-4b ENOENT-only loadJsonl fix now lives in the shared lib/jsonl-io.js
+// (loadJsonlStrict) so the single implementation is reused across every enricher. skipComments:true
+// preserves the original PR-4b '#'-comment filter byte-identically. The HALT guards stay the
+// loinc-helper assertTrialsLoaded / assertLoincConceptsLoaded (so the loinc tests stay green).
+import { loadJsonlStrict } from './lib/jsonl-io.js';
 
 const OUTPUT_DIR = './output/linked';
 const LABEL = 'LOINC-XLINK';
-
-// FIX 2 (PR-4b review): ONLY a FILE-ABSENT (ENOENT) read is a legitimate empty -> []. Every other
-// error (a read failure, or a JSON.parse on a malformed line) RETHROWS so it HALTs loud via main's
-// .catch -> process.exit(1). The prior bare `catch { return []; }` swallowed a parse error and let
-// writeJsonl(trialsPath, []) OVERWRITE trials.jsonl with empty content -- silent total data loss.
-async function loadJsonl(file) {
-    let c;
-    try {
-        c = await fs.readFile(file, 'utf-8');
-    } catch (err) {
-        if (err && err.code === 'ENOENT') return []; // file absent = legitimately empty
-        throw err; // a read failure (perms/IO) is an anomaly -> HALT loud, never a silent overwrite
-    }
-    // A malformed JSON line MUST throw (not return []) so a corrupt trials.jsonl HALTs.
-    return c.split('\n').filter(Boolean).filter(l => !l.startsWith('#')).map(l => JSON.parse(l));
-}
 
 async function writeJsonl(file, records) {
     // join() is stack-safe at any size (Defect-15 lesson).
@@ -61,8 +50,8 @@ async function main() {
 
     const trialsPath = path.join(OUTPUT_DIR, 'trials.jsonl');
     const loincPath = path.join(OUTPUT_DIR, 'loinc-concepts.jsonl');
-    const trials = await loadJsonl(trialsPath);
-    const concepts = await loadJsonl(loincPath);
+    const trials = await loadJsonlStrict(trialsPath, { skipComments: true });
+    const concepts = await loadJsonlStrict(loincPath, { skipComments: true });
     console.log(`[${LABEL}] Loaded ${trials.length} trials, ${concepts.length} stamped LOINC concepts`);
 
     // HALT loud (FIX 2): trials are produced before the UMLS cascade, so 0 trials is an anomaly --

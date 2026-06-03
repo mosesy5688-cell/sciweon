@@ -26,15 +26,10 @@ import { fetchByPmidBatch, normalize as normalizePaper } from '../ingestion/adap
 import { loadIndex as loadRetractionIndex, lookup as lookupRetraction } from '../ingestion/adapters/retraction-watch-adapter.js';
 import { PAPER_SCHEMA } from '../../src/lib/schemas/paper.js';
 import { gate } from './lib/validation-gate.js';
+import { loadJsonlStrict, assertLoaded } from './lib/jsonl-io.js';
 
 const OUTPUT_DIR = './output/linked';
-
-async function loadJsonl(file) {
-    try {
-        const c = await fs.readFile(file, 'utf-8');
-        return c.split('\n').filter(Boolean).map(l => JSON.parse(l));
-    } catch { return []; }
-}
+const LABEL = 'BIDIR-LINKER';
 
 async function writeJsonl(file, records) {
     await fs.writeFile(file, records.map(r => JSON.stringify(r)).join('\n'));
@@ -68,10 +63,17 @@ function buildNctToCompoundMap(trials) {
 async function main() {
     console.log('[BIDIR-LINKER] V0.1 — paper ↔ trial cross-reference resolution');
 
-    const trials = await loadJsonl(path.join(OUTPUT_DIR, 'trials.jsonl'));
-    const papers = await loadJsonl(path.join(OUTPUT_DIR, 'papers.jsonl'));
-    const paperLinks = await loadJsonl(path.join(OUTPUT_DIR, 'paper-links.jsonl'));
+    const papersPath = path.join(OUTPUT_DIR, 'papers.jsonl');
+    const trials = await loadJsonlStrict(path.join(OUTPUT_DIR, 'trials.jsonl'));
+    const papers = await loadJsonlStrict(papersPath);
+    const paperLinks = await loadJsonlStrict(path.join(OUTPUT_DIR, 'paper-links.jsonl'));
     console.log(`[BIDIR-LINKER] Loaded: ${trials.length} trials, ${papers.length} papers, ${paperLinks.length} links`);
+
+    // HALT loud (no silent data loss): papers.jsonl is overwritten in place and is always produced,
+    // so 0 papers is an anomaly -- refuse to truncate it. paper-links.jsonl is NOT guarded (it may
+    // be legitimately empty); it relies on loadJsonlStrict's parse-protection only. Runs BEFORE the
+    // terminal writeJsonl.
+    assertLoaded(papers, LABEL, papersPath);
 
     const rwIndex = await loadRetractionIndex({ allowStale: true });
 
