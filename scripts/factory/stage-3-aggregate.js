@@ -105,9 +105,8 @@ async function main() {
     const loincColdStart = await isLoincColdStart({ client: makeR2Client('STAGE-3'), bucket: process.env.R2_BUCKET });
     if (loincColdStart) warnLoincColdStart();
 
-    // V0.5.x: trial scripts run sequentially (last-writer-wins on trials.jsonl);
-    // papers/targets/diseases each own disjoint output files so parallel-safe.
-    // PR-UMLS-2: mesh-concept-linker owns mesh-concepts.jsonl (disjoint) -> parallel-safe.
+    // V0.5.x: trials run sequentially (last-writer-wins on trials.jsonl); papers/targets/
+    // diseases/mesh each own disjoint output files so parallel-safe (PR-UMLS-2 mesh too).
     const [trialResults, paperResults, targetResults, diseaseResults, meshResults, snomedResults, loincResults] = await Promise.all([
         runSequential('Trials', [
             { name: 'trial-linker', fn: () => runScript('trial-linker.js') },
@@ -119,14 +118,15 @@ async function main() {
         ]),
         runSequential('Targets', [
             { name: 'target-linker', fn: () => runScript('target-linker.js') },
+            // PR-UNIPROT-2b: enrich targets.jsonl by UniProt accession (all-organism). SEQUENTIAL after target-linker -- same output/linked/targets.jsonl.
+            { name: 'uniprot-target-enrich', fn: () => runScript('uniprot-target-enrich.js') },
         ]),
         runSequential('Diseases', [
             { name: 'disease-linker', fn: () => runScript('disease-linker.js') },
         ]),
         runSequential('MeSH', [{ name: 'mesh-concept-linker', fn: () => runScript('mesh-concept-linker.js') }]),
         // PR-UMLS-3: snomed-concept-linker owns snomed-concepts.jsonl (disjoint) -> parallel-safe.
-        // Cold-start guard: skipped (no R2 cursor) so the linker's no-catch cursor read can never
-        // throw and meltdown the daily cascade before the first SNOMED harvest materializes.
+        // Cold-start guard: skipped (no R2 cursor) so the linker's no-catch cursor read can never throw + meltdown the daily cascade before the first SNOMED harvest materializes.
         snomedColdStart
             ? Promise.resolve([{ task: 'snomed-concept-linker', ok: true, error: null, skipped: 'snomed-cold-start' }])
             : runSequential('SNOMED', [{ name: 'snomed-concept-linker', fn: () => runScript('snomed-concept-linker.js') }]),
