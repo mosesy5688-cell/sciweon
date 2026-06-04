@@ -16,10 +16,10 @@
 import { writeFileSync, createReadStream } from 'fs';
 import readline from 'readline';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
-import { spawnSync } from 'child_process';
 import {
-    buildOtTargetMap, mergeBioactivityTargets, parseJsonlBuffer,
+    addOtRecordToTargetMap, mergeBioactivityTargets,
 } from './lib/target-linker-helpers.js';
+import { streamDecompressForEach } from './lib/stream-decompress-foreach.js';
 
 const TARGETS_OUTPUT = 'output/linked/targets.jsonl';
 const BIOACTIVITIES_PATH = 'output/linked/bioactivities.jsonl';
@@ -49,13 +49,6 @@ async function getR2Object(client, bucket, key) {
     return streamToBuffer(res.Body);
 }
 
-function zstdCliDecompress(input) {
-    const result = spawnSync('zstd', ['-d', '--stdout', '--quiet'], { input, maxBuffer: 256 * 1024 * 1024 });
-    if (result.error) throw new Error(`[TARGET-LINKER] zstd CLI spawn failed: ${result.error.message}`);
-    if (result.status !== 0) throw new Error(`[TARGET-LINKER] zstd CLI exit ${result.status}: ${result.stderr?.toString()}`);
-    return result.stdout;
-}
-
 async function readBioactivities(filePath) {
     const records = [];
     const rl = readline.createInterface({ input: createReadStream(filePath, { encoding: 'utf-8' }), crlfDelay: Infinity });
@@ -78,11 +71,22 @@ async function main() {
     const cursor = JSON.parse(cursorBuf.toString('utf-8'));
     console.log(`[TARGET-LINKER] OT target cursor: release=${cursor.release_version} record_count=${cursor.record_count} schema=${cursor.schema_version}`);
 
+    // STREAMING decompress (PR fix: was a spawnSync whole-buffer decompress with
+    // maxBuffer=256MB -- the same ENOBUFS class that broke the cascade in
+    // uniprot-target-enrich). The OT target bulk has NO `#` header (hasHeader:false);
+    // malformed lines are silently skipped (onMalformed:'count', count ignored --
+    // preserving the prior parseJsonlBuffer silent-skip contract). Each record streams
+    // straight into the target Map via addOtRecordToTargetMap, so the decompressed
+    // corpus is never materialized; only the Map (deduped by accession) is retained.
     const otCompressed = await getR2Object(client, bucket, cursor.r2_key);
-    const otRecords = parseJsonlBuffer(zstdCliDecompress(otCompressed));
-    console.log(`[TARGET-LINKER] Loaded ${otRecords.length} OT target records from ${cursor.r2_key}`);
-
-    const { targets, skippedNoUniprot: otSkipped } = buildOtTargetMap(otRecords, nowIso);
+    const targets = new Map();
+    let otSkipped = 0;
+    const { recordsSeen: otRecordCount } = await streamDecompressForEach(
+        otCompressed, (ot) => {
+            if (addOtRecordToTargetMap(targets, ot, nowIso).skippedNoUniprot) otSkipped++;
+        },
+        { label: 'TARGET-LINKER', hasHeader: false, onMalformed: 'count' });
+    console.log(`[TARGET-LINKER] Loaded ${otRecordCount} OT target records from ${cursor.r2_key}`);
     console.log(`[TARGET-LINKER] OT primary load: ${targets.size} unique UniProt canonical (skipped ${otSkipped} OT records without UniProt)`);
 
     const bioRecords = await readBioactivities(BIOACTIVITIES_PATH).catch(() => []);
