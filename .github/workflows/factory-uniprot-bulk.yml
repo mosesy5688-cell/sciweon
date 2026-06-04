@@ -1,0 +1,146 @@
+name: Factory UniProt Bulk
+
+# PR-UNIPROT-1: UniProt SwissProt FULL-corpus bulk harvest.
+#
+# Two jobs (mirrors factory-open-targets-bulk.yml PR-OT-5 shape):
+#   check-version  - pre-flight release-changed gate (cron + manual)
+#   ingest         - streams uniprot_sprot.dat.gz -> R2 artifact + cursor
+#                    (gated by check-version OR a manual release_version override)
+#
+# Anonymous upstream (UniProt FTP-over-HTTPS, no UNIPROT secret); R2 secrets
+# are used only for the cursor read (check-version) + the artifact/cursor PUT.
+#
+# Rail 1 (no-broken-windows): check-version exits clean success on an unchanged
+#   release; ingest is skipped via `if`. No red CI noise on idle months.
+# Rail 2 (bidirectional convergence): the ingest writes the cursor at the end on
+#   BOTH the schedule path AND the workflow_dispatch (manual) path, so the next
+#   scheduled check short-circuits.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'UniProt release (e.g. 2026_01; blank = auto-detect from reldate.txt)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Dry-run ingest (no R2 writes)'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+  schedule:
+    # Monthly-ish: 1st of the month 04:00 UTC. UniProt releases ~every 8 weeks;
+    # an unchanged release is an O(1) reldate.txt text-compare no-op (Rail 1).
+    - cron: '0 4 1 * *'
+
+permissions:
+  contents: read
+
+env:
+  R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+  R2_BUCKET: ${{ secrets.R2_BUCKET }}
+  R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+  R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
+      release: ${{ steps.compare.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install deps
+        run: npm ci
+      - name: Compare UniProt reldate vs R2 cursor release
+        id: compare
+        env:
+          MANUAL_RELEASE: ${{ github.event.inputs.release_version }}
+        run: |
+          set -e
+          # Rail 2 manual override branch.
+          if [ -n "$MANUAL_RELEASE" ]; then
+            echo "Manual dispatch with release=${MANUAL_RELEASE} -- bypassing version check"
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "release=${MANUAL_RELEASE}" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          # Auto-detect upstream release from reldate.txt (Release YYYY_MM).
+          RELDATE_URL="https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/reldate.txt"
+          LATEST=$(curl -sL "$RELDATE_URL" | grep -oE 'Release [0-9]{4}_[0-9]{2}' | head -1 | sed -E 's/Release //')
+          if [ -z "$LATEST" ]; then
+            echo "::error::could not parse 'Release YYYY_MM' from reldate.txt"
+            exit 1
+          fi
+          echo "UniProt latest release: ${LATEST}"
+          # Read the R2 cursor's stored release_version.
+          PRIOR_RELEASE=$(node -e "
+            const {S3Client, GetObjectCommand} = require('@aws-sdk/client-s3');
+            const s3 = new S3Client({region:'auto', endpoint:process.env.R2_ENDPOINT, credentials:{accessKeyId:process.env.R2_ACCESS_KEY_ID, secretAccessKey:process.env.R2_SECRET_ACCESS_KEY}});
+            s3.send(new GetObjectCommand({Bucket:process.env.R2_BUCKET, Key:'state/uniprot-bulk-cursor.json'})).then(async r => {
+              const text = await new Promise((res, rej) => { let buf=''; r.Body.on('data',c=>buf+=c); r.Body.on('end',()=>res(buf)); r.Body.on('error',rej); });
+              console.log((JSON.parse(text).release_version) || '');
+            }).catch(() => console.log(''));
+          ")
+          echo "R2 cursor release_version: ${PRIOR_RELEASE:-<none>}"
+          if [ "$LATEST" = "$PRIOR_RELEASE" ]; then
+            echo "No new release. R2 cursor at ${PRIOR_RELEASE}; skipping ingest (Rail 1 clean success)."
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "Release transition: ${PRIOR_RELEASE:-<none>} -> ${LATEST}. Triggering ingest."
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+          echo "release=${LATEST}" >> $GITHUB_OUTPUT
+      - name: Summary
+        if: always()
+        run: |
+          echo "## UniProt check-version" >> $GITHUB_STEP_SUMMARY
+          echo "- changed: ${{ steps.compare.outputs.changed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- release: ${{ steps.compare.outputs.release }}" >> $GITHUB_STEP_SUMMARY
+
+  ingest:
+    needs: check-version
+    if: needs.check-version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    # The .dat.gz is 660 MiB compressed / 4.18 GB uncompressed; the stream-parse
+    # of ~574k records + zstd-19 compress + R2 PUT fits comfortably under 60 min.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install deps
+        run: npm ci
+      - name: Install zstd CLI
+        # Native zstd CLI (mirrors PR-OT-3a hotfix): the WASM helper OOMs on large
+        # inputs and the Rust FFI is not built in GHA ubuntu-latest.
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zstd
+          zstd --version
+      - name: Harvest SwissProt -> R2 artifact + cursor
+        run: |
+          set -e
+          ARGS=""
+          if [ -n "${{ needs.check-version.outputs.release }}" ]; then
+            ARGS="--release=${{ needs.check-version.outputs.release }}"
+          fi
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          node scripts/factory/uniprot-sprot-harvest.js $ARGS
+      - name: Ingest report summary
+        if: always()
+        run: |
+          echo "## UniProt Ingest report (release ${{ needs.check-version.outputs.release }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Dry-run: ${{ github.event.inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
+          echo "- R2 key: processed/bulk/uniprot/${{ needs.check-version.outputs.release }}/sprot.jsonl.zst" >> $GITHUB_STEP_SUMMARY
+          echo "- Cursor: state/uniprot-bulk-cursor.json" >> $GITHUB_STEP_SUMMARY
