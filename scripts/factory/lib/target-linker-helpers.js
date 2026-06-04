@@ -19,16 +19,28 @@ export function buildOtTargetMap(otRecords, nowIso) {
     const targets = new Map();
     let skippedNoUniprot = 0;
     for (const ot of otRecords) {
-        const ids = Array.isArray(ot.uniprot_canonical_ids) ? ot.uniprot_canonical_ids : [];
-        if (ids.length === 0) { skippedNoUniprot++; continue; }
-        for (const rawUniprot of ids) {
-            const uniprot = sanitizeUniprot(rawUniprot);
-            if (!uniprot) continue;
-            if (targets.has(uniprot)) continue;
-            targets.set(uniprot, buildOtTargetEntry(ot, uniprot, nowIso));
-        }
+        if (addOtRecordToTargetMap(targets, ot, nowIso).skippedNoUniprot) skippedNoUniprot++;
     }
     return { targets, skippedNoUniprot };
+}
+
+/**
+ * Add ONE OT record to an existing target Map (the streaming entry point used by
+ * the F3 target-linker after the spawnSync->streaming decompress conversion).
+ * Byte-identical per-record logic to buildOtTargetMap's loop body, extracted so the
+ * whole-array path (tests) and the streaming path (linker) cannot drift.
+ * @returns {{ skippedNoUniprot: boolean }}  true iff the record had no canonical UniProt id.
+ */
+export function addOtRecordToTargetMap(targets, ot, nowIso) {
+    const ids = Array.isArray(ot.uniprot_canonical_ids) ? ot.uniprot_canonical_ids : [];
+    if (ids.length === 0) return { skippedNoUniprot: true };
+    for (const rawUniprot of ids) {
+        const uniprot = sanitizeUniprot(rawUniprot);
+        if (!uniprot) continue;
+        if (targets.has(uniprot)) continue;
+        targets.set(uniprot, buildOtTargetEntry(ot, uniprot, nowIso));
+    }
+    return { skippedNoUniprot: false };
 }
 
 function buildOtTargetEntry(ot, uniprot, nowIso) {

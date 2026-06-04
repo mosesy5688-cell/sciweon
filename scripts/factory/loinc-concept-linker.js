@@ -31,8 +31,8 @@
  */
 
 import { writeFileSync } from 'fs';
-import { spawnSync } from 'child_process';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
+import { streamDecompressForEach } from './lib/stream-decompress-foreach.js';
 
 const LABEL = 'LOINC-LINKER';
 const LOINC_CURSOR_KEY = 'state/umls-loinc-bulk-cursor.json';
@@ -62,29 +62,20 @@ async function getR2Object(client, bucket, key) {
     return streamToBuffer(res.Body);
 }
 
-function zstdCliDecompress(input) {
-    const result = spawnSync('zstd', ['-d', '--stdout', '--quiet'], { input, maxBuffer: 1024 * 1024 * 1024 });
-    if (result.error) throw new Error(`[${LABEL}] zstd CLI spawn failed: ${result.error.message}`);
-    if (result.status !== 0) throw new Error(`[${LABEL}] zstd CLI exit ${result.status}: ${result.stderr?.toString()}`);
-    return result.stdout;
-}
-
 /**
- * Parse the decompressed JSONL buffer. The artifact's FIRST line is a `#`-prefixed
- * license header (umls-loinc-harvest.js); skip it + blank lines. Every remaining
- * non-empty line is a concept record (pass-through, no transform).
+ * STREAMING decompress + parse (PR fix: was a spawnSync whole-buffer decompress with
+ * maxBuffer=1GB -- the same ENOBUFS class that broke the cascade in
+ * uniprot-target-enrich). The artifact's FIRST line is a `#`-prefixed license header
+ * (umls-loinc-harvest.js); skip it + blank lines. Every remaining non-empty line is a
+ * concept record (pass-through, no transform). Malformed lines are COUNTED (not thrown
+ * here) so the caller preserves its exact "throw iff parseErrors > 0" contract.
  */
-function parseLoincJsonl(buf) {
+async function parseLoincJsonl(compressed) {
     const records = [];
-    let parseErrors = 0;
-    let headerSkipped = 0;
-    for (const line of buf.toString('utf-8').split('\n')) {
-        const t = line.trim();
-        if (!t) continue;
-        if (t.startsWith('#')) { headerSkipped++; continue; }
-        try { records.push(JSON.parse(t)); } catch { parseErrors++; }
-    }
-    return { records, parseErrors, headerSkipped };
+    const { recordsSeen, headerSkipped, malformed } = await streamDecompressForEach(
+        compressed, (rec) => { records.push(rec); },
+        { label: LABEL, hasHeader: true, onMalformed: 'count' });
+    return { records, parseErrors: malformed, headerSkipped, recordsSeen };
 }
 
 async function main() {
@@ -102,7 +93,7 @@ async function main() {
     }
 
     const compressed = await getR2Object(client, bucket, cursor.r2_data_key);
-    const { records, parseErrors, headerSkipped } = parseLoincJsonl(zstdCliDecompress(compressed));
+    const { records, parseErrors, headerSkipped } = await parseLoincJsonl(compressed);
     if (parseErrors > 0) {
         // A JSON parse error is silent data loss -- the cursor count would no longer
         // match. Fail loud rather than emit a short file.

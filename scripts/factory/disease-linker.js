@@ -16,11 +16,11 @@
  */
 
 import { writeFileSync } from 'fs';
-import { spawnSync } from 'child_process';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import {
     LINKER_LABEL, buildDiseaseRecord, dedupeBySciweonId, buildNamespaceCounts,
 } from './lib/disease-linker-helpers.js';
+import { streamDecompressForEach } from './lib/stream-decompress-foreach.js';
 
 const DISEASE_CURSOR_KEY = 'state/open-targets-disease-cursor.json';
 const DISEASES_OUTPUT = 'output/linked/diseases.jsonl';
@@ -49,24 +49,6 @@ async function getR2Object(client, bucket, key) {
     return streamToBuffer(res.Body);
 }
 
-function zstdCliDecompress(input) {
-    const result = spawnSync('zstd', ['-d', '--stdout', '--quiet'], { input, maxBuffer: 256 * 1024 * 1024 });
-    if (result.error) throw new Error(`[${LINKER_LABEL}] zstd CLI spawn failed: ${result.error.message}`);
-    if (result.status !== 0) throw new Error(`[${LINKER_LABEL}] zstd CLI exit ${result.status}: ${result.stderr?.toString()}`);
-    return result.stdout;
-}
-
-function parseJsonlBuffer(buf) {
-    const records = [];
-    let parseErrors = 0;
-    for (const line of buf.toString('utf-8').split('\n')) {
-        const t = line.trim();
-        if (!t) continue;
-        try { records.push(JSON.parse(t)); } catch { parseErrors++; }
-    }
-    return { records, parseErrors };
-}
-
 async function main() {
     const startMs = Date.now();
     const nowIso = new Date().toISOString();
@@ -78,18 +60,24 @@ async function main() {
     const cursor = JSON.parse(cursorBuf.toString('utf-8'));
     console.log(`[${LINKER_LABEL}] OT disease cursor: release=${cursor.release_version} record_count=${cursor.record_count} schema=${cursor.schema_version}`);
 
+    // STREAMING decompress (PR fix: was a spawnSync whole-buffer decompress with
+    // maxBuffer=256MB -- the same ENOBUFS class that broke the cascade in
+    // uniprot-target-enrich). The OT disease bulk has NO `#` header (hasHeader:false);
+    // malformed lines are skip-and-WARN (onMalformed:'count', preserving the prior
+    // contract -- NOT a hard-fail). buildDiseaseRecord runs per record in onRecord, so
+    // the decompressed corpus is never materialized; only `built` is retained.
     const compressed = await getR2Object(client, bucket, cursor.r2_key);
-    const { records: otRows, parseErrors } = parseJsonlBuffer(zstdCliDecompress(compressed));
-    if (parseErrors > 0) console.warn(`[${LINKER_LABEL}] ${parseErrors} JSON parse errors skipped`);
-    console.log(`[${LINKER_LABEL}] Loaded ${otRows.length} OT disease rows from ${cursor.r2_key}`);
-
     const built = [];
     const skipCounts = { missing_disease_id: 0, unparseable_disease_id: 0 };
-    for (const row of otRows) {
-        const r = buildDiseaseRecord(row, nowIso);
-        if (r.skip) { skipCounts[r.skip] = (skipCounts[r.skip] || 0) + 1; continue; }
-        built.push(r.record);
-    }
+    const { recordsSeen: totalOtRows, malformed: parseErrors } = await streamDecompressForEach(
+        compressed, (row) => {
+            const r = buildDiseaseRecord(row, nowIso);
+            if (r.skip) { skipCounts[r.skip] = (skipCounts[r.skip] || 0) + 1; return; }
+            built.push(r.record);
+        },
+        { label: LINKER_LABEL, hasHeader: false, onMalformed: 'count' });
+    if (parseErrors > 0) console.warn(`[${LINKER_LABEL}] ${parseErrors} JSON parse errors skipped`);
+    console.log(`[${LINKER_LABEL}] Loaded ${totalOtRows} OT disease rows from ${cursor.r2_key}`);
 
     const { deduped, duplicates } = dedupeBySciweonId(built);
     const namespaceCounts = buildNamespaceCounts(deduped);
@@ -102,7 +90,7 @@ async function main() {
     const elapsed = Math.round((Date.now() - startMs) / 1000);
     console.log(`[${LINKER_LABEL}] Wrote ${DISEASES_OUTPUT} (${deduped.length} diseases, ${Buffer.byteLength(output)}B) in ${elapsed}s`);
     console.log(`[${LINKER_LABEL}] === SUMMARY ===`);
-    console.log(`  total_ot_rows:            ${otRows.length}`);
+    console.log(`  total_ot_rows:            ${totalOtRows}`);
     console.log(`  stamping_eligible:        ${deduped.length}`);
     console.log(`  skip_missing_disease_id:  ${skipCounts.missing_disease_id}`);
     console.log(`  skip_unparseable_id:      ${skipCounts.unparseable_disease_id}`);
