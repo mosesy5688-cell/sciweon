@@ -1,0 +1,38 @@
+name: Factory UniProt Diagnostic
+
+# PR-UNIPROT-0: UniProt SwissProt (.dat) diagnostic row-dump probe (diagnostic-only,
+# per [[external_dataset_diagnostic_first]]). Discovers the release from
+# current_release/.../reldate.txt, streams uniprot_sprot.dat.gz through gunzip
+# (anonymous HTTPS -- NO secrets), dumps the first 5 raw // record blocks verbatim +
+# a TENTATIVE field map + measures the real //-record count / per-taxon tally /
+# DR xref-source distribution / no-OX count / uncompressed size / CC BY 4.0.
+# ZERO extraction / mutation / R2 write. workflow_dispatch only (own per-attempt auth).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: UniProt SwissProt diagnostic row-dump
+        run: |
+          node scripts/factory/diagnostic-uniprot-sprot-probe.js 2>&1 | tee uniprot-sprot-probe.log
+      - name: Upload probe log artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uniprot-sprot-probe-log
+          path: uniprot-sprot-probe.log
+          if-no-files-found: warn
