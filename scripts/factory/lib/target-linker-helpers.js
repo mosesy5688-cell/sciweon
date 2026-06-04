@@ -47,7 +47,13 @@ function buildOtTargetEntry(ot, uniprot, nowIso) {
         function_descriptions: Array.isArray(ot.function_descriptions) ? ot.function_descriptions : [],
         subcellular_locations: Array.isArray(ot.subcellular_locations) ? ot.subcellular_locations : [],
         genomic_location: ot.genomic_location ?? null,
-        organism: { taxon_id: 9606, scientific_name: 'Homo sapiens' },
+        // PR-UNIPROT-2a: organism is EVIDENCE-DERIVED, not a hardcoded human assertion.
+        // OT target rows carry no organism field (the SQL is human-scoped, not organism-
+        // stamped), so we no longer FABRICATE taxon 9606 here. organism stays null until
+        // the PR-UNIPROT-2b UniProt accession-join supplies the real organism from the
+        // SwissProt evidence (all-organism). [[evidence_not_verdict]]: do not assert what
+        // the source row does not state.
+        organism: null,
         provenance: {
             sources: [{
                 source: 'open_targets',

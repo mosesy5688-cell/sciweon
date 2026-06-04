@@ -78,11 +78,13 @@ describe('buildOtTargetMap — OT primary load', () => {
         expect(targets.get('P00533')).toBeDefined();
     });
 
-    it('Homo sapiens organism stamped on every OT target', () => {
+    it('organism is evidence-derived (null on OT load — PR-UNIPROT-2a removed the 9606 lie)', () => {
         const { targets } = buildOtTargetMap([otRecord(['P00533'])], NOW);
         const t = targets.get('P00533');
-        expect(t.organism.taxon_id).toBe(9606);
-        expect(t.organism.scientific_name).toBe('Homo sapiens');
+        // The hardcoded { taxon_id: 9606, scientific_name: 'Homo sapiens' } is GONE.
+        // OT rows carry no organism evidence -> organism stays null until the UniProt
+        // accession-join (PR-UNIPROT-2b) supplies the real, all-organism taxon.
+        expect(t.organism).toBeNull();
     });
 });
 
