@@ -110,13 +110,15 @@ describe('parseUniprotRecord -- full field extraction', () => {
         expect(rec.function_descriptions[0]).not.toContain('Homodimer');
     });
 
-    it('ALL DR sources captured (no whitelist) + sorted by (source,id)', () => {
+    it('ALL DR sources captured (no whitelist, no cap) + sorted by (source,id)', () => {
         expect(rec.db_xrefs).toEqual([
             { source: 'AlphaFoldDB', id: 'P12345' },
             { source: 'Ensembl', id: 'ENST00000123456' },
             { source: 'GO', id: 'GO:0005524' },
             { source: 'PDB', id: '1ABC' },
         ]);
+        // _meta carries no dr_capped field (PR-UNIPROT-1b removed the DR cap).
+        expect(rec._meta.dr_capped).toBeUndefined();
     });
 
     it('license stamped cc-by-4.0', () => {

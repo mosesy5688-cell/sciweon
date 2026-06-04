@@ -37,7 +37,7 @@ export const UNIPROT_BULK_SCHEMA = {
     sequence_mol_weight: { type: 'integer', required: false, nullable: true },
     function_descriptions: { type: 'array', required: true, itemType: 'string', maxItems: 1000 },
     db_xrefs: {
-        type: 'array', required: true, maxItems: 4096,
+        type: 'array', required: true, // no maxItems: PR-UNIPROT-1b removed the DR cap; capture ALL xrefs
         items: {
             source: { type: 'string', required: true, maxLength: 100 },
             id: { type: 'string', required: false, maxLength: 200 },
