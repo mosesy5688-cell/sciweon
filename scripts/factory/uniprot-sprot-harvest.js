@@ -22,7 +22,8 @@
  * pinned (ZSTD_LEVEL). No Date.now / Math.random in any artifact field.
  *
  * NO SILENT DROP ([[cross_cycle_silent_data_loss]]): a parser throw (no-AC record)
- * is FATAL (non-zero exit, no partial artifact); no_ox + dr_capped are COUNTED + logged.
+ * is FATAL (non-zero exit, no partial artifact); no_ox is COUNTED + logged. (There is
+ * no DR cap: PR-UNIPROT-1b removed DR_XREF_CAP -- every DR xref is captured.)
  *
  * Usage: node scripts/factory/uniprot-sprot-harvest.js [--release=2026_01] [--dry-run]
  * Exit: 0 OK / 1 args / 2 release-discovery / 3 stream-or-parse / 4 zstd / 5 R2.
@@ -112,10 +113,6 @@ async function consumeBlock(stream, state, block) {
     }
     state.recordCount += 1;
     if (rec._meta.no_ox) state.noOxCount += 1;
-    if (rec._meta.dr_capped > 0) {
-        state.drCappedRecords += 1;
-        state.drCappedTotal += rec._meta.dr_capped;
-    }
     tallyTaxon(state.taxa, rec);
     if (!stream.write(recordToJsonl(rec) + '\n')) await once(stream, 'drain');
 }
@@ -151,8 +148,6 @@ function buildCursor(release, state, jsonlBytes, zstBytes, dataKey, ingestedAt) 
         record_count: state.recordCount,
         no_ox_count: state.noOxCount,
         dropped_malformed_count: 0, // a malformed record hard-fails; published artifact has 0
-        dr_capped_records: state.drCappedRecords,
-        dr_capped_total: state.drCappedTotal,
         per_taxon_count: perTaxon,
         byte_size_uncompressed_stream: state.uncompressedBytes,
         byte_size_jsonl: jsonlBytes,
@@ -178,7 +173,7 @@ async function main() {
     const tmpJsonl = join(tmpdir(), `uniprot-sprot-${process.pid}.jsonl`);
     const tmpZst = `${tmpJsonl}.zst`;
     const state = {
-        recordCount: 0, noOxCount: 0, drCappedRecords: 0, drCappedTotal: 0,
+        recordCount: 0, noOxCount: 0,
         uncompressedBytes: 0, taxa: newTaxonTally(),
     };
 
@@ -206,7 +201,6 @@ async function main() {
         }
         const jsonlBytes = statSync(tmpJsonl).size;
         console.log(`${TAG} parsed records=${state.recordCount} no_ox=${state.noOxCount} `
-            + `dr_capped_records=${state.drCappedRecords} dr_capped_total=${state.drCappedTotal} `
             + `uncompressed_stream=${(state.uncompressedBytes / 1e9).toFixed(2)}GB jsonl=${jsonlBytes}B`);
         const topTaxa = [...state.taxa.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
         console.log(`${TAG} top taxa (telemetry, NOT a filter): ${JSON.stringify(topTaxa)}`);

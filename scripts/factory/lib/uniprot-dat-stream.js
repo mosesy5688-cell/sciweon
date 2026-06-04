@@ -9,8 +9,12 @@
  * (uniprot-sprot-harvest.js) wires to the gunzip stream.
  *
  * FULL-CORPUS, FULL-RECORD (founder ruling "preserve all source data"): NO organism
- * filter, NO field whitelist -- every record + every DR xref is captured. Organism /
- * xref-source scope is a downstream (PR-UNIPROT-2 merge-boundary) concern, not here.
+ * filter, NO field whitelist, NO per-record DR cap -- every record + every DR xref is
+ * captured unconditionally. Organism / xref-source scope is a downstream (PR-UNIPROT-2
+ * merge-boundary) concern, not here. (PR-UNIPROT-1b removed the old DR_XREF_CAP=4096:
+ * the dry-run proved 3 highly-studied proteins exceeded it, dropping 3099 real xrefs --
+ * a presumed bound is not a license to cut source data; a per-record DR array of even
+ * ~6k small {source,id} objects is trivial transient memory, written then released.)
  *
  * Determinism (GEMINI.md Sec 7, byte-identical): db_xrefs sorted by (source,id),
  * ec_numbers + secondary_accessions sorted lexically, function_descriptions kept in
@@ -26,12 +30,6 @@
 
 // SwissProt .dat record delimiter line ("//" on its own line ends every entry).
 export const RECORD_DELIMITER = '//';
-
-// Per-record DR cross-ref cap: a sane upper bound so a pathological record cannot
-// blow memory. SwissProt records carry tens-to-low-hundreds of DR lines; 4096 is far
-// above any real record. If a record EXCEEDS it, the overflow is COUNTED + logged
-// LOUDLY by the orchestrator (capInfo on the parsed record), NEVER silently dropped.
-export const DR_XREF_CAP = 4096;
 
 export const UNIPROT_LICENSE = 'cc-by-4.0';
 export const SCHEMA_VERSION = 'pr-uniprot-1';
@@ -82,8 +80,8 @@ function lexCmp(a, b) {
  * excluded) to the Sciweon UniProt bulk record, built from the PR-0-verified line-code
  * map. Throws ONLY when the record has no AC primary accession (a structurally invalid
  * entry -> the orchestrator fatal-fails; no silent drop). Returns the record + a
- * non-enumerable `_meta` (no_ox flag, dr_capped count) read by the orchestrator for
- * telemetry; recordToJsonl drops `_meta` on serialize.
+ * non-enumerable `_meta` (no_ox flag) read by the orchestrator for telemetry;
+ * recordToJsonl drops `_meta` on serialize.
  *
  * @param {string} block   one record block (// delimiter excluded)
  * @returns {object}       sciweon record + non-enumerable `_meta`
@@ -103,7 +101,6 @@ export function parseUniprotRecord(block) {
     let sqMw = null;
     const functionDescriptions = [];
     const drXrefs = [];
-    let drCapped = 0;
     let sawOx = false;
     let inFunctionCc = false;
 
@@ -173,10 +170,9 @@ export function parseUniprotRecord(block) {
             const toks = body.split(';').map(t => t.trim());
             const source = toks[0];
             const id = toks[1] ?? '';
-            if (source) {
-                if (drXrefs.length < DR_XREF_CAP) drXrefs.push({ source, id });
-                else drCapped += 1;
-            }
+            // Capture EVERY DR xref unconditionally (no cap): the preserve-all-source-
+            // data ruling -- a presumed bound is not a license to cut source data.
+            if (source) drXrefs.push({ source, id });
         }
     }
 
@@ -213,7 +209,7 @@ export function parseUniprotRecord(block) {
     };
 
     Object.defineProperty(record, '_meta', {
-        value: { no_ox: !sawOx, dr_capped: drCapped },
+        value: { no_ox: !sawOx },
         enumerable: false,
     });
     return record;

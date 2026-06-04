@@ -4,15 +4,16 @@
  *
  * Split from uniprot-dat-stream.test.ts (Art 5.1 250-line cap). Locks the
  * validateUniprotBulkRecord gate (the artifact-record schema, SEPARATE from
- * target.js -- the target merge is PR-UNIPROT-2) + the per-record DR_XREF_CAP
- * pathological-record bound (counted in _meta.dr_capped, never silently dropped).
+ * target.js -- the target merge is PR-UNIPROT-2) + the FULL DR capture guarantee
+ * (PR-UNIPROT-1b removed the old DR_XREF_CAP -- a record with thousands of DR xrefs
+ * keeps EVERY one, no cap, no _meta.dr_capped; the preserve-all-source-data ruling).
  *
  * SYNTHETIC blocks only (real line codes, NO real UniProt content).
  */
 
 import { describe, it, expect } from 'vitest';
 import {
-    parseUniprotRecord, recordToJsonl, DR_XREF_CAP,
+    parseUniprotRecord, recordToJsonl,
 } from '../../scripts/factory/lib/uniprot-dat-stream.js';
 import {
     validateUniprotBulkRecord, UNIPROT_ACCESSION_PATTERN, UNIPROT_BULK_LICENSE,
@@ -28,24 +29,29 @@ const VALID_BLOCK = [
     'SQ   SEQUENCE   350 AA;  39000 MW;  X CRC64;',
 ].join('\n');
 
-describe('DR per-record cap (pathological-record bound; counted not dropped)', () => {
-    it('caps db_xrefs at DR_XREF_CAP and counts the overflow in _meta.dr_capped', () => {
+describe('DR full capture (no cap -- preserve-all-source-data ruling)', () => {
+    it('captures ALL db_xrefs for a record with > old-cap xrefs; no cap, no _meta.dr_capped', () => {
+        // 6000 DR xrefs -- well above the removed DR_XREF_CAP=4096 (the dry-run proved
+        // 3 real highly-studied proteins exceeded 4096). Every one must be kept.
+        const N = 6000;
         const drLines = [];
-        for (let i = 0; i < DR_XREF_CAP + 5; i++) {
+        for (let i = 0; i < N; i++) {
             drLines.push(`DR   Src${String(i).padStart(6, '0')}; id${i}; -.`);
         }
         const block = [
             'ID   BIG_HUMAN               Reviewed;         10 AA.',
             'AC   P66666;',
-            'DE   RecName: Full=Pathological xref record;',
+            'DE   RecName: Full=Highly-studied protein with many xrefs;',
             'OS   Homo sapiens (Human).',
             'OX   NCBI_TaxID=9606;',
             ...drLines,
             'SQ   SEQUENCE   10 AA;  1000 MW;  X CRC64;',
         ].join('\n');
         const rec = parseUniprotRecord(block);
-        expect(rec.db_xrefs.length).toBe(DR_XREF_CAP);
-        expect(rec._meta.dr_capped).toBe(5);
+        expect(rec.db_xrefs.length).toBe(N); // ALL kept, no cap
+        expect(rec._meta.dr_capped).toBeUndefined(); // the cap counter is gone
+        // sorted deterministically by (source,id) -- Src000000 sorts first.
+        expect(rec.db_xrefs[0]).toEqual({ source: 'Src000000', id: 'id0' });
     });
 });
 
