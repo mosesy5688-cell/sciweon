@@ -104,19 +104,42 @@ describe('PRESERVED_PREFIXES (preserve-all base data)', () => {
 });
 
 describe('preservation GUARD (no expiry rule may cover a preserved prefix)', () => {
-    it('no lifecycle rule is an ancestor-of or equal-to any preserved prefix', () => {
-        // The important invariant: for every preserved prefix P and every rule
-        // R, NOT (P === R.prefix || P.startsWith(R.prefix)). This catches a
-        // future `processed/` catch-all rule that would sweep processed/bulk/.
+    it('no lifecycle rule covers a preserved prefix (neither ancestor/equal NOR nested-under)', () => {
+        // The preserve-all invariant is BIDIRECTIONAL: for every preserved
+        // prefix P and every rule R, R must not cover ANY object under P. Two
+        // directions can cause coverage:
+        //   (1) ancestor-of / equal-to: P === R.prefix || P.startsWith(R.prefix)
+        //       — a future `processed/` catch-all rule sweeps all of
+        //         processed/bulk/ (R.prefix is an ancestor of P).
+        //   (2) nested-under: R.prefix.startsWith(P) — a future narrow rule
+        //       like `processed/bulk/uniprot/old/` would EXPIRE part of the
+        //       preserved processed/bulk/ tree (R.prefix is nested under P).
+        // The original guard only checked (1); (2) was a hole — a nested rule
+        // passed it yet still violated preserve-all. Both are now flagged.
         for (const preserved of PRESERVED_PREFIXES) {
             for (const rule of LIFECYCLE_RULES) {
-                const covers = preserved === rule.prefix || preserved.startsWith(rule.prefix);
+                const covers = preserved === rule.prefix          // equal
+                            || preserved.startsWith(rule.prefix)  // rule is an ancestor of / equal to preserved
+                            || rule.prefix.startsWith(preserved); // rule is nested UNDER preserved (NEW)
                 expect(
                     covers,
                     `rule '${rule.id}' (prefix '${rule.prefix}') would expire preserved prefix '${preserved}'`,
                 ).toBe(false);
             }
         }
+    });
+
+    it('guard rejects a rule nested under a preserved prefix (regression)', () => {
+        // Proves direction (2) is caught WITHOUT mutating the exported arrays:
+        // run the same bidirectional predicate over a synthetic bad ruleset.
+        // A would-be `processed/bulk/uniprot/old/` 30-day rule is nested under
+        // the preserved processed/bulk/ tree and must be detected as coverage.
+        const preserved = 'processed/bulk/';
+        const badRule = { id: 'expire-bulk-uniprot-old', prefix: 'processed/bulk/uniprot/old/', days: 30 };
+        const covers = preserved === badRule.prefix
+                    || preserved.startsWith(badRule.prefix)
+                    || badRule.prefix.startsWith(preserved);
+        expect(covers).toBe(true); // would-be preserve-all violation is detected
     });
 
     it('no two rule prefixes overlap (the "non-overlapping prefixes" doc invariant)', () => {
