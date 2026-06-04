@@ -5,23 +5,18 @@
  * record counts + freshness. Surfaces stale or missing data sources so the
  * factory pipeline can be tuned before users see degraded data.
  *
- * Inputs (read-only, all optional):
- *   output/linked/*.jsonl      - latest enriched / linked pipeline output
- *   snapshots/<date>/*.jsonl.gz - daily snapshot archives
+ * Inputs (read-only, optional): output/linked/*.jsonl + snapshots/<date>/*.jsonl.gz
+ * Output: stdout table + output/source-health.json (machine-readable for CI).
  *
- * Output:
- *   stdout                     - human-readable table
- *   output/source-health.json  - machine-readable report (for CI / dashboards)
- *
- * Exit codes:
- *   0   all sources HEALTHY
- *   1   one or more STALE
- *   2   one or more CRITICAL (older than 96h)
+ * Exit codes (the fail decision considers ONLY 'daily'-cadence sources, per
+ * lib/source-health-policy.js -- manual / by-design-absent / planned sources
+ * are reported but never fail):
+ *   0   all 'daily' sources HEALTHY
+ *   1   a 'daily' source is STALE (or boundary WARN)
+ *   2   a 'daily' source is CRITICAL >96h (or boundary FAIL)
  *   3   script error
  *
- * Usage:
- *   node scripts/factory/source-health-monitor.js
- *   npm run health
+ * Usage: node scripts/factory/source-health-monitor.js  (npm run health)
  */
 
 import fs from 'fs/promises';
@@ -30,6 +25,7 @@ import { createReadStream } from 'fs';
 import readline from 'readline';
 import { createGunzip } from 'zlib';
 import { runBoundaryChecks } from './lib/boundary-health.js';
+import { cadenceFor, contributesToFail } from './lib/source-health-policy.js';
 
 const HEALTHY_MAX_HOURS = 36;
 const STALE_MAX_HOURS = 96;
@@ -157,6 +153,7 @@ async function main() {
             last_seen: st.last_seen,
             age_hours: hours == null ? null : Math.round(hours * 10) / 10,
             status: statusFor(hours, st.records),
+            cadence: cadenceFor(source), // lib/source-health-policy.js; scopes the fail-trigger
         };
     });
     rows.sort((a, b) => a.source.localeCompare(b.source));
@@ -164,13 +161,13 @@ async function main() {
     console.log('');
     console.log('Source Health Report');
     console.log('====================');
-    const head = 'SOURCE                    RECORDS    LAST SEEN              AGE(h)    STATUS';
+    const head = 'SOURCE                    RECORDS    LAST SEEN              AGE(h)    STATUS      CADENCE';
     console.log(head);
     for (const r of rows) {
         const last = r.last_seen ? r.last_seen.slice(0, 19) : 'NEVER';
         const age = r.age_hours == null ? '    N/A' : String(r.age_hours).padStart(7);
         console.log(
-            `${r.source.padEnd(25)} ${String(r.records).padStart(7)} ${last.padEnd(22)} ${age}    ${r.status}`
+            `${r.source.padEnd(25)} ${String(r.records).padStart(7)} ${last.padEnd(22)} ${age}    ${r.status.padEnd(10)}  ${r.cadence}`
         );
     }
     console.log('');
@@ -178,9 +175,8 @@ async function main() {
     console.log(`Total entities scanned: ${totalEntities}`);
     console.log(`Sources with data: ${seen} of ${KNOWN_SOURCES.length} known`);
 
-    // Boundary checks (V0.5.2 — PR #19 deferred A.3): retry queue depth +
-    // sustained-WARN aggregate. Skipped silently when R2 env is absent so
-    // local `npm run health` still works on developer machines.
+    // Boundary checks (V0.5.2, PR #19 A.3): retry queue depth + sustained-WARN
+    // aggregate. Skipped when R2 env absent so local `npm run health` still works.
     let boundary = null;
     if (process.env.R2_ENDPOINT && process.env.R2_BUCKET) {
         console.log('');
@@ -215,11 +211,23 @@ async function main() {
     await fs.writeFile(outPath, JSON.stringify(report, null, 2));
     console.log(`Report: ${outPath}`);
 
-    const hasCritical = rows.some(r => r.status === 'CRITICAL');
-    const hasStale = rows.some(r => r.status === 'STALE');
+    // Cadence-aware fail-trigger (lib/source-health-policy.js): only 'daily'
+    // sources contribute to the fail decision. Non-'daily' sources are still
+    // computed + printed (cadence shown above) but excluded -- a manual seed-add
+    // crossing the global window is no freshness failure. Thresholds UNCHANGED,
+    // so a 'daily' source going STALE/CRITICAL STILL fails (signal preserved).
+    const failRows = rows.filter(r => contributesToFail(r.source));
+    const hasCritical = failRows.some(r => r.status === 'CRITICAL');
+    const hasStale = failRows.some(r => r.status === 'STALE');
     const boundaryStatus = boundary?.status || 'OK';
 
-    // Exit code: highest severity across sources AND boundary checks wins.
+    // Loudly NOTE exempt sources that are stale/critical (visible, not silent).
+    for (const r of rows) {
+        if (contributesToFail(r.source) || (r.status !== 'STALE' && r.status !== 'CRITICAL')) continue;
+        console.log(`[NOTE] ${r.source} ${r.status} (age ${r.age_hours}h) cadence='${r.cadence}' -- no daily expectation, excluded from fail.`);
+    }
+
+    // Exit code: highest severity across daily sources AND boundary checks wins.
     // 2=CRITICAL/FAIL, 1=STALE/WARN, 0=OK. Boundary FAIL maps to exit 2 so
     // the workflow surface escalates (queue cap breach = real upstream outage).
     if (hasCritical || boundaryStatus === 'FAIL') {
