@@ -12,9 +12,13 @@
  * OPTION A: targets.jsonl KEEPS drug-target semantics (NOT inflated to 574k). The full
  * all-organism protein reference is a separate artifact -> PR-UNIPROT-3.
  *
- * STREAMING-FILTER: build the target accession Set FIRST, then parse the decompressed
- * bulk line-by-line RETAINING only records whose primary/secondary accession hits the
- * Set. The cursor record_count guard counts records SEEN (parsed), NOT retained.
+ * STREAMING-FILTER (lib/uniprot-stream-decompress.js): build the target accession Set
+ * FIRST, then TRULY stream the zstd decompression -- spawn `zstd -d --stdout` and pipe
+ * its stdout through readline, parsing ONE LINE AT A TIME and RETAINING only records
+ * whose primary/secondary accession hits the Set. The ~1.19GB decompressed corpus is
+ * NEVER materialized (was a spawnSync whole-buffer decompress, maxBuffer=1GB -> ENOBUFS
+ * on the 1.19GB bulk, aborting the daily F3 cascade). The cursor record_count guard
+ * counts records SEEN (parsed), NOT retained.
  *
  * NO SILENT DROP ([[cross_cycle_silent_data_loss]]): records_seen != cursor.record_count
  * HARD-FAILS; matched + unmatched_target === targets.length is asserted; every
@@ -23,12 +27,12 @@
  */
 
 import { readFileSync, writeFileSync } from 'fs';
-import { spawnSync } from 'child_process';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import {
     buildTargetAccessionSet, uniprotRecordHitsTargets, buildUniprotAccessionIndex,
     enrichTargetsWithUniprot,
 } from './lib/uniprot-target-enrich-helpers.js';
+import { streamDecompressFilter } from './lib/uniprot-stream-decompress.js';
 
 const LABEL = 'UNIPROT-TARGET-ENRICH';
 const CURSOR_KEY = 'state/uniprot-bulk-cursor.json';
@@ -58,13 +62,6 @@ async function getR2Object(client, bucket, key) {
     return streamToBuffer(res.Body);
 }
 
-function zstdCliDecompress(input) {
-    const result = spawnSync('zstd', ['-d', '--stdout', '--quiet'], { input, maxBuffer: 1024 * 1024 * 1024 });
-    if (result.error) throw new Error(`[${LABEL}] zstd CLI spawn failed: ${result.error.message}`);
-    if (result.status !== 0) throw new Error(`[${LABEL}] zstd CLI exit ${result.status}: ${result.stderr?.toString()}`);
-    return result.stdout;
-}
-
 /** Read JSONL targets (one record per line). */
 function readTargets(path) {
     const records = [];
@@ -74,33 +71,6 @@ function readTargets(path) {
         records.push(JSON.parse(t));
     }
     return records;
-}
-
-/**
- * Stream-filter the decompressed bulk: parse EVERY non-header line (counting
- * records_seen for the cursor guard), RETAIN only records hitting the target Set.
- * The leading `#`-prefixed license_metadata header line is skipped (uniprot-sprot-
- * harvest.js writes it). A JSON parse error is silent data loss -> hard-fail.
- */
-function streamFilterBulk(buf, targetAccSet) {
-    const retained = [];
-    let recordsSeen = 0;
-    let unmatchedUniprot = 0;
-    let headerSkipped = 0;
-    for (const line of buf.toString('utf-8').split('\n')) {
-        const t = line.trim();
-        if (!t) continue;
-        if (t.startsWith('#')) { headerSkipped++; continue; }
-        let rec;
-        try { rec = JSON.parse(t); }
-        catch (err) {
-            throw new Error(`[${LABEL}] JSON parse error in bulk (record #${recordsSeen + 1}): ${err.message} -- aborting (no silent drop)`);
-        }
-        recordsSeen++;
-        if (uniprotRecordHitsTargets(rec, targetAccSet)) retained.push(rec);
-        else unmatchedUniprot++;
-    }
-    return { retained, recordsSeen, unmatchedUniprot, headerSkipped };
 }
 
 async function main() {
@@ -122,9 +92,14 @@ async function main() {
     const targetAccSet = buildTargetAccessionSet(targets);
     console.log(`[${LABEL}] Built target accession Set: ${targetAccSet.size} unique sanitized accessions`);
 
+    // STREAMING decompress+filter: zstd -d --stdout piped through readline, parsed
+    // line-by-line. The ~64MB compressed buffer is held; the ~1.19GB DECOMPRESSED
+    // corpus is NEVER materialized -- memory is bounded to the ~19k retained records.
+    // (Was a spawnSync whole-buffer decompress with maxBuffer=1GB -> ENOBUFS on the
+    // 1.19GB bulk, aborting the daily F3 cascade.)
     const compressed = await getR2Object(client, bucket, cursor.r2_key);
     const { retained, recordsSeen, unmatchedUniprot, headerSkipped } =
-        streamFilterBulk(zstdCliDecompress(compressed), targetAccSet);
+        await streamDecompressFilter(compressed, (rec) => uniprotRecordHitsTargets(rec, targetAccSet), LABEL);
     console.log(`[${LABEL}] Stream-filtered bulk: seen=${recordsSeen} retained=${retained.length} unmatched_uniprot=${unmatchedUniprot} (header lines skipped=${headerSkipped})`);
 
     // NO SILENT DROP: records SEEN (parsed) must equal the cursor's record-of-truth.
