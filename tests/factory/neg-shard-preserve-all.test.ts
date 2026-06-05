@@ -98,6 +98,55 @@ describe('PRESERVE-ALL: sum(manifest totals) === wc-l', () => {
         await fs.rm(dir, { recursive: true });
     });
 
+    it('manifest entries carry a sev_by_type cross-tab that sums to severity_rollup + type_rollup, and is rebuild-deterministic', async () => {
+        const lines = [];
+        // One compound with a mix of types + severities so sev_by_type is non-trivial.
+        const k = 'sciweon::compound::CID:777';
+        for (let i = 0; i < 6; i++) lines.push(rec(i, { compound_id: k }, 'trial_failure', i < 4 ? 'critical' : 'major'));
+        for (let i = 6; i < 10; i++) lines.push(rec(i, { compound_id: k }, 'black_box_warning', i < 8 ? 'critical' : 'minor'));
+        for (let i = 10; i < 13; i++) lines.push(rec(i, { compound_id: k }, 'drug_withdrawal', 'unknown'));
+
+        async function publishGetManifest() {
+            const { dir, file } = await writeJsonl(lines);
+            const client = mockClient();
+            await publishNegShards({
+                client, bucket: 'b', jsonlPath: file, snapshotDate: '2026-06-05', outputRoot: path.join(dir, 'snapshots'),
+            });
+            let manifestBody = null;
+            for (const [key, body] of client.store) if (key.endsWith('/manifest.json')) manifestBody = body;
+            await fs.rm(dir, { recursive: true });
+            return manifestBody;
+        }
+
+        const body1 = await publishGetManifest();
+        const body2 = await publishGetManifest();
+        // Determinism: the serialized manifest is byte-identical EXCEPT the
+        // wall-clock `generated_at` field (which is not content). Normalizing it
+        // out, the entries (incl. the new sev_by_type cross-tab + its stable key
+        // order) and shard_hashes are byte-for-byte reproducible.
+        const stripTs = (b) => b.replace(/"generated_at":"[^"]*"/, '"generated_at":"X"');
+        expect(stripTs(body1)).toBe(stripTs(body2));
+
+        const m = JSON.parse(body1);
+        const entry = m.entries.find(e => e.key === k);
+        expect(entry).toBeTruthy();
+        // sev_by_type present + restricted to the types in type_rollup.
+        expect(Object.keys(entry.sev_by_type).sort()).toEqual(Object.keys(entry.type_rollup).sort());
+        // Per-type vector sums to that type's type_rollup count.
+        for (const [t, vec] of Object.entries(entry.sev_by_type)) {
+            const s = vec[0] + vec[1] + vec[2] + vec[3];
+            expect(s).toBe(entry.type_rollup[t]);
+        }
+        // Element-wise sum of all per-type vectors == the unfiltered severity_rollup.
+        const summed = [0, 0, 0, 0];
+        for (const vec of Object.values(entry.sev_by_type)) for (let j = 0; j < 4; j++) summed[j] += vec[j];
+        expect(summed).toEqual(entry.severity_rollup);
+        // Spot-check the known fixture: trial_failure = 4 critical + 2 major.
+        expect(entry.sev_by_type.trial_failure).toEqual([4, 2, 0, 0]);
+        expect(entry.sev_by_type.black_box_warning).toEqual([2, 0, 2, 0]);
+        expect(entry.sev_by_type.drug_withdrawal).toEqual([0, 0, 0, 3]);
+    });
+
     it('orphans (no subject key) are stored + counted, never dropped', async () => {
         const lines = [];
         for (let i = 0; i < 7; i++) lines.push(rec(i, {}, 'drug_withdrawal', 'unknown'));

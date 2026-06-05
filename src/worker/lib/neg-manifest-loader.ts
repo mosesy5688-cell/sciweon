@@ -31,10 +31,16 @@ export interface NegManifestEntry {
     key: string;
     shard: number;
     total: number;
-    // 4 ints: [critical, major, minor, unknown]
+    // 4 ints: [critical, major, minor, unknown] — UNFILTERED over the whole key.
     severity_rollup: [number, number, number, number];
-    // <=7 ints keyed by evidence_type
+    // <=7 ints keyed by evidence_type — UNFILTERED over the whole key.
     type_rollup: Record<string, number>;
+    // Cross-tab {evidence_type -> [critical, major, minor, unknown]} (<=7 x 4
+    // ints). The worker serves an event_type-filtered request EXACTLY from this:
+    // filtered total = sum of type_rollup[t]; filtered signals_by_severity =
+    // element-wise sum of sev_by_type[t]; both O(1) from the manifest, no scan.
+    // Optional for backward-compat with manifests published before this field.
+    sev_by_type?: Record<string, [number, number, number, number]>;
     pages: NegPageRef[];
 }
 

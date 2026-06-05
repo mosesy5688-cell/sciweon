@@ -20,16 +20,17 @@
  * entry = authoritative empty (negative_signals_count: 0).
  */
 
-import { fetchR2GunzippedText, fetchR2JsonText, fetchR2RangeBytes } from './r2-fetch';
+import { fetchR2GunzippedText, fetchR2JsonText } from './r2-fetch';
 import { type EvidenceType } from './event-type-taxonomy';
 import { negBucketOf } from '../../lib/neg-bucket-hash.js';
 import { loadNegBucketManifest, type NegManifestEntry } from './neg-manifest-loader';
-import { decompressPayload } from './shard-codec';
-import { negShardKeyFor } from './neg-shard-router';
 import {
     shapePagedResponse, shapeSummaryResponse,
-    type NegEvidenceRecord, type NegPagedResponse, type NegSummary,
+    type NegEvidenceRecord, type NegPagedResponse, type NegSummary, type NegFilteredAgg,
 } from './neg-evidence-response';
+import {
+    readPageRecords, computeFilteredAgg, readFilteredPageRecords,
+} from './neg-evidence-filter';
 
 const LATEST_POINTER_KEY = 'snapshots/latest.json';
 // Legacy whole-file safety cap: refuse to load a legacy neg-evidence file
@@ -53,38 +54,6 @@ async function readPointer(bucket: R2Bucket): Promise<LatestPointer> {
     return ptr;
 }
 
-/**
- * Decode ONLY the page entities overlapping [offset, offset+limit) for one
- * entry, then slice to the exact window. `decodedStart` is the global record
- * index of the first decoded page, so the final slice realigns to `offset`.
- * For the default page this range-reads <=2 page-entities.
- */
-async function readPageRecords(
-    bucket: R2Bucket, date: string, entry: NegManifestEntry, offset: number, limit: number,
-): Promise<NegEvidenceRecord[]> {
-    const records: NegEvidenceRecord[] = [];
-    const wantEnd = offset + limit;
-    let seen = 0;
-    let decodedStart = -1;
-    for (const page of entry.pages) {
-        const pageStart = seen;
-        const pageEnd = seen + page.count;
-        seen = pageEnd;
-        if (pageEnd <= offset) continue;     // entirely before the window
-        if (pageStart >= wantEnd) break;      // entirely after the window
-        if (decodedStart === -1) decodedStart = pageStart;
-        const key = negShardKeyFor(date, negBucketOf(entry.key), page.shard);
-        const bytes = await fetchR2RangeBytes(bucket, key, page.offset, page.size);
-        const text = decompressPayload(bytes, true); // strict: decode failure -> throw -> 503
-        for (const line of text.split('\n')) {
-            if (line.trim()) records.push(JSON.parse(line) as NegEvidenceRecord);
-        }
-    }
-    if (decodedStart === -1) return [];
-    const sliceStart = offset - decodedStart; // >= 0 since first page <= offset
-    return records.slice(sliceStart, sliceStart + limit);
-}
-
 function clampLimit(limit: number | undefined): number {
     if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0) return DEFAULT_PAGE_LIMIT;
     return Math.min(Math.floor(limit), MAX_PAGE_LIMIT);
@@ -93,10 +62,22 @@ function clampLimit(limit: number | undefined): number {
 /**
  * Sharded paginated load. THROWS on any sharded failure (caller -> 503).
  * Returns the authoritative empty response when the key is not in its bucket.
+ *
+ * `eventTypeFilter` (non-null, non-empty) makes count/aggregates/pagination
+ * describe the FILTERED set: the total + severity + by-type aggregates come
+ * O(1) from the manifest (type_rollup + sev_by_type), and the page is a
+ * filtered page-walk over the FILTERED logical sequence (offset is a
+ * filtered-offset). When null/absent, the UNFILTERED path runs byte-identically
+ * to its prior behavior.
+ *
+ * NOTE: an EMPTY filter Set means the client passed only unknown event_type
+ * tokens (matches nothing) — serve the authoritative filtered-empty response,
+ * never the unfiltered set.
  */
 export async function loadNegEvidencePage(
     bucket: R2Bucket, compoundId: string, baseUrl: string,
     opts?: { offset?: number; limit?: number },
+    eventTypeFilter?: Set<EvidenceType> | null,
 ): Promise<NegPagedResponse> {
     const ptr = await readPointer(bucket);
     if (!ptr.neg_evidence_manifest_key) {
@@ -105,11 +86,23 @@ export async function loadNegEvidencePage(
     const date = ptr.latest_snapshot_date!;
     const offset = Math.max(0, Math.floor(opts?.offset ?? 0));
     const limit = clampLimit(opts?.limit);
+    const filtering = eventTypeFilter != null; // null = no filter; empty Set still filters (-> empty)
 
     const manifest = await loadNegBucketManifest(bucket, negBucketOf(compoundId), date);
     const entry = manifest.byKey.get(compoundId) ?? null;
     if (!entry) {
-        return shapePagedResponse(compoundId, null, [], offset, limit, date, baseUrl);
+        const emptyAgg: NegFilteredAgg | null = filtering
+            ? { total: 0, bySeverity: { critical: 0, major: 0, minor: 0, unknown: 0 }, byType: {} }
+            : null;
+        return shapePagedResponse(compoundId, null, [], offset, limit, date, baseUrl, emptyAgg);
+    }
+    if (filtering) {
+        const filter = eventTypeFilter!;
+        const agg = computeFilteredAgg(entry, filter);
+        const pageRecords = agg.total > 0
+            ? await readFilteredPageRecords(bucket, date, entry, offset, limit, filter)
+            : [];
+        return shapePagedResponse(compoundId, entry, pageRecords, offset, limit, date, baseUrl, agg);
     }
     const pageRecords = await readPageRecords(bucket, date, entry, offset, limit);
     return shapePagedResponse(compoundId, entry, pageRecords, offset, limit, date, baseUrl);
@@ -181,13 +174,19 @@ export async function loadNegEvidenceLegacy(
 function synthEntry(key: string, recs: NegEvidenceRecord[]): NegManifestEntry {
     const sev: [number, number, number, number] = [0, 0, 0, 0];
     const type: Record<string, number> = {};
+    const sevByType: Record<string, [number, number, number, number]> = {};
     const order = ['critical', 'major', 'minor', 'unknown'];
     for (const r of recs) {
         const i = order.indexOf(r.severity);
-        sev[i >= 0 ? i : 3]++;
-        if (typeof r.evidence_type === 'string') type[r.evidence_type] = (type[r.evidence_type] ?? 0) + 1;
+        const si = i >= 0 ? i : 3;
+        sev[si]++;
+        if (typeof r.evidence_type === 'string') {
+            type[r.evidence_type] = (type[r.evidence_type] ?? 0) + 1;
+            const vec = sevByType[r.evidence_type] ?? (sevByType[r.evidence_type] = [0, 0, 0, 0]);
+            vec[si]++;
+        }
     }
-    return { key, shard: 0, total: recs.length, severity_rollup: sev, type_rollup: type, pages: [] };
+    return { key, shard: 0, total: recs.length, severity_rollup: sev, type_rollup: type, sev_by_type: sevByType, pages: [] };
 }
 
 /**
@@ -219,21 +218,16 @@ export async function loadNegEvidenceForCompound(
     }
     if (sharded) {
         try {
-            const resp = await loadNegEvidencePage(bucket, compoundId, baseUrl, opts);
-            // Apply the optional event_type filter to the page (post-shape).
-            return eventTypeFilter ? filterByType(resp, eventTypeFilter) : resp;
+            // The event_type filter is applied INSIDE the sharded path (filtered
+            // total + aggregates O(1) from the manifest + a filtered page-walk),
+            // NOT post-shape — so count/pagination describe the FILTERED set.
+            return await loadNegEvidencePage(bucket, compoundId, baseUrl, opts, eventTypeFilter);
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             throw new NegShardError(`Sharded neg-evidence read failed: ${msg}`);
         }
     }
     return loadNegEvidenceLegacy(bucket, compoundId, baseUrl, eventTypeFilter);
-}
-
-function filterByType(resp: NegPagedResponse, filter: Set<EvidenceType>): NegPagedResponse {
-    const signals = resp.signals.filter(s => typeof s.evidence_type === 'string'
-        && filter.has(s.evidence_type as EvidenceType));
-    return { ...resp, signals };
 }
 
 export type { NegPagedResponse, NegSummary };

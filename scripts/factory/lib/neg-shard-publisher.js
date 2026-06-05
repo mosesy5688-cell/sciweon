@@ -85,17 +85,41 @@ function pageRecords(records) {
     return pages;
 }
 
+function severityIndex(severity) {
+    const si = SEVERITY_ORDER.indexOf(severity);
+    return si >= 0 ? si : 3;
+}
+
+/**
+ * Build the UNFILTERED aggregates PLUS the `sev_by_type` cross-tab that lets the
+ * worker serve an event_type-filtered request EXACTLY from the manifest (no
+ * full-corpus scan):
+ *   - severity_rollup: [critical, major, minor, unknown] over ALL records (key).
+ *   - type_rollup: {evidence_type -> count} over ALL records (key).
+ *   - sev_by_type: {evidence_type -> [critical, major, minor, unknown]} — the
+ *     per-type severity vector. Element-wise summed over a filter set, it is the
+ *     exact filtered signals_by_severity; its keys restricted to a filter set is
+ *     the exact filtered signals_by_evidence_type. Keys are emitted in a STABLE
+ *     (sorted) order so the manifest object is byte-reproducible (Constitution
+ *     V16.1 §7 determinism).
+ */
 function rollups(records) {
     const sev = [0, 0, 0, 0];
     const type = {};
+    const sevByTypeRaw = {};
     for (const r of records) {
-        const si = SEVERITY_ORDER.indexOf(r.severity);
-        sev[si >= 0 ? si : 3]++;
+        const si = severityIndex(r.severity);
+        sev[si]++;
         if (typeof r.evidence_type === 'string') {
             type[r.evidence_type] = (type[r.evidence_type] ?? 0) + 1;
+            const vec = sevByTypeRaw[r.evidence_type] ?? (sevByTypeRaw[r.evidence_type] = [0, 0, 0, 0]);
+            vec[si]++;
         }
     }
-    return { severity_rollup: sev, type_rollup: type };
+    // Stable key order so the serialized manifest is byte-identical across rebuilds.
+    const sev_by_type = {};
+    for (const t of Object.keys(sevByTypeRaw).sort()) sev_by_type[t] = sevByTypeRaw[t];
+    return { severity_rollup: sev, type_rollup: type, sev_by_type };
 }
 
 /**
@@ -125,13 +149,14 @@ async function packBucket(keyMap, outputDir) {
             const { offset, size } = writer.writeEntity(payload);
             pageRefs.push({ offset, size, count: page.length, shard: writer.shardId });
         }
-        const { severity_rollup, type_rollup } = rollups(records);
+        const { severity_rollup, type_rollup, sev_by_type } = rollups(records);
         entries.push({
             key,
             shard: pageRefs.length ? pageRefs[0].shard : writer.shardId,
             total: records.length,
             severity_rollup,
             type_rollup,
+            sev_by_type,
             pages: pageRefs.map(p => ({ offset: p.offset, size: p.size, count: p.count, shard: p.shard })),
         });
     }

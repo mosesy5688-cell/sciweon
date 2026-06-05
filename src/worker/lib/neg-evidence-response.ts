@@ -80,11 +80,27 @@ function shapeSignal(rec: NegEvidenceRecord, baseUrl: string) {
 }
 
 /**
+ * Pre-computed FILTERED aggregates for an event_type-filtered request. When
+ * present, these OVERRIDE the entry's unfiltered rollups so the response's
+ * `negative_signals_count` / `signals_by_severity` / `signals_by_evidence_type`
+ * describe the FILTERED set exactly (count == |matched-after-filter|, paginable
+ * to completion). The loader computes these O(1) from the manifest's
+ * `type_rollup` + `sev_by_type` cross-tab (no full-corpus scan).
+ */
+export interface NegFilteredAgg {
+    total: number;
+    bySeverity: Record<SeverityKey, number>;
+    byType: Record<string, number>;
+}
+
+/**
  * Build the paginated signals response. `pageRecords` are the records covering
  * [offset, offset+limit) already sliced by the loader. `entry` carries the
  * authoritative `total` + rollups (so aggregates reflect the WHOLE compound,
  * not just this page). When `entry` is null the compound has zero stored
- * negative evidence (authoritative empty).
+ * negative evidence (authoritative empty). When `filtered` is supplied the
+ * count/aggregates describe the event_type-FILTERED set instead of the entry's
+ * unfiltered rollups (and `total` becomes the filtered total for pagination).
  */
 export function shapePagedResponse(
     compoundId: string,
@@ -94,10 +110,15 @@ export function shapePagedResponse(
     limit: number,
     snapshotDate: string,
     baseUrl: string,
+    filtered?: NegFilteredAgg | null,
 ) {
-    const total = entry?.total ?? 0;
-    const bySeverity = entry ? severityFromRollup(entry.severity_rollup) : { critical: 0, major: 0, minor: 0, unknown: 0 };
-    const byType: Record<string, number> = entry ? { ...entry.type_rollup } : {};
+    const total = filtered ? filtered.total : (entry?.total ?? 0);
+    const bySeverity = filtered
+        ? filtered.bySeverity
+        : (entry ? severityFromRollup(entry.severity_rollup) : { critical: 0, major: 0, minor: 0, unknown: 0 });
+    const byType: Record<string, number> = filtered
+        ? { ...filtered.byType }
+        : (entry ? { ...entry.type_rollup } : {});
     const unknownTypes = Object.keys(byType).filter(t => !isKnownEvidenceType(t)).sort();
     const highest = highestSeverity(bySeverity);
     const returned = pageRecords.length;
