@@ -40,6 +40,7 @@ export async function fetchJsonWithRetry(url, opts = {}) {
         allow404 = false,
         maxRetryAfterMs = 30000,
         fetchImpl = fetch,
+        requestInit = {},
     } = opts;
 
     const retrySet = retryStatuses instanceof Set ? retryStatuses : new Set(retryStatuses);
@@ -47,7 +48,9 @@ export async function fetchJsonWithRetry(url, opts = {}) {
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
         try {
-            const res = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) });
+            // Spread requestInit first (method/headers/body for POST callers),
+            // signal LAST so a caller can never clobber the run timeout.
+            const res = await fetchImpl(url, { ...requestInit, signal: AbortSignal.timeout(timeoutMs) });
             if (res.ok) return res.json();
             if (allow404 && res.status === 404) return null;
             if (!retrySet.has(res.status)) {

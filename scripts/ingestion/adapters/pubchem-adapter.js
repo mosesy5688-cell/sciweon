@@ -2,11 +2,8 @@
  * PubChem Adapter V2 — Sciweon DataSourceAdapterV2 interface (§11.2).
  *
  * sinceToken: last processed CID (string integer). null = bootstrap from 0.
- * Incremental batch = 200 CIDs/run (new CIDs only; bulk backfill handled by
- * the separate bulk-pubchem-harvest pipeline, not this adapter).
- *
- * Rate limit: 5 req/sec anonymous. Batch property fetch (100 CIDs/request)
- * keeps daily incremental cost well under the limit.
+ * Incremental batch = 200 CIDs/run (new CIDs only; bulk backfill is a separate
+ * pipeline). Rate limit: 5 req/sec anonymous; batch fetch = 100 CIDs/request.
  */
 
 import { computeLipinskiViolations } from '../../factory/lib/lipinski.js';
@@ -135,15 +132,10 @@ export function normalize(raw, synonyms = []) {
 
 /**
  * Batch fetch PubChem CACTVS 881-bit substructure fingerprints by CID list.
- * Returns Map<cid_string, base64_fingerprint>.
- *
- * V0.3.5: CACTVS Substructure Keys are NIH PubChem's primary-computed
- * binary fingerprint — same authority class as XLogP/TPSA (deterministic
- * substructure detection from canonical structure). Enables structural
- * similarity search via Tanimoto coefficient without RDKit dependency.
- *
- * Format: base64-encoded ~156 chars per compound (881-bit fingerprint +
- * 4-byte header). Decode to bit array at query time for similarity ops.
+ * Returns Map<cid_string, base64_fingerprint>. CACTVS Substructure Keys are
+ * NIH PubChem primary-computed data (same authority class as XLogP/TPSA),
+ * enabling Tanimoto similarity search without an RDKit dependency. Format:
+ * base64 ~156 chars (881-bit fingerprint + 4-byte header), decoded at query.
  */
 export async function fetchFingerprint2DBatch(cids, batchSize = 100) {
     if (!cids?.length) return new Map();
@@ -152,7 +144,10 @@ export async function fetchFingerprint2DBatch(cids, batchSize = 100) {
         const chunk = cids.slice(i, i + batchSize);
         const url = `${PUBCHEM_BASE}/compound/cid/${chunk.join(',')}/property/Fingerprint2D/JSON`;
         try {
-            const data = await fetchJson(url);
+            // allow404 -> a chunk whose CIDs genuinely lack CACTVS keys returns
+            // null (nothing stamped), NOT an exception. A real 5xx is caught
+            // below so one bad chunk cannot abort the others.
+            const data = await fetchJsonWithRetry(url, { timeoutMs: REQUEST_TIMEOUT_MS, allow404: true });
             const props = data?.PropertyTable?.Properties ?? [];
             for (const p of props) {
                 if (p.CID != null && p.Fingerprint2D) {
@@ -169,14 +164,11 @@ export async function fetchFingerprint2DBatch(cids, batchSize = 100) {
 
 /**
  * Fetch + normalize a compound by CID.
- *
- * - Throws on transient fetch failure (HTTP 5xx, network error, timeout) so
- *   the caller can route the CID to the retry queue. Conflating "fetch
- *   failed" with "no data" silently advanced the cursor past failed CIDs;
- *   V0.5.1 separates the two so transient failures are recoverable across
- *   cron cycles via the persistent retry queue.
- * - Returns null when the CID is reachable but has no property record
- *   (deprecated / superseded CIDs that genuinely have no data to harvest).
+ * - Throws on transient fetch failure (5xx / network / timeout) so the caller
+ *   routes the CID to the retry queue (V0.5.1: do NOT conflate fetch-failed
+ *   with no-data, which silently advanced the cursor past failed CIDs).
+ * - Returns null when the CID is reachable but genuinely has no record
+ *   (deprecated / superseded CIDs).
  */
 export async function getCompound(cid) {
     const [raw, synonyms] = await Promise.all([
@@ -190,27 +182,44 @@ export async function getCompound(cid) {
 // ─── V2 adapter functions ─────────────────────────────────────────────────
 
 async function fetchPubchemCount() {
-    const data = await fetchJson(`${PUBCHEM_BASE}/compound/count/JSON`);
+    // No allow404 -- the count endpoint must exist; a 404 here is a real fault.
+    const url = `${PUBCHEM_BASE}/compound/count/JSON`;
+    const data = await fetchJsonWithRetry(url, { timeoutMs: REQUEST_TIMEOUT_MS });
     return data?.PC_Count?.TotalCount ?? 0;
 }
 
-async function batchFetchProperties(cids) {
-    const body = `cid=${cids.join(',')}`;
-    const res = await fetch(
-        `${PUBCHEM_BASE}/compound/cid/property/${PROPERTIES}/JSON`,
-        { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) },
-    );
-    if (!res.ok) throw new Error(`PubChem batch property HTTP ${res.status}`);
-    const data = await res.json();
+export async function batchFetchProperties(cids) {
+    // POST body carries the CID list. Routed through fetchJsonWithRetry so the
+    // batch POST gains in-run 429/503 retry + a clean 4xx throw (was a raw fetch).
+    const url = `${PUBCHEM_BASE}/compound/cid/property/${PROPERTIES}/JSON`;
+    const data = await fetchJsonWithRetry(url, {
+        timeoutMs: REQUEST_TIMEOUT_MS,
+        requestInit: {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `cid=${cids.join(',')}`,
+        },
+    });
     return data?.PropertyTable?.Properties ?? [];
 }
 
-async function batchFetchSynonyms(cids) {
-    try {
-        const data = await fetchJson(`${PUBCHEM_BASE}/compound/cid/${cids.join(',')}/synonyms/JSON`);
-        const info = data?.InformationList?.Information ?? [];
-        return new Map(info.map(it => [it.CID, it.Synonym?.slice(0, 100) ?? []]));
-    } catch { return new Map(); }
+export async function batchFetchSynonyms(cids) {
+    // POST body carries the CIDs (mirrors batchFetchProperties) -> no 100-CID
+    // GET URL-length risk. allow404 -> null -> empty Map (parity with single-CID
+    // fetchSynonyms 404 -> []). A real non-404 5xx exhaustion THROWS out of
+    // fetchJsonWithRetry: VISIBLE, never masked as a silently-empty Map.
+    const url = `${PUBCHEM_BASE}/compound/cid/synonyms/JSON`;
+    const data = await fetchJsonWithRetry(url, {
+        timeoutMs: REQUEST_TIMEOUT_MS,
+        allow404: true,
+        requestInit: {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `cid=${cids.join(',')}`,
+        },
+    });
+    const info = data?.InformationList?.Information ?? [];
+    return new Map(info.map(it => [String(it.CID), it.Synonym?.slice(0, 100) ?? []]));
 }
 
 export async function checkForUpdates(sinceToken) {
@@ -231,7 +240,8 @@ export async function fetchIncremental(sinceToken) {
         const chunk = cidRange.slice(i, i + PROP_CHUNK_SIZE);
         const [props, synMap] = await Promise.all([batchFetchProperties(chunk), batchFetchSynonyms(chunk)]);
         for (const raw of props) {
-            const entity = normalize(raw, synMap.get(raw.CID) ?? []);
+            // synMap is keyed by String(CID); raw.CID is numeric -> stringify.
+            const entity = normalize(raw, synMap.get(String(raw.CID)) ?? []);
             if (entity) records.push(entity);
         }
         if (i + PROP_CHUNK_SIZE < cidRange.length) await new Promise(r => setTimeout(r, 200));
