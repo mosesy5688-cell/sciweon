@@ -37,7 +37,7 @@ import fs from 'fs/promises';
 import { createWriteStream } from 'fs';
 import { once } from 'events';
 import path from 'path';
-import { searchByIntervention, normalize as normalizeTrial } from '../ingestion/adapters/clinicaltrials-adapter.js';
+import { searchByInterventionChecked, normalize as normalizeTrial } from '../ingestion/adapters/clinicaltrials-adapter.js';
 import { TRIAL_SCHEMA } from '../../src/lib/schemas/trial.js';
 import { gate } from './lib/validation-gate.js';
 import { classifyBatch } from './lib/failure-classifier.js';
@@ -78,16 +78,26 @@ async function queryChunk(slice, _nowIso) {
     const sourceCounts = {};
     const queriedIds = [];
 
+    let queryErrorCount = 0; // LOUD: CT.gov fetch failures (429/5xx/timeout/outage)
+
     const perCompound = await pMap(slice, CTGOV_CONCURRENCY, async (compound) => {
         const { name: searchName, source: searchSource } = pickTrialSearchName(compound);
         await TRIAL_RATE_LIMITER.acquire(); // bound the true CT.gov request rate
-        const trials = await searchByIntervention(searchName, 100);
-        return { compound, searchName, searchSource, trials };
+        const { ok, studies } = await searchByInterventionChecked(searchName, 100);
+        return { compound, searchName, searchSource, ok, trials: studies };
     });
 
-    for (const { compound, searchName, searchSource, trials } of perCompound) {
+    for (const { compound, searchName, searchSource, ok, trials } of perCompound) {
         sourceCounts[searchSource] = (sourceCounts[searchSource] ?? 0) + 1;
-        // Genuine negative (zero trials) still counts: the stamp advances coverage.
+        // FETCH-FAILURE (not a genuine result): do NOT stamp -- the compound stays
+        // eligible + is retried next wrap. Stamping it would skip it for the whole
+        // freshness window ([[cross_cycle_silent_data_loss]]).
+        if (!ok) {
+            queryErrorCount++;
+            console.warn(`[${LABEL}] query FAILED for ${compound.id} ("${searchName}") -- NOT stamping, stays eligible`);
+            continue;
+        }
+        // Genuine query (HTTP 200): zero trials still counts -- the stamp advances coverage.
         queriedIds.push(compound.id);
         for (const raw of trials) {
             const trial = normalizeTrial(raw, compound.id);
@@ -120,7 +130,11 @@ async function queryChunk(slice, _nowIso) {
     console.log(`[${LABEL}] this-run trials=${trialsOut.length} links=${trialLinks.length} negatives=${negativeEvidenceRaw.length}`);
     console.log(`[${LABEL}] failure classification: ${JSON.stringify(classificationStats)}`);
     console.log(`[${LABEL}] search-name source distribution: ${JSON.stringify(sourceCounts)}`);
-    return { queriedIds };
+    // LOUD outage visibility (M8): a CT.gov fetch failure is COUNTED, never silent.
+    if (queryErrorCount > 0) {
+        console.warn(`[${LABEL}] query_error_count=${queryErrorCount} (CT.gov fetch failures this run -- those compounds stay eligible for retry)`);
+    }
+    return { queriedIds, queryErrorCount };
 }
 
 async function main() {

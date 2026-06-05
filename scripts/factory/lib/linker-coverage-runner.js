@@ -58,8 +58,10 @@ export function applyStampsToCompounds(compounds, stampsMap, stampField) {
  * @param {object[]} o.compounds      loaded compound records
  * @param {number} o.nowMs            caller-captured Date.now() (determinism)
  * @param {string} o.nowIso          ISO of nowMs (the stamp value)
- * @param {(slice, nowIso) => Promise<{queriedIds: string[]}>} o.queryChunk
+ * @param {(slice, nowIso) => Promise<{queriedIds: string[], queryErrorCount?: number}>} o.queryChunk
  *        does the network query + writes the entity output files for this chunk.
+ *        queriedIds holds ONLY genuinely-queried (HTTP 200) compounds; a fetch
+ *        failure is excluded (stays eligible) and counted in queryErrorCount.
  */
 export async function runCoverageStage({
     label, source, stampField, freshnessDays, chunkSizeOverride,
@@ -90,10 +92,16 @@ export async function runCoverageStage({
     console.log(`[${label}] Cursor: prev=${cursor?.cursor_id ?? '(none)'} | chunk_size=${chunkSize} | this-run slice=${chunk.slice.length} | wrapped=${chunk.wrapped}`);
 
     // 5. caller's network query + entity-file writes.
-    const { queriedIds } = await queryChunk(chunk.slice, nowIso);
+    const { queriedIds, queryErrorCount = 0 } = await queryChunk(chunk.slice, nowIso);
     const queriedCount = queriedIds.length;
+    if (queryErrorCount > 0) {
+        console.warn(`[${label}] query_error_count=${queryErrorCount} this run (fetch failures -> NOT stamped, stay eligible for retry)`);
+    }
 
-    // 6. COVERAGE-INVARIANT HARD-FAIL ([[cross_cycle_silent_data_loss]]).
+    // 6. COVERAGE-INVARIANT HARD-FAIL ([[cross_cycle_silent_data_loss]]). Now
+    // EFFECTIVE against a total outage: when every compound in the chunk failed,
+    // queriedIds=[] -> queried=0 -> THROW (LOUD), instead of stamping the chunk
+    // fresh on transient errors and silently skipping it for the whole window.
     assertCoverageProgress(eligible.length, queriedCount, label);
 
     // 7. terminal commit: merged stamps + advanced cursor to R2 (LOUD on fail).
@@ -122,9 +130,10 @@ export async function runCoverageStage({
     console.log(`\n[${label}] === COVERAGE TELEMETRY (LOUD, per no-silent-loss) ===`);
     console.log(`  eligible:                ${eligible.length}`);
     console.log(`  compounds_queried:       ${queriedCount}`);
+    console.log(`  query_error_count:       ${queryErrorCount}`); // fetch failures -> NOT stamped, stay eligible
     console.log(`  compounds_skipped_fresh: ${skippedFresh}`);
     console.log(`  cursor_position:         ${nextCursor.cursor_id ?? '(wrapped/null)'} | cycles_completed=${nextCursor.cycles_completed}`);
     console.log(`  stamps_total:            ${mergedStamps.size}`);
 
-    return { queriedCount, eligibleCount: eligible.length, skippedFresh, nextCursor };
+    return { queriedCount, queryErrorCount, eligibleCount: eligible.length, skippedFresh, nextCursor };
 }

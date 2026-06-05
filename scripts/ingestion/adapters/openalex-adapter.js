@@ -42,13 +42,17 @@ async function fetchJson(url) {
 }
 
 /**
- * Search papers by query term (e.g. compound name).
+ * Search papers by query term (e.g. compound name), distinguishing a GENUINE-empty
+ * result from a FETCH-FAILURE (PR-B coverage-ceiling).
  *
  * V0.1 fix: mix old (high-citation) + recent (≥2020) papers.
  * OpenAlex default sort is by citation count, which gives stale evidence.
  * Agent needs recent research, not just historical highlights.
+ *
+ * Returns { ok, results }: ok:true if >=1 sub-query was HTTP 200 (genuine, even 0
+ * results); ok:false only if EVERY sub-query errored ([[cross_cycle_silent_data_loss]]).
  */
-export async function search(query, perPage = 25) {
+export async function searchChecked(query, perPage = 25) {
     const split = Math.ceil(perPage / 2);
     const queries = [
         // Top-cited (any year) — historical authoritative papers
@@ -58,9 +62,11 @@ export async function search(query, perPage = 25) {
     ];
     const all = [];
     const seen = new Set();
+    let anyOk = false; // a genuine query = at least ONE sub-query returned HTTP 200
     for (const url of queries) {
         try {
             const data = await fetchJson(url);
+            anyOk = true;
             for (const w of (data?.results ?? [])) {
                 if (!seen.has(w.id)) { seen.add(w.id); all.push(w); }
             }
@@ -68,7 +74,14 @@ export async function search(query, perPage = 25) {
             console.warn(`[OPENALEX] search "${query}": ${e.message}`);
         }
     }
-    return all;
+    // ok:false only if EVERY sub-query errored (total fetch failure); else genuine.
+    return { ok: anyOk, results: all };
+}
+
+/** Back-compat array contract (callers that don't need the {ok} failure signal). */
+export async function search(query, perPage = 25) {
+    const { results } = await searchChecked(query, perPage);
+    return results;
 }
 
 /**

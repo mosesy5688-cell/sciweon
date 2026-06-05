@@ -68,18 +68,25 @@ export async function fetchResultsByNctId(nctId) {
 // extractResultsSignals lives in clinicaltrials-helpers.js (CES split)
 
 /**
- * Search trials by intervention name.
- * Returns up to 100 trial records.
+ * Search trials by intervention name. Returns { ok, studies }: ok:true on HTTP 200
+ * (even 0 results = a genuine empty), ok:false on a caught fetch error -- which the
+ * caller MUST NOT stamp fresh (stays eligible + retried), per PR-B + [[cross_cycle_silent_data_loss]].
  */
-export async function searchByIntervention(name, pageSize = 100) {
+export async function searchByInterventionChecked(name, pageSize = 100) {
     try {
         const url = `${CT_BASE}?query.intr=${encodeURIComponent(name)}&pageSize=${pageSize}&format=json`;
         const data = await fetchJson(url);
-        return data?.studies ?? [];
+        return { ok: true, studies: data?.studies ?? [] };
     } catch (e) {
         console.warn(`[CT] intervention "${name}": ${e.message}`);
-        return [];
+        return { ok: false, studies: [] };
     }
+}
+
+/** Back-compat array contract (callers that don't need the {ok} failure signal). */
+export async function searchByIntervention(name, pageSize = 100) {
+    const { studies } = await searchByInterventionChecked(name, pageSize);
+    return studies;
 }
 
 /**

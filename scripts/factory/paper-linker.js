@@ -34,7 +34,7 @@ import fs from 'fs/promises';
 import { createWriteStream } from 'fs';
 import { once } from 'events';
 import path from 'path';
-import { search, normalize as normalizePaper } from '../ingestion/adapters/openalex-adapter.js';
+import { searchChecked, normalize as normalizePaper } from '../ingestion/adapters/openalex-adapter.js';
 import { loadIndex as loadRetractionIndex } from '../ingestion/adapters/retraction-watch-adapter.js';
 import { fetchByDoiBatch as s2FetchByDoiBatch } from '../ingestion/adapters/semanticscholar-adapter.js';
 import { scoreEntity } from './lib/confidence-scorer.js';
@@ -85,7 +85,14 @@ function getSearchName(compound) {
 async function processOneCompound(compound, rwIndex) {
     const searchName = getSearchName(compound);
     await PAPER_RATE_LIMITER.acquire(); // bound the true OpenAlex request rate
-    const rawPapers = await search(searchName, PAPERS_PER_COMPOUND);
+    const { ok, results: rawPapers } = await searchChecked(searchName, PAPERS_PER_COMPOUND);
+    // FETCH-FAILURE (all sub-queries errored): return early with ok:false so the
+    // caller does NOT stamp this compound -- it stays eligible + is retried next
+    // wrap. Stamping a transient failure would skip it for the whole freshness
+    // window ([[cross_cycle_silent_data_loss]]).
+    if (!ok) {
+        return { compound, ok: false, papers: [], links: [], retracted: [], trialMentions: 0, s2Enriched: 0, s2Conflicts: 0 };
+    }
 
     const normalized = [];
     for (const raw of rawPapers) {
@@ -133,7 +140,7 @@ async function processOneCompound(compound, rwIndex) {
             doi: paper.doi, mention_confidence: 70, extraction_method: 'concept_match',
         });
     }
-    return { compound, papers, links, retracted, trialMentions, s2Enriched, s2Conflicts };
+    return { compound, ok: true, papers, links, retracted, trialMentions, s2Enriched, s2Conflicts };
 }
 
 // Query OpenAlex for one chunk, write the entity outputs, return queried ids.
@@ -147,7 +154,15 @@ function makeQueryChunk(rwIndex) {
         let totalTrialMentions = 0;
         let s2Enriched = 0;
         let s2Conflicts = 0;
+        let queryErrorCount = 0; // LOUD: OpenAlex fetch failures (total per-compound outage)
         for (const r of perCompound) {
+            // FETCH-FAILURE: do NOT stamp -- stays eligible + retried next wrap.
+            if (!r.ok) {
+                queryErrorCount++;
+                console.warn(`[${LABEL}] query FAILED for ${r.compound.id} -- NOT stamping, stays eligible`);
+                continue;
+            }
+            // Genuine query (HTTP 200): zero papers still counts -- the stamp advances coverage.
             queriedIds.push(r.compound.id);
             for (const { key, paper } of r.papers) if (!allPapers.has(key)) allPapers.set(key, paper);
             for (const link of r.links) paperLinks.push(link);
@@ -166,7 +181,11 @@ function makeQueryChunk(rwIndex) {
 
         const retractRate = papersOut.length > 0 ? (100 * retractedPapers.length / papersOut.length).toFixed(2) : 0;
         console.log(`[${LABEL}] this-run papers=${papersOut.length} links=${paperLinks.length} retracted=${retractedPapers.length} (${retractRate}%) NCT_mentions=${totalTrialMentions} s2=${s2Enriched}/${paperLinks.length} (conflicts ${s2Conflicts})`);
-        return { queriedIds };
+        // LOUD outage visibility (M8): an OpenAlex fetch failure is COUNTED, never silent.
+        if (queryErrorCount > 0) {
+            console.warn(`[${LABEL}] query_error_count=${queryErrorCount} (OpenAlex fetch failures this run -- those compounds stay eligible for retry)`);
+        }
+        return { queriedIds, queryErrorCount };
     };
 }
 
