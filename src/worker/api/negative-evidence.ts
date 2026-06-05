@@ -14,8 +14,14 @@
 
 import type { Env } from '../../worker';
 import { parseCompoundId } from '../lib/id-parse';
-import { loadNegEvidenceForCompound } from '../lib/neg-evidence-loader';
+import { loadNegEvidenceForCompound, NegShardError, DEFAULT_PAGE_LIMIT } from '../lib/neg-evidence-loader';
 import { parseEventTypeFilter } from '../lib/event-type-taxonomy';
+
+function parseIntParam(raw: string | null, fallback: number): number {
+    if (raw === null) return fallback;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
+}
 
 const PATH_RE = /^\/api\/v1\/compound\/([^/]+)\/negative-evidence$/;
 
@@ -46,18 +52,33 @@ export async function handleNegativeEvidence(req: Request, env: Env, _ctx: Execu
     // V0.5.8 Phase 1: optional `event_type` filter (comma-separated).
     // Null = no filter; empty Set = client passed only unknown tokens → match nothing.
     const eventTypeFilter = parseEventTypeFilter(url.searchParams.get('event_type'));
+    // PR-T1.1-LEVER: bounded paginated serving (?offset=&limit=). The stored
+    // neg-evidence is complete; the response.pagination block carries the true
+    // total + has_more + next_offset so the bound is LOUD + paginable.
+    const offset = parseIntParam(url.searchParams.get('offset'), 0);
+    const limit = parseIntParam(url.searchParams.get('limit'), DEFAULT_PAGE_LIMIT);
     try {
-        const response = await loadNegEvidenceForCompound(env.SCIWEON_R2, parsed.canonical, baseUrl, eventTypeFilter);
+        const response = await loadNegEvidenceForCompound(
+            env.SCIWEON_R2, parsed.canonical, baseUrl, eventTypeFilter, { offset, limit },
+        );
         return Response.json(response, {
             status: 200,
             headers: {
                 'cache-control': 'public, max-age=300, s-maxage=900',
-                'x-sciweon-schema-minor': '1.0',
+                'x-sciweon-schema-minor': '1.1',
             },
         });
     } catch (err) {
+        // INVERTED dual-path: a sharded read failure is LOUD -> 503 (never a
+        // silent fall-back to the legacy whole-file path, which would re-OOM or
+        // mask a corrupt shard as a false-clean on the safety endpoint).
+        if (err instanceof NegShardError) {
+            return Response.json(
+                { error: 'Negative-evidence service unavailable', detail: 'Sharded read failed; retry shortly.' },
+                { status: 503 },
+            );
+        }
         const message = err instanceof Error ? err.message : String(err);
-        // Map known operational errors to the right status without leaking key paths.
         if (/Short read|etag drifted|disappeared/i.test(message)) {
             return Response.json(
                 { error: 'Data integrity error', detail: 'Upstream object failed integrity validation. Retry shortly.' },

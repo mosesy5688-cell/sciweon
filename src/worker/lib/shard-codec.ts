@@ -51,16 +51,25 @@ export function decryptPayload(
  * CF Workers re-loads the module per isolate spawn. Static import bundles
  * fzstd at deploy time (~3KB code), zero per-request overhead.
  *
- * If decompress throws (plaintext-stored Phase 1 edge case), return bytes
- * as text directly — caller's JSON.parse will validate.
+ * If decompress throws (plaintext-stored Phase 1 edge case), the LENIENT path
+ * (compound loader) returns bytes as text directly — caller's JSON.parse will
+ * validate. The STRICT path (neg-evidence loader) HARD-FAILS on decode error
+ * instead of returning a plaintext interpretation of zstd bytes: a corrupt or
+ * truncated neg shard must surface as a LOUD 503, never as silently-wrong
+ * "negative evidence" text (per [[cross_cycle_silent_data_loss]] — a decode
+ * failure on the safety endpoint must not become a false response).
  */
 import { decompress as fzstdDecompress } from 'fzstd';
 
-export function decompressPayload(bytes: Uint8Array): string {
+export function decompressPayload(bytes: Uint8Array, strict = false): string {
     try {
         const decompressed = fzstdDecompress(bytes);
         return new TextDecoder('utf-8').decode(decompressed);
-    } catch {
+    } catch (err) {
+        if (strict) {
+            const msg = err instanceof Error ? err.message : String(err);
+            throw new Error(`Shard decode failure (strict): ${msg}`);
+        }
         // Plaintext fallback (rare; ShardWriter line 71 always compresses)
         return new TextDecoder('utf-8').decode(bytes);
     }
