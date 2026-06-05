@@ -31,6 +31,7 @@ function emptyResult(initialCursor) {
     return {
         terminatedBy: 'empty', chunksDrained: 0, processedInRun: 0,
         remainingBacklog: 0, finalCursor: initialCursor, finalCursorResult: null,
+        drainErrorCount: 0,
     };
 }
 
@@ -69,6 +70,7 @@ export async function drainAdapterBacklog({
     let windowMs = 0;
     let wrapped = false;
     let lastChunkResult = null;
+    let drainErrorCount = 0;   // belt-guard: count of enrichOne throws this run.
 
     while (!wrapped) {
         const elapsed = Date.now() - runStart;
@@ -80,6 +82,7 @@ export async function drainAdapterBacklog({
                     ? Math.max(0, lastChunkResult.totalEligible - processedInRun)
                     : eligible.length,
                 finalCursor: cursor, finalCursorResult: lastChunkResult,
+                drainErrorCount,
             };
         }
 
@@ -99,7 +102,20 @@ export async function drainAdapterBacklog({
 
         let inChunk = 0;
         for (const rec of slice) {
-            await enrichOne(rec);
+            // Belt-and-suspenders poison guard ([[cross_cycle_silent_data_loss]]):
+            // a single record's enrichOne throw must NOT abort the whole stage
+            // (every cron) -- it would starve all never-queried records behind it.
+            // enrichers SHOULD return a sentinel rather than throw (the suspenders);
+            // this is the belt. LOUD (never silent): the throw is logged + counted,
+            // and the record is left un-mutated so isEligible keeps it eligible for
+            // a bounded retry (the enricher's own per-record attempt counter bounds
+            // requery so the eligible denominator cannot grow unboundedly).
+            try {
+                await enrichOne(rec);
+            } catch (err) {
+                drainErrorCount += 1;
+                console.error(`${logPrefix} enrichOne THREW on record ${rec?.id ?? '(no id)'}: ${err?.message ?? err} -- record left eligible, continuing`);
+            }
             inChunk += 1;
             if (logEveryNRecords > 0 && (inChunk % logEveryNRecords === 0 || inChunk === slice.length)) {
                 console.log(`${logPrefix} chunk ${chunksDrained + 1} | ${inChunk}/${slice.length} processed`);
@@ -128,5 +144,6 @@ export async function drainAdapterBacklog({
     return {
         terminatedBy: 'wrapped', chunksDrained, processedInRun,
         remainingBacklog: 0, finalCursor: cursor, finalCursorResult: lastChunkResult,
+        drainErrorCount,
     };
 }

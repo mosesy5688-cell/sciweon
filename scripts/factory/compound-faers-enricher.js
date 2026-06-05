@@ -33,6 +33,27 @@ const SOURCE = 'openfda_faers';
 const DATA_DIR = './output/linked';
 const DRAIN_BUDGET_MS = Number(process.env.ADAPTER_DRAIN_BUDGET_MS) || 25 * 60 * 1000;
 const COLD_START_MS = Number(process.env.ADAPTER_DRAIN_COLD_START_MS) || DEFAULT_CHUNK_DURATION_ESTIMATE_MS;
+const FAERS_LIMIT = 30;            // KEEP 30 in 5b (uncap = 5c, atomic w/ schema lift).
+const MAX_FAERS_ATTEMPTS = 3;      // poison-UNII bound (part 4): terminal after N failures.
+
+// LOUD per-run telemetry (part 3 + 6). faers_error_count is cumulative;
+// faersFailuresByMinute keys wall-minute -> count so the run can report a
+// per-minute 429/failure RATE, not just a total (a burst is the real signal).
+let faersErrorCount = 0;
+let faersTerminalFailed = 0;
+const faersFailuresByMinute = new Map();
+
+function recordFaersFailure() {
+    faersErrorCount += 1;
+    const minute = Math.floor(Date.now() / 60000);
+    faersFailuresByMinute.set(minute, (faersFailuresByMinute.get(minute) ?? 0) + 1);
+}
+
+export function faersTelemetry() {
+    let peakPerMin = 0;
+    for (const v of faersFailuresByMinute.values()) peakPerMin = Math.max(peakPerMin, v);
+    return { faersErrorCount, faersTerminalFailed, peakFailuresPerMinute: peakPerMin };
+}
 
 // Streaming JSONL writer (V5 architect-locked V8-thread defense).
 async function writeJsonl(file, records) {
@@ -44,27 +65,68 @@ async function writeJsonl(file, records) {
     await once(stream, 'finish');
 }
 
-// Skip-if-stamped: a compound is FAERS-enriched once
-// fda_signals.faers_top_adr_terms array has been written (whether or not
-// it contains entries - empty array means "queried, no signals" which is
-// still informative). Eligibility requires UNII (denominator gate).
+// Skip-if-stamped: a compound is FAERS-enriched (LEAVES the eligible set) once
+// fda_signals.faers_top_adr_terms is an ARRAY -- written ONLY on a GENUINE
+// outcome: success, genuine-empty ([], "queried, no signals"), or a TERMINAL
+// poison-record failure (part 4 stamps [] + faers_failed:true after N attempts).
+// A FETCH FAILURE leaves the array UNWRITTEN (undefined) so the record stays
+// eligible and is requeried next cron -- bounded to N by the attempt counter.
+// No body change needed for the contract: Array.isArray(undefined)=false stays
+// eligible; Array.isArray([])=true completes.
 export function isEligible(record) {
     if (!record?.external_ids?.unii) return false;
     const terms = record?.fda_signals?.faers_top_adr_terms;
-    if (Array.isArray(terms)) return false; // already attempted
+    if (Array.isArray(terms)) return false; // already attempted/terminal
     return true;
 }
 
+// enrichOne MUST NEVER THROW (part 4): a thrown error from a poison UNII would
+// abort the whole stage every cron (the drain loop has no per-record guard of
+// its own historically). Any unexpected throw is caught here, counted as a
+// fetch failure, and folded into the attempt-counter path. Returns the record.
 export async function enrichOne(record) {
     const unii = record.external_ids?.unii;
     if (!unii) return record;
-    const signals = await fetchFaersSignalsByUnii(unii, 30);
     record.fda_signals = record.fda_signals ?? { sources: [] };
-    // Always stamp the array (possibly empty) so skip-if-stamped works.
-    record.fda_signals.faers_top_adr_terms = (signals ?? []).slice(0, 30);
-    record.fda_signals.faers_total_top_count = (signals ?? []).reduce((s, r) => s + r.count, 0);
+
+    let result = null;
+    try {
+        result = await fetchFaersSignalsByUnii(unii, FAERS_LIMIT);
+    } catch (err) {
+        // Belt-and-suspenders: the adapter already converts failures to a null
+        // sentinel, but guarantee no throw escapes regardless.
+        result = null;
+    }
+
+    if (result === null) {
+        // FETCH FAILURE: do NOT stamp faers_top_adr_terms (stays eligible).
+        recordFaersFailure();
+        const attempts = (record.fda_signals.faers_attempts ?? 0) + 1;
+        record.fda_signals.faers_attempts = attempts;
+        if (attempts >= MAX_FAERS_ATTEMPTS) {
+            // TERMINAL poison-record marker (part 4): stamp [] so isEligible
+            // returns false (record LEAVES the eligible set, stops starving
+            // never-queried compounds) but faers_failed:true keeps it
+            // DISTINGUISHABLE from a genuine-empty in telemetry.
+            faersTerminalFailed += 1;
+            record.fda_signals.faers_failed = true;
+            record.fda_signals.faers_top_adr_terms = [];
+            record.fda_signals.faers_total_top_count = 0;
+            record.fda_signals.faers_queried_at = new Date().toISOString();
+        }
+        return record;
+    }
+
+    // SUCCESS / GENUINE-EMPTY: stamp the array (possibly empty) -> completes.
+    const terms = result.terms.slice(0, FAERS_LIMIT);
+    record.fda_signals.faers_top_adr_terms = terms;
+    record.fda_signals.faers_total_top_count = terms.reduce((s, r) => s + r.count, 0);
+    record.fda_signals.faers_queried_at = new Date().toISOString();
+    // Saturation flag (part 5): the count is a TOP-N slice, not the full set.
+    // KEEP limit=30 here; the uncap is 5c (atomic with the schema cap lift).
+    if (result.truncated) record.fda_signals.faers_truncated = true;
     if (!Array.isArray(record.fda_signals.sources)) record.fda_signals.sources = [];
-    if (signals?.length > 0 && !record.fda_signals.sources.includes('openfda_faers')) {
+    if (terms.length > 0 && !record.fda_signals.sources.includes('openfda_faers')) {
         record.fda_signals.sources.push('openfda_faers');
     }
     return record;
@@ -101,7 +163,7 @@ async function main() {
         sleepMsBetween: REQUEST_DELAY_MS, initialCursor: cursor,
         logPrefix: '[FAERS-ENRICHER]', logEveryNRecords: 100,
     });
-    console.log(`[FAERS-ENRICHER] Drain done | terminatedBy=${drain.terminatedBy} | chunksDrained=${drain.chunksDrained} | processedInRun=${drain.processedInRun} | remainingBacklog=${drain.remainingBacklog}`);
+    console.log(`[FAERS-ENRICHER] Drain done | terminatedBy=${drain.terminatedBy} | chunksDrained=${drain.chunksDrained} | processedInRun=${drain.processedInRun} | remainingBacklog=${drain.remainingBacklog} | drainErrorCount=${drain.drainErrorCount ?? 0}`);
 
     let withFaersData = 0;
     let totalReports = 0;
@@ -132,7 +194,9 @@ async function main() {
         console.log('[FAERS-ENRICHER] No chunks drained (empty eligible at entry) -- cursor unchanged');
     }
 
+    const tel = faersTelemetry();
     console.log(`\n[FAERS-ENRICHER] Complete - cumulative with FAERS: ${withFaersData}/${compounds.length} | ${totalReports.toLocaleString()} reports`);
+    console.log(`[FAERS-ENRICHER] Fetch-failure telemetry: errors=${tel.faersErrorCount} | terminal_failed(N>=${MAX_FAERS_ATTEMPTS})=${tel.faersTerminalFailed} | peak_failures_per_minute=${tel.peakFailuresPerMinute}`);
 }
 
 const isDirectRun = import.meta.url === `file://${process.argv[1]}`
