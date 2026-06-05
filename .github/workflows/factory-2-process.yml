@@ -31,6 +31,11 @@ jobs:
       R2_BUCKET: ${{ secrets.R2_BUCKET }}
       R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      # PR-FAERS-KEY: the openFDA api_key. Keyless = 1,000 req/day (FAERS blows
+      # the cap after ~1,000 records -> 429 -> error-as-empty silent-loss). Keyed
+      # = ~120,000/day. The pre-flight gate below HARD-FAILS the prod job if this
+      # secret is absent (the code itself stays warn-degrade for local runs).
+      OPENFDA_API_KEY: ${{ secrets.OPENFDA_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -44,6 +49,18 @@ jobs:
           else
             npm install
           fi
+      # PROD HARD-STOP (part 1): string-presence check ONLY, NO network. openFDA
+      # is fetched in this stage (fda-enricher + compound-faers-enricher); a
+      # missing key would silently truncate FAERS to ~3% in prod. Fail loud here
+      # rather than degrade silently. (factory-1's openfda adapter is non-V2 and
+      # skipped, so only factory-2 needs this gate.)
+      - name: Pre-flight - require OPENFDA_API_KEY
+        run: |
+          if [ -z "${OPENFDA_API_KEY}" ]; then
+            echo "::error::OPENFDA_API_KEY secret is absent. openFDA keyless = 1,000 req/day -> FAERS silently truncates. Provision the secret before running stage 2."
+            exit 1
+          fi
+          echo "OPENFDA_API_KEY present (length ${#OPENFDA_API_KEY}) -- keyed openFDA enabled."
       - name: Run stage 2
         run: node scripts/factory/stage-2-process.js
       - name: Upload stage-2 log artifact

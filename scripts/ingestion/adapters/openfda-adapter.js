@@ -35,44 +35,39 @@
  *     - spl_metadata          (PDF rendering metadata, not data)
  */
 
+import { fetchOpenFda, redactApiKey, OPENFDA_REQUEST_DELAY_MS } from '../../factory/lib/openfda-auth.js';
+
 // V2 adapter contract: reactive UNII-keyed lookup — FDA openFDA has no stable incremental cursor.
 export const supportsIncremental = false;
 
 const OPENFDA_BASE = 'https://api.fda.gov';
-const REQUEST_TIMEOUT_MS = 20000;
-const REQUEST_DELAY_MS = 250;
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
+// Pacing now lives in the shared TokenBucket (openfda-auth.js). REQUEST_DELAY_MS
+// is re-exported from there (~294ms = under the keyed 240/min wall) so existing
+// importers (fda-enricher / compound-faers-enricher) keep working unchanged.
+const REQUEST_DELAY_MS = OPENFDA_REQUEST_DELAY_MS;
 
-async function fetchJson(url) {
-    const res = await fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-    if (!res.ok) {
-        if (res.status === 404) return null;
-        if (res.status === 429 || res.status === 503) {
-            await sleep(5000);
-            const retry = await fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-            if (!retry.ok) throw new Error(`HTTP ${retry.status}: ${url}`);
-            return retry.json();
-        }
-        throw new Error(`HTTP ${res.status}: ${url}`);
-    }
-    return res.json();
-}
+// SENTINEL CONTRACT (part 3): a 404 / 200-with-results:[] is a GENUINE EMPTY ->
+// return [] (the load-bearing common case for real drugs; the enricher stamps it
+// COMPLETE). A 429 / 5xx / timeout / network / parse error is a FETCH FAILURE ->
+// fetchOpenFda throws OpenFdaFetchError -> these helpers return null (a DISTINCT
+// sentinel) so the enricher does NOT stamp genuine-empty and the record stays
+// eligible + the error is counted loudly. All warn lines are pre-redacted.
 
 /**
  * Fetch drug label(s) by FDA UNII. Multiple labels may exist for the same
- * substance (different formulations / manufacturers). Returns array.
+ * substance (different formulations / manufacturers).
+ * @returns {Promise<Array|null>} [] on genuine-empty/404, null on fetch failure.
  */
 export async function fetchLabelsByUnii(unii, limit = 5) {
     if (!unii) return [];
     const url = `${OPENFDA_BASE}/drug/label.json?search=openfda.unii:${encodeURIComponent(unii)}&limit=${limit}`;
     try {
-        const data = await fetchJson(url);
-        return data?.results ?? [];
+        const data = await fetchOpenFda(url);
+        return data?.results ?? [];        // null (404) -> [] genuine-empty
     } catch (e) {
-        if (e.message.includes('404')) return [];
-        console.warn(`[OPENFDA] label ${unii}: ${e.message}`);
-        return [];
+        console.warn(`[OPENFDA] label ${unii}: ${redactApiKey(e.message)}`);
+        return null;                       // FETCH FAILURE sentinel
     }
 }
 
@@ -84,37 +79,43 @@ export async function fetchLabelsByUnii(unii, limit = 5) {
  * aggregation returns top ADR terms with FAERS report counts in a single
  * API call — Sciweon stores signal-level signal, not raw reports.
  *
- * Returns array of { term, count } sorted desc by count.
  * MedDRA Preferred Terms (PT) are ICH international standard medical
  * vocabulary — primary, authoritative-source exempt (like MeSH).
+ *
+ * @returns {Promise<{terms:Array<{term,count}>, truncated:boolean}|null>}
+ *   object (terms possibly empty) on success/genuine-empty; null on fetch
+ *   failure. `truncated` (part 5) = results.length >= the requested limit, i.e.
+ *   the count is a TOP-N SLICE, not the full distinct-term set.
  */
 export async function fetchFaersSignalsByUnii(unii, limit = 20) {
-    if (!unii) return [];
+    if (!unii) return { terms: [], truncated: false };
     const url = `${OPENFDA_BASE}/drug/event.json?search=patient.drug.openfda.unii:${encodeURIComponent(unii)}&count=patient.reaction.reactionmeddrapt.exact&limit=${limit}`;
     try {
-        const data = await fetchJson(url);
-        const results = data?.results ?? [];
-        return results.map(r => ({ term: r.term, count: r.count ?? 0 }));
+        const data = await fetchOpenFda(url);
+        const results = data?.results ?? [];   // null (404) -> [] genuine-empty
+        return {
+            terms: results.map(r => ({ term: r.term, count: r.count ?? 0 })),
+            truncated: results.length >= limit,
+        };
     } catch (e) {
-        if (e.message.includes('404')) return [];
-        console.warn(`[OPENFDA] FAERS ${unii}: ${e.message}`);
-        return [];
+        console.warn(`[OPENFDA] FAERS ${unii}: ${redactApiKey(e.message)}`);
+        return null;                            // FETCH FAILURE sentinel
     }
 }
 
 /**
  * Fetch recall events by UNII.
+ * @returns {Promise<Array|null>} [] on genuine-empty/404, null on fetch failure.
  */
 export async function fetchRecallsByUnii(unii, limit = 10) {
     if (!unii) return [];
     const url = `${OPENFDA_BASE}/drug/enforcement.json?search=openfda.unii:${encodeURIComponent(unii)}&limit=${limit}`;
     try {
-        const data = await fetchJson(url);
-        return data?.results ?? [];
+        const data = await fetchOpenFda(url);
+        return data?.results ?? [];        // null (404) -> [] genuine-empty
     } catch (e) {
-        if (e.message.includes('404')) return [];
-        console.warn(`[OPENFDA] recall ${unii}: ${e.message}`);
-        return [];
+        console.warn(`[OPENFDA] recall ${unii}: ${redactApiKey(e.message)}`);
+        return null;                       // FETCH FAILURE sentinel
     }
 }
 

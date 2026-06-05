@@ -48,12 +48,24 @@ async function main() {
     let recallHit = 0;
     let boxedWarning = 0;
     let processed = 0;
+    let fetchFailed = 0;
 
     for (const c of withUnii) {
         const unii = c.external_ids.unii;
         const labels = await fetchLabelsByUnii(unii, 5);
         await sleep(REQUEST_DELAY_MS);
         const recalls = await fetchRecallsByUnii(unii, 10);
+        // SENTINEL CONTRACT (part 3): the adapters now return null on a FETCH
+        // FAILURE (429/5xx/timeout/network) vs [] on genuine-empty/404. A null
+        // would coerce to [] in aggregateSignals and stamp a false genuine-empty,
+        // masking the failure. Skip this record this cycle (no stamp) so it is
+        // retried next cron -- never silently record a failure as "no FDA data".
+        if (labels === null || recalls === null) {
+            fetchFailed++;
+            processed++;
+            await sleep(REQUEST_DELAY_MS);
+            continue;
+        }
         const signals = aggregateSignals(labels, recalls);
         if (signals) {
             // FILL-not-replace ([[cross_cycle_silent_data_loss]]): fda runs BEFORE
@@ -78,6 +90,7 @@ async function main() {
     console.log(`  With FDA drug label:           ${labelHit} (${(100 * labelHit / withUnii.length).toFixed(1)}%)`);
     console.log(`  With recall history:           ${recallHit}`);
     console.log(`  With boxed warning (Cat D NegEvidence): ${boxedWarning}`);
+    console.log(`  Fetch failures (skipped, retried next cron): ${fetchFailed}`);
 }
 
 const isDirectRun = import.meta.url === `file://${process.argv[1]}`
