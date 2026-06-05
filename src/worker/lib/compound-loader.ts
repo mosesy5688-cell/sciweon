@@ -21,6 +21,39 @@ import { loadManifest } from './compound-manifest-loader';
 import { decryptPayload, decompressPayload } from './shard-codec';
 import type { Env } from '../../worker';
 
+/**
+ * PR-COMPOUND-GUARD (Step-5a): legacy whole-file COMPRESSED-size ceiling.
+ *
+ * loadTier1Legacy is the deploy-transition FALLBACK (reachable only when
+ * compounds_manifest_key is absent); it gunzips the WHOLE compounds-enriched
+ * file into the 128MB isolate. With no guard, the FDA preserve-all uncap
+ * (which grows fda_signals on the compound RECORD) re-introduces the 45K-cliff
+ * OOM. This is a LOUD 503 safety net — the sharded path + projections are
+ * primary.
+ *
+ * Value choice (96MB compressed): today's compounds-enriched.jsonl.gz at
+ * ~129,798 compounds is on the order of ~40-60MB compressed (~1.9KB/compound
+ * uncompressed * 130K ~= 245MB uncompressed, gzip ~4-6x). 96MB sits comfortably
+ * ABOVE that with growth headroom (so the guard does NOT 503 a legitimate
+ * current load) yet a 96MB .gz gunzips to ~400-580MB — which OOMs the 128MB
+ * isolate — so the guard catches the post-uncap runaway BEFORE the gunzip.
+ * The neg sibling (LEGACY_MAX_BYTES=48MB) bounds a structurally smaller file;
+ * the compound file is already larger today, so this ceiling is higher.
+ *
+ * OPERATOR NOTE: confirm + tune via an R2 head of the live .gz; override at
+ * runtime with the env var COMPOUNDS_MAX_BYTES (bytes).
+ */
+export const COMPOUNDS_MAX_BYTES = 96 * 1024 * 1024;
+
+function compoundsMaxBytes(env: Env): number {
+    const raw = env.COMPOUNDS_MAX_BYTES;
+    if (typeof raw === 'string' && raw.trim() !== '') {
+        const n = Number(raw);
+        if (Number.isFinite(n) && n > 0) return Math.floor(n);
+    }
+    return COMPOUNDS_MAX_BYTES;
+}
+
 interface ShardEntry {
     cid_range: [number, number];
     r2_key: string;
@@ -78,7 +111,7 @@ export async function loadTier1(env: Env, cid: number): Promise<CompoundRecord |
     } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.warn(`[compound-loader] Shard path failed (${msg}), falling back to legacy gunzip`);
-        return loadTier1Legacy(env.SCIWEON_R2, cid);
+        return loadTier1Legacy(env, cid);
     }
 }
 
@@ -104,16 +137,40 @@ async function loadTier1Sharded(env: Env, cid: number): Promise<CompoundRecord |
 }
 
 /**
- * Legacy gunzip path — kept as fallback during I-7a rollout. Will be removed
- * in cleanup PR after 1 week of production stability with sharded path.
+ * Legacy gunzip path — kept as the deploy-transition fallback during I-7a
+ * rollout (reachable when compounds_manifest_key is absent).
+ *
+ * PR-COMPOUND-GUARD: a head().size guard (mirroring neg-evidence-loader's
+ * LEGACY_MAX_BYTES) refuses to gunzip an oversized whole-file into the isolate
+ * — a LOUD throw (the caller surfaces a 503) instead of an OOM. The guard
+ * error PROPAGATES (it is not caught by the surrounding try) so the OOM signal
+ * is never silently swallowed into a false 404.
  */
-async function loadTier1Legacy(bucket: R2Bucket, cid: number): Promise<CompoundRecord | null> {
+async function loadTier1Legacy(env: Env, cid: number): Promise<CompoundRecord | null> {
+    const bucket = env.SCIWEON_R2!;
+    let date: string | undefined;
+    let key: string;
     try {
         const ptrText = await fetchR2JsonText(bucket, 'snapshots/latest.json');
         const ptr = JSON.parse(ptrText) as LatestPointer;
-        const date = ptr.latest_snapshot_date;
+        date = ptr.latest_snapshot_date;
         if (!date) return null;
-        const text = await fetchR2GunzippedText(bucket, `snapshots/${date}/compounds-enriched.jsonl.gz`);
+        key = `snapshots/${date}/compounds-enriched.jsonl.gz`;
+    } catch {
+        return null;
+    }
+    // head().size OOM guard — OUTSIDE the catch so it surfaces (503), not null.
+    const head = await bucket.head(key);
+    if (!head) return null; // absent file -> authoritative null (caller 404s)
+    const maxBytes = compoundsMaxBytes(env);
+    if (head.size > maxBytes) {
+        throw new Error(
+            `Legacy compounds-enriched ${key} is ${head.size} bytes (> ${maxBytes}); ` +
+            `sharded path required (OOM guard, COMPOUNDS_MAX_BYTES).`,
+        );
+    }
+    try {
+        const text = await fetchR2GunzippedText(bucket, key);
         return scanJsonlForCid(text, cid);
     } catch {
         return null;

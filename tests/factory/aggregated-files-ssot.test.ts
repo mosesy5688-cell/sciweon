@@ -69,6 +69,14 @@ describe('AGGREGATED_FILES SSoT (stage-3 bundle)', () => {
         expect(AGGREGATED_FILES).toContain('target-index.json');
     });
 
+    it('contains BOTH compound serving projections -- PR-COMPOUND-GUARD (Step-5a)', () => {
+        // F2: the PR #96 target-index drift bug = added to ONE list only -> silently
+        // never published. Both projections must be in AGGREGATED_FILES (so stage-4
+        // downloads them) AND SNAPSHOT_FILES (so snapshot-builder publishes them).
+        expect(AGGREGATED_FILES).toContain('compounds-search.jsonl');
+        expect(AGGREGATED_FILES).toContain('xref-index.json');
+    });
+
     it('contains the core aggregated jsonl files', () => {
         for (const required of [
             'compounds-enriched.jsonl',
@@ -155,5 +163,14 @@ describe('SNAPSHOT_FILES SSoT (snapshot-builder publish list)', () => {
 
     it('includes target-index.json — regression guard for the post-#98 silent drop', () => {
         expect(SNAPSHOT_FILES).toContain('target-index.json');
+    });
+
+    it('PUBLISHES BOTH compound serving projections -- PR-COMPOUND-GUARD (Step-5a)', () => {
+        // They are PUBLIC (id->cid + a search summary; no proprietary content) ->
+        // NOT in the UMLS-omitted set; they MUST appear in the public snapshot.
+        expect(SNAPSHOT_FILES).toContain('compounds-search.jsonl');
+        expect(SNAPSHOT_FILES).toContain('xref-index.json');
+        expect(SNAPSHOT_OMITTED).not.toContain('compounds-search.jsonl');
+        expect(SNAPSHOT_OMITTED).not.toContain('xref-index.json');
     });
 });

@@ -10,16 +10,19 @@
  * Two paths:
  *   Fast: input is a CID-shaped identifier -> parseCompoundId -> done,
  *         no R2 scan. The xrefs endpoint fetches via loadTier1.
- *   Slow: input is a non-CID identifier -> scan the enriched snapshot
- *         once, find the first compound whose corresponding field matches
- *         exactly, return its CID + canonical.
- *
- * For Phase 1's ~5K compound corpus the slow path is one R2 fetch + linear
- * scan (~1s warm). A precomputed xref-index.json is Phase 2 work.
+ *   Indexed (PR-COMPOUND-GUARD): input is a non-CID identifier -> load ONLY
+ *         the per-kind Map from the precomputed xref-index.json.gz projection
+ *         and Map.get(normalized). Peak ~one ~130K-entry Map, never the whole
+ *         compounds-enriched file (which the FDA preserve-all uncap would grow
+ *         past the 128MB isolate budget).
+ *   Fallback (F3, deploy transition): when the projection is ABSENT (404,
+ *         e.g. between this PR's deploy and the first F4 that publishes it),
+ *         fall back to the legacy whole-file scan so the endpoint stays alive.
  */
 
 import { parseCompoundId } from './id-parse';
 import { fetchR2GunzippedText, fetchR2JsonText } from './r2-fetch';
+import { loadXrefKind, xrefIndexExists, type XrefKind } from './xref-index-loader';
 
 export type IdentifierKind =
     | 'pubchem_cid'
@@ -101,7 +104,7 @@ export async function resolveEntity(bucket: R2Bucket, raw: string): Promise<Reso
         return { canonical: parsed.canonical, cid: parsed.cid, matched_on: 'pubchem_cid' };
     }
 
-    // Slow path: scan the enriched snapshot once.
+    // Non-CID path: resolve the latest snapshot date.
     let date: string | undefined;
     try {
         const ptrText = await fetchR2JsonText(bucket, 'snapshots/latest.json');
@@ -109,6 +112,31 @@ export async function resolveEntity(bucket: R2Bucket, raw: string): Promise<Reso
     } catch { return null; }
     if (!date) return null;
 
+    // Indexed path: load ONLY the queried kind's Map (bounded memory). The
+    // xref-index-loader throws on OOM-guard violations (XREF_MAX_BYTES /
+    // MAX_XREF_ENTRIES) — those MUST propagate (LOUD), not be swallowed as a
+    // false "unresolvable" 404. xrefIndexExists() distinguishes the absent
+    // projection (-> legacy fallback) from a present-but-failing read (-> throw).
+    if (await xrefIndexExists(bucket, date)) {
+        const map = await loadXrefKind(bucket, date, c.kind as XrefKind);
+        const cid = map.get(c.normalized);
+        if (typeof cid !== 'number' || !Number.isInteger(cid)) return null;
+        return { canonical: `sciweon::compound::CID:${cid}`, cid, matched_on: c.kind };
+    }
+
+    // F3 fallback (deploy transition): projection not yet published for this
+    // date -> the legacy whole-file scan keeps /xrefs alive until the first F4.
+    return resolveByWholeFileScan(bucket, date, c);
+}
+
+/**
+ * Legacy whole-file scan — the pre-PR-COMPOUND-GUARD path, kept ONLY as the
+ * deploy-transition fallback (projection absent). Once the projection is
+ * universally published this branch is unreachable; it stays for safety.
+ */
+async function resolveByWholeFileScan(
+    bucket: R2Bucket, date: string, c: Classified,
+): Promise<ResolvedCompound | null> {
     let text: string;
     try {
         text = await fetchR2GunzippedText(bucket, `snapshots/${date}/compounds-enriched.jsonl.gz`);
