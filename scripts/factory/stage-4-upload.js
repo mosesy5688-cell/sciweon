@@ -31,8 +31,7 @@ import {
     getConfiguredThreshold,
 } from './lib/snapshot-history-gate.js';
 import { makeR2Client } from './lib/bulk-shard-helpers.js';
-import { publishCompoundShards } from './lib/compound-shard-publisher.js';
-import { verifyShardIntegrity, updateLatestPointer } from './lib/compound-shard-pointer.js';
+import { runShardPublishAndSwap } from './lib/stage-4-shard-orchestrator.js';
 
 import { AGGREGATED_FILES } from './lib/aggregated-files.js';
 import { verifySnapshotPresent } from './lib/snapshot-bridge.js';
@@ -130,56 +129,20 @@ async function main() {
         process.exit(4);
     }
 
-    // I-7a (Wave I-7a Phase 1): NXVF binary shards + JSON manifest published
-    // to snapshots/<date>/compounds/bucket-0000/. Workers Range-read single
-    // record (~2 KB) instead of full-bundle scan (85 MB at 45K cliff).
-    // Per Constitution V16.1 §9: 90s drain wait + 3 random integrity probes
-    // before atomic pointer swap. Hard-fail per feedback_cross_cycle_silent_data_loss.
-    console.log('\n[STAGE-4] === Compound shard publish (I-7a Phase 1) ===');
+    // Shard publish -> ONE terminal swap -> prune. PR-T1.1-LEVER moved this
+    // block into lib/stage-4-shard-orchestrator.js to keep this file under the
+    // CES 250-line cap. It publishes compound shards (I-7a) AND the new
+    // neg-evidence per-(compound,page) shards, runs the PRESERVE-ALL Sum==wc-l
+    // gate, then performs a SINGLE CAS latest.json swap merging both manifest
+    // keys (the uploader no longer touches the pointer), then prunes old shards.
     const snapshotDate = process.argv.find(a => a.startsWith('--date='))?.split('=')[1]
         || new Date().toISOString().slice(0, 10);
-    const jsonlPath = './output/linked/compounds-enriched.jsonl';
-    const shardOutDir = path.join('./snapshots', snapshotDate, 'compounds', 'bucket-0000');
     const { client, bucket: bucketName, missing } = makeR2Client();
     if (missing.length > 0) {
         console.error(`[STAGE-4] R2 client env missing: ${missing.join(', ')} — refusing to publish shards`);
         process.exit(6);
     }
-    let publishResult;
-    try {
-        publishResult = await publishCompoundShards({
-            client, bucket: bucketName, jsonlPath, snapshotDate, outputDir: shardOutDir,
-        });
-        console.log(`[STAGE-4] Published ${publishResult.stats.shardCount} shards `
-            + `(${publishResult.stats.totalMB} MB, ${publishResult.stats.recordCount} records) `
-            + `in ${publishResult.stats.elapsedSec}s — manifest ${publishResult.manifestKey}`);
-    } catch (err) {
-        console.error(`[STAGE-4] Compound shard publish FAILED: ${err.message}`);
-        console.error('[STAGE-4] Refusing to swap latest.json pointer — sharded path unavailable to workers.');
-        process.exit(7);
-    }
-    console.log('\n[STAGE-4] === Drain wait 90s (Constitution V16.1 §9) ===');
-    await new Promise(r => setTimeout(r, 90_000));
-    console.log('\n[STAGE-4] === Integrity probes (3 random shards) ===');
-    try {
-        await verifyShardIntegrity(client, bucketName, snapshotDate, publishResult.manifest, 3);
-        console.log('[STAGE-4] All 3 integrity probes PASS');
-    } catch (err) {
-        console.error(`[STAGE-4] Integrity probe FAILED: ${err.message}`);
-        console.error('[STAGE-4] Refusing to swap latest.json pointer — shard bytes mismatch detected.');
-        process.exit(8);
-    }
-    console.log('\n[STAGE-4] === Atomic latest.json swap (add compounds_manifest_key) ===');
-    try {
-        const updated = await updateLatestPointer(client, bucketName, {
-            snapshotDate,
-            compoundsManifestKey: publishResult.manifestKey,
-        });
-        console.log(`[STAGE-4] latest.json updated: ${JSON.stringify(updated)}`);
-    } catch (err) {
-        console.error(`[STAGE-4] latest.json pointer swap FAILED: ${err.message}`);
-        process.exit(9);
-    }
+    await runShardPublishAndSwap({ client, bucketName, snapshotDate });
 
     // Cycle 22 PR-L4: post-upload R2 presence verification. F4 success
     // claim must be backed by actual listable snapshot/<today>/manifest.json

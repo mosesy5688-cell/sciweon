@@ -30,6 +30,12 @@ import { createHash } from 'crypto';
 import { gzipSync } from 'zlib';
 import { SNAPSHOT_FILES } from './lib/aggregated-files.js';
 import { LOINC_ATTRIBUTION } from './lib/umls-concept-streams.js';
+import { streamSnapshotFile } from './lib/stream-snapshot-file.js';
+
+// PR-T1.1-LEVER: only the neg-evidence whole-file is emitted via the streaming
+// path (it stays additive + preserved after the FDA preserve-all uncap, so it
+// can grow large). The streaming entry is byte-identical to the in-memory one.
+const STREAMING_FILES = new Set(['neg-evidence.jsonl']);
 
 const SOURCE_DIR = './output/linked';
 const SNAPSHOT_ROOT = './snapshots';
@@ -76,34 +82,49 @@ async function main() {
 
     for (const fname of SNAPSHOT_FILES) {
         const sourcePath = path.join(SOURCE_DIR, fname);
-        const raw = await readIfExists(sourcePath);
-        if (!raw || raw.length === 0) {
-            if (REQUIRED_FILES.includes(fname)) {
-                console.error(`[SNAPSHOT-BUILDER] Required file ${fname} missing or empty. Refusing to publish empty snapshot.`);
-                process.exit(1);
-            }
-            console.log(`  ${fname.padEnd(35)} (absent, skip)`);
-            continue;
-        }
-        const lines = raw.toString('utf-8').split('\n').filter(Boolean).length;
-        const compressed = gzipSync(raw, { level: 9 });
         const outPath = path.join(snapshotDir, `${fname}.gz`);
-        await fs.writeFile(outPath, compressed);
+        let entry;
 
-        const entry = {
-            filename: `${fname}.gz`,
-            records: lines,
-            uncompressed_bytes: raw.length,
-            compressed_bytes: compressed.length,
-            compression_ratio: +(compressed.length / raw.length).toFixed(3),
-            sha256_uncompressed: sha256(raw),
-            sha256_compressed: sha256(compressed),
-        };
+        if (STREAMING_FILES.has(fname)) {
+            // Streaming path: never loads the whole file into memory. Same
+            // skip-if-absent/empty semantics (neg-evidence is not REQUIRED).
+            let st = null;
+            try { st = await fs.stat(sourcePath); } catch { st = null; }
+            if (!st || st.size === 0) {
+                console.log(`  ${fname.padEnd(35)} (absent, skip)`);
+                continue;
+            }
+            entry = await streamSnapshotFile(sourcePath, outPath, `${fname}.gz`);
+        } else {
+            const raw = await readIfExists(sourcePath);
+            if (!raw || raw.length === 0) {
+                if (REQUIRED_FILES.includes(fname)) {
+                    console.error(`[SNAPSHOT-BUILDER] Required file ${fname} missing or empty. Refusing to publish empty snapshot.`);
+                    process.exit(1);
+                }
+                console.log(`  ${fname.padEnd(35)} (absent, skip)`);
+                continue;
+            }
+            const lines = raw.toString('utf-8').split('\n').filter(Boolean).length;
+            const compressed = gzipSync(raw, { level: 9 });
+            await fs.writeFile(outPath, compressed);
+            entry = {
+                filename: `${fname}.gz`,
+                records: lines,
+                uncompressed_bytes: raw.length,
+                compressed_bytes: compressed.length,
+                compression_ratio: +(compressed.length / raw.length).toFixed(3),
+                sha256_uncompressed: sha256(raw),
+                sha256_compressed: sha256(compressed),
+            };
+        }
+
         manifest.files.push(entry);
-        manifest.total_uncompressed_bytes += raw.length;
-        manifest.total_compressed_bytes += compressed.length;
-        manifest.total_records += lines;
-        console.log(`  ${fname.padEnd(35)} ${lines.toString().padStart(7)} records  ${(raw.length / 1024).toFixed(1).padStart(8)} KB -> ${(compressed.length / 1024).toFixed(1).padStart(8)} KB (${(100 - 100 * compressed.length / raw.length).toFixed(0)}% savings)`);
+        manifest.total_uncompressed_bytes += entry.uncompressed_bytes;
+        manifest.total_compressed_bytes += entry.compressed_bytes;
+        manifest.total_records += entry.records;
+        const savings = (100 - 100 * entry.compressed_bytes / entry.uncompressed_bytes).toFixed(0);
+        console.log(`  ${fname.padEnd(35)} ${entry.records.toString().padStart(7)} records  ${(entry.uncompressed_bytes / 1024).toFixed(1).padStart(8)} KB -> ${(entry.compressed_bytes / 1024).toFixed(1).padStart(8)} KB (${savings}% savings)`);
     }
 
     // PR-UMLS-4: emit the verbatim Regenstrief LOINC attribution into a manifest

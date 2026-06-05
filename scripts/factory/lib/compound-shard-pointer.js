@@ -14,7 +14,8 @@
  */
 
 import { createHash } from 'crypto';
-import { PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { GetObjectCommand } from '@aws-sdk/client-s3';
+import { swapLatestPointer } from './publish-shards-and-swap.js';
 
 function sha256(buf) {
     return createHash('sha256').update(buf).digest('hex');
@@ -54,27 +55,21 @@ export async function verifyShardIntegrity(client, bucket, snapshotDate, manifes
     }
 }
 
+/**
+ * Backward-compatible wrapper: now delegates to the shared CAS swapLatestPointer
+ * (publish-shards-and-swap.js) so there is ONE pointer-swap path. Sets
+ * latest_snapshot_date + compounds_manifest_key + a derivable manifest_key,
+ * read-merging the rest. Kept for call-site compatibility; stage-4 now prefers
+ * a single terminal swapLatestPointer that merges compound + neg keys at once.
+ */
 export async function updateLatestPointer(client, bucket, { snapshotDate, compoundsManifestKey }) {
-    let current = {};
-    try {
-        const res = await client.send(new GetObjectCommand({
-            Bucket: bucket, Key: 'snapshots/latest.json',
-        }));
-        const chunks = [];
-        for await (const c of res.Body) chunks.push(c);
-        current = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
-    } catch { /* first run — start from {} */ }
-
-    const updated = {
-        ...current,
-        latest_snapshot_date: snapshotDate,
-        manifest_key: current.manifest_key ?? `snapshots/${snapshotDate}/manifest.json`,
-        compounds_manifest_key: compoundsManifestKey,
-    };
-    await client.send(new PutObjectCommand({
-        Bucket: bucket, Key: 'snapshots/latest.json',
-        Body: JSON.stringify(updated),
-        ContentType: 'application/json',
-    }));
-    return updated;
+    return swapLatestPointer(
+        client, bucket,
+        {
+            latest_snapshot_date: snapshotDate,
+            manifest_key: `snapshots/${snapshotDate}/manifest.json`,
+            compounds_manifest_key: compoundsManifestKey,
+        },
+        ['latest_snapshot_date', 'compounds_manifest_key'],
+    );
 }

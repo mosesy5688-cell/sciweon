@@ -12,7 +12,7 @@
 
 import type { Env } from '../../worker';
 import { parseCompoundId } from './id-parse';
-import { loadNegEvidenceForCompound } from './neg-evidence-loader';
+import { loadNegEvidenceForCompound, NegShardError } from './neg-evidence-loader';
 import { searchCompounds } from './compound-search';
 import { EVIDENCE_TYPES, isKnownEvidenceType, type EvidenceType } from './event-type-taxonomy';
 import { resolveEntity } from './entity-resolver';
@@ -79,8 +79,18 @@ export async function handleToolNegativeEvidence(args: Record<string, unknown>, 
             eventTypeFilter.add(t);
         }
     }
-    const response = await loadNegEvidenceForCompound(bucket, canonical, originOf(req), eventTypeFilter);
-    return textContent(response);
+    try {
+        const response = await loadNegEvidenceForCompound(bucket, canonical, originOf(req), eventTypeFilter);
+        return textContent(response);
+    } catch (err) {
+        // INVERTED dual-path: a sharded read failure is LOUD (never falls back
+        // to the legacy whole-file path). Surface as a retryable service error
+        // rather than a generic internal error.
+        if (err instanceof NegShardError) {
+            throw new ToolError(-32000, 'Negative-evidence service unavailable (sharded read failed); retry shortly');
+        }
+        throw err;
+    }
 }
 
 export async function handleToolRepurposingEvidence(args: Record<string, unknown>, env: Env, req: Request): Promise<unknown> {

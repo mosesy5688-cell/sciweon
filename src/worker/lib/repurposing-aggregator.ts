@@ -18,7 +18,7 @@ import { fetchR2JsonText } from './r2-fetch';
 import { loadTrialsForCompound } from './trial-loader';
 import { loadBioactivitiesForCompound } from './bioactivity-loader';
 import { loadPapersForCompound } from './paper-loader';
-import { loadNegEvidenceForCompound, type NegEvidenceResponse } from './neg-evidence-loader';
+import { loadNegEvidenceSummary, type NegSummary } from './neg-evidence-loader';
 
 const POSITIVE_TRIAL_STATUSES = new Set([
     'RECRUITING', 'ACTIVE_NOT_RECRUITING', 'ENROLLING_BY_INVITATION', 'COMPLETED', 'AVAILABLE',
@@ -111,12 +111,16 @@ export function summarizeRetracted(papers: Record<string, unknown>[]): Repurposi
     return { papers_count: retracted.length, examples };
 }
 
-export function summarizeNegative(neg: NegEvidenceResponse): RepurposingSummary['negative'] {
+export function summarizeNegative(neg: NegSummary): RepurposingSummary['negative'] {
+    // PR-T1.1-LEVER: the summary loader returns rollups (manifest entry) + a
+    // few first-page examples — already exactly the negative-summary shape, so
+    // this is now a pass-through that maps the {critical,major,minor,unknown}
+    // rollup. No full neg-evidence load occurs on the aggregator path.
     return {
-        signals_count: neg.negative_signals_count,
+        signals_count: neg.signals_count,
         signals_by_severity: neg.signals_by_severity,
-        examples: neg.signals.slice(0, 5).map(s => ({
-            id: s.id, evidence_type: s.evidence_type, severity: s.severity,
+        examples: neg.examples.slice(0, 5).map(s => ({
+            id: s.id, evidence_type: String(s.evidence_type), severity: String(s.severity),
         })),
     };
 }
@@ -185,7 +189,9 @@ export async function aggregateRepurposingEvidence(
         loadTrialsForCompound(bucket, compoundId),
         loadBioactivitiesForCompound(bucket, compoundId),
         loadPapersForCompound(bucket, compoundId),
-        loadNegEvidenceForCompound(bucket, compoundId, baseUrl),
+        // PR-T1.1-LEVER: summary path only (manifest entry + first page), NOT
+        // the full neg load — bounds the aggregator's heap too.
+        loadNegEvidenceSummary(bucket, compoundId),
     ]);
 
     const summary: RepurposingSummary = {
