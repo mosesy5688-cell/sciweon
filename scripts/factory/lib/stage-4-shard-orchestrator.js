@@ -73,6 +73,17 @@ export async function runShardPublishAndSwap({ client, bucketName, snapshotDate 
     if (!negResult.skipped) {
         swapUpdates.neg_evidence_manifest_key = negResult.negManifestKey;
         expectKeys.push('neg_evidence_manifest_key');
+    } else {
+        // FIX M4 ([[cross_cycle_silent_data_loss]] availability facet): on a
+        // SKIPPED-neg run, latest_snapshot_date still advances. Without this, the
+        // prior-day neg_evidence_manifest_key SURVIVES the {...current,...updates}
+        // merge while pointing at a date with NO neg shards -> the worker computes
+        // a per-bucket manifest path that 404s -> /negative-evidence 503s ALL DAY.
+        // Explicitly CLEAR the stale key so the worker's dual-path sees it absent
+        // (negShardingActive does Boolean(key) -> null is falsy -> legacy whole-file
+        // path, HEAD.size-guarded, safe). swapLatestPointer must drop a null value
+        // from the merged latest.json (see publish-shards-and-swap.js).
+        swapUpdates.neg_evidence_manifest_key = null;
     }
     try {
         const updated = await swapLatestPointer(client, bucketName, swapUpdates, expectKeys);

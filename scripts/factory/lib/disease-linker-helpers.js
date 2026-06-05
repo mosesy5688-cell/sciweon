@@ -113,3 +113,17 @@ export function buildNamespaceCounts(records) {
     }
     return counts;
 }
+
+/**
+ * NO SILENT DROP ([[cross_cycle_silent_data_loss]]): OT disease rows SEEN
+ * (streamed + parsed) MUST equal the cursor's record-of-truth. A mismatch = a
+ * truncated decompress or cursor/artifact drift -> the OT disease bulk was
+ * under-read silently. Sibling cursor-backed linkers (uniprot-target-enrich.js,
+ * mesh-concept-linker.js) already HALT LOUD on this; copy the exact shape.
+ */
+export function assertOtRecordCount(recordsSeen, recordCount, label = LINKER_LABEL) {
+    if (recordsSeen !== recordCount) {
+        throw new Error(`[${label}] HALT: records_seen=${recordsSeen} != cursor.record_count=${recordCount} `
+            + `(artifact/cursor drift or truncated decompress -- per [[cross_cycle_silent_data_loss]])`);
+    }
+}

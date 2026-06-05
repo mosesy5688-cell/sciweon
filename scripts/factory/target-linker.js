@@ -17,7 +17,7 @@ import { writeFileSync, createReadStream } from 'fs';
 import readline from 'readline';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import {
-    addOtRecordToTargetMap, mergeBioactivityTargets,
+    addOtRecordToTargetMap, mergeBioactivityTargets, assertOtRecordCount,
 } from './lib/target-linker-helpers.js';
 import { streamDecompressForEach } from './lib/stream-decompress-foreach.js';
 
@@ -87,6 +87,9 @@ async function main() {
         },
         { label: 'TARGET-LINKER', hasHeader: false, onMalformed: 'count' });
     console.log(`[TARGET-LINKER] Loaded ${otRecordCount} OT target records from ${cursor.r2_key}`);
+    // NO SILENT DROP: records SEEN must equal the cursor's record-of-truth (a clean
+    // truncation/cursor-drift would otherwise under-read the OT bulk silently).
+    assertOtRecordCount(otRecordCount, cursor.record_count, 'TARGET-LINKER');
     console.log(`[TARGET-LINKER] OT primary load: ${targets.size} unique UniProt canonical (skipped ${otSkipped} OT records without UniProt)`);
 
     const bioRecords = await readBioactivities(BIOACTIVITIES_PATH).catch(() => []);

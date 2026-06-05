@@ -7,22 +7,18 @@
  * neg-evidence file into the 128MB isolate (the OOM the FDA preserve-all
  * uncap would trigger).
  *
- * Dual-path (INVERTED vs the compound loader):
- *   - latest.json HAS neg_evidence_manifest_key -> SHARDED path. A sharded
- *     THROW is a LOUD failure (caller -> 503); we NEVER fall back to the
- *     legacy whole-file read (that would re-introduce the OOM + could mask a
- *     corrupt shard as a false-clean on the SAFETY endpoint).
- *   - key ABSENT -> legacy whole-file read (deploy-transition / pre-first-F4),
- *     with a HEAD.size 503 guard so a too-large legacy file fails loud rather
- *     than OOMing the isolate.
- *
- * negBucketOf(key) -> load THAT one bucket manifest -> byKey.get(key). Absent
- * entry = authoritative empty (negative_signals_count: 0).
+ * Dual-path (INVERTED vs the compound loader): manifest key present + object
+ * exists -> SHARDED path, where a THROW is a LOUD 503 (never fall back -- that
+ * would re-introduce the OOM / mask a corrupt shard as a false-clean on the
+ * SAFETY endpoint); key absent (or stale, FIX M4) -> legacy whole-file read
+ * (HEAD.size 503-guarded). negBucketOf(key) loads THAT one bucket manifest;
+ * an absent entry = authoritative empty (negative_signals_count: 0).
  */
 
 import { fetchR2GunzippedText, fetchR2JsonText } from './r2-fetch';
 import { type EvidenceType } from './event-type-taxonomy';
 import { negBucketOf } from '../../lib/neg-bucket-hash.js';
+import { negManifestKeyFor } from './neg-shard-router';
 import { loadNegBucketManifest, type NegManifestEntry } from './neg-manifest-loader';
 import {
     shapePagedResponse, shapeSummaryResponse,
@@ -136,6 +132,18 @@ export async function negShardingActive(bucket: R2Bucket): Promise<boolean> {
 }
 
 /**
+ * FIX M4: does THIS compound's per-bucket neg manifest object exist for the
+ * latest date? A head() probe distinguishing a STALE pointer key (object MISSING
+ * -> treat as absent -> legacy) from a genuine sharded-read failure (manifest
+ * EXISTS, a shard throws -> 503). Does NOT weaken OOM protection.
+ */
+export async function negBucketManifestExists(bucket: R2Bucket, compoundId: string): Promise<boolean> {
+    const ptr = await readPointer(bucket);
+    const key = negManifestKeyFor(ptr.latest_snapshot_date!, negBucketOf(compoundId));
+    return (await bucket.head(key)) != null;
+}
+
+/**
  * LEGACY whole-file read — used ONLY when neg_evidence_manifest_key is ABSENT.
  * HEAD.size 503 guard: refuse to load an oversized legacy file (LOUD) instead
  * of OOMing the isolate.
@@ -199,28 +207,35 @@ export class NegShardError extends Error {
 
 /**
  * Orchestrator (keeps the public name callers use). INVERTED dual-path:
- *   - sharded manifest present -> loadNegEvidencePage; any throw -> NegShardError
- *     (LOUD 503, no legacy fallback).
- *   - manifest absent -> legacy whole-file read (HEAD.size guarded).
+ *   - manifest key present AND its object EXISTS -> loadNegEvidencePage; any
+ *     throw -> NegShardError (LOUD 503, no fallback).
+ *   - key absent, OR key present but the manifest object MISSING (FIX M4: a stale
+ *     pointer at a shard-less date) -> legacy whole-file read (HEAD.size guarded).
  */
 export async function loadNegEvidenceForCompound(
     bucket: R2Bucket, compoundId: string, baseUrl: string,
     eventTypeFilter?: Set<EvidenceType> | null,
     opts?: { offset?: number; limit?: number },
 ): Promise<NegPagedResponse> {
-    let sharded: boolean;
-    try {
-        sharded = await negShardingActive(bucket);
-    } catch (err) {
-        // Pointer read failed — propagate as a normal error (API maps not-found
-        // / integrity appropriately). Not a sharded-shard failure.
-        throw err;
-    }
+    // negShardingActive may throw on a failed pointer read -> propagate as-is
+    // (API maps not-found/integrity); it is not a sharded-shard failure.
+    const sharded = await negShardingActive(bucket);
+    // FIX M4: a STALE pointer key (manifest object missing for this date's bucket)
+    // -> key-ABSENT -> legacy. Only an EXISTING manifest engages the inverted
+    // (throw -> 503) path. A throw from the probe itself is a real failure -> 503.
+    let manifestPresent = false;
     if (sharded) {
         try {
-            // The event_type filter is applied INSIDE the sharded path (filtered
-            // total + aggregates O(1) from the manifest + a filtered page-walk),
-            // NOT post-shape — so count/pagination describe the FILTERED set.
+            manifestPresent = await negBucketManifestExists(bucket, compoundId);
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            throw new NegShardError(`Sharded neg-evidence read failed: ${msg}`);
+        }
+    }
+    if (sharded && manifestPresent) {
+        try {
+            // event_type filter applied INSIDE the sharded path (filtered total +
+            // aggregates O(1) from the manifest + a filtered page-walk).
             return await loadNegEvidencePage(bucket, compoundId, baseUrl, opts, eventTypeFilter);
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);

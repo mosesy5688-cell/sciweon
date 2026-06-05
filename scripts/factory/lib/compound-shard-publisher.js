@@ -59,17 +59,19 @@ function manifestKey(snapshotDate, bucket) {
  * { cid, inchi_key, chembl_id, unii, drugbank_id, json } where json is the
  * raw line bytes (preserves exact serialization for determinism).
  */
-async function readCompoundsInOrder(jsonlPath) {
+export async function readCompoundsInOrder(jsonlPath) {
     const records = [];
+    let skippedMalformed = 0;
+    let skippedNonNumericCid = 0;
     const stream = createReadStream(jsonlPath);
     const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
     for await (const line of rl) {
         if (!line.trim()) continue;
         let rec;
         try { rec = JSON.parse(line); }
-        catch { continue; } // skip malformed
+        catch { skippedMalformed++; continue; } // count, do not silently drop
         const cid = rec.pubchem_cid;
-        if (typeof cid !== 'number') continue;
+        if (typeof cid !== 'number') { skippedNonNumericCid++; continue; }
         records.push({
             cid,
             inchi_key: rec.inchi_key ?? null,
@@ -78,6 +80,14 @@ async function readCompoundsInOrder(jsonlPath) {
             drugbank_id: rec.external_ids?.drugbank_id ?? null,
             raw: Buffer.from(line, 'utf-8'),
         });
+    }
+    // NO SILENT DROP ([[cross_cycle_silent_data_loss]]): a dropped CID becomes an
+    // authoritative /compound/:id 404 all snapshot day, invisible to the snapshot
+    // manifest + historical gate (they count the pre-skip jsonl). Mirror the neg
+    // path (neg-shard-publisher#publishNegShards): refuse to publish, LOUD.
+    if (skippedMalformed + skippedNonNumericCid > 0) {
+        throw new Error(`[COMPOUND-SHARD] refusing to publish: ${skippedMalformed + skippedNonNumericCid} records dropped `
+            + `(malformed=${skippedMalformed}, nonNumericCid=${skippedNonNumericCid}) -- silent /compound 404 hole [[cross_cycle_silent_data_loss]]`);
     }
     records.sort((a, b) => a.cid - b.cid);
     return records;
