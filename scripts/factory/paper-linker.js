@@ -1,119 +1,75 @@
 /**
- * Paper Linker V0.1 — links Compound → Papers (OpenAlex).
+ * Paper Linker V0.2 (PR-B coverage-ceiling) -- links Compound -> Papers (OpenAlex).
  *
- * Strategy:
- *   1. Load enriched compounds (post cross-source-linker)
- *   2. For each, search OpenAlex by compound name
- *   3. Normalize papers, link via name match (mention_confidence)
- *   4. Flag retracted papers for V0.4 Negative Evidence
- *   5. Extract NCT IDs from abstracts (paper ↔ trial cross-link)
+ * Per ELIGIBLE compound (cursored-advance + skip-if-fresh, see
+ * lib/linker-coverage-runner.js): search OpenAlex, normalize, cross-validate
+ * against Semantic Scholar (batch DOI), flag retracted papers (Negative
+ * Evidence), extract NCT IDs from abstracts (paper <-> trial cross-link).
  *
- * Outputs:
- *   output/linked/papers.jsonl          — Paper entities
- *   output/linked/paper-links.jsonl     — Compound → Paper associations
- *   output/linked/retracted-papers.jsonl — V0.4 Negative Evidence raw
+ * ===== PR-B: O(50) COVERAGE-CEILING FIX (stage-audit finding B2) =====
+ * BEFORE: a fixed `--limit=50` + slice(0, 50); the F3 orchestrator passes NO
+ * argv, so every daily run re-queried only the OLDEST 50 of the ~16,011-paper
+ * corpus -- the rest were NEVER reached, the linker exited 0, so the coverage
+ * CEILING was SILENT (violating the preserve-all ruling). AFTER: a CURSORED-
+ * ADVANCE drain walks ALL compounds across runs; a per-compound freshness STAMP
+ * (queried-at) skips compounds queried within the window (default 45d) and
+ * advances to un-queried / stale ones. Bounded pMap concurrency + the shared
+ * OpenAlex token bucket (10 req/s polite pool) pace the API. A coverage-invariant
+ * hard-fail (eligible>0 && queried==0 -> THROW) refuses to exit 0 on a frozen
+ * cursor. CADENCE, never a cap; no Top-N / relevance / volume cut anywhere.
+ *
+ * Stamp storage (deviation flagged in the PR body): the queried-at stamp lives in
+ * R2 state/linker-query-stamps/paper_linker.jsonl, NOT compound.linkage.* -- see
+ * trial-linker.js header for the full rationale (parallel linkers + deepMerge
+ * wholesale `linkage` replace + the run-before-merge read-after-write gap).
+ *
+ * Usage:
+ *   node scripts/factory/paper-linker.js [--input=...] [--per-compound=25]
+ *     [--clinical-only] [--freshness-days=N] [--chunk-size=N]
+ * Output: output/linked/{papers,paper-links,retracted-papers}.jsonl
+ *         R2 state/linker-query-stamps/paper_linker.jsonl (freshness state)
  */
 
 import fs from 'fs/promises';
+import { createWriteStream } from 'fs';
+import { once } from 'events';
 import path from 'path';
-import { search, normalize as normalizePaper } from '../ingestion/adapters/openalex-adapter.js';
-import { loadIndex as loadRetractionIndex, lookup as lookupRetraction } from '../ingestion/adapters/retraction-watch-adapter.js';
-import { fetchByDoiBatch as s2FetchByDoiBatch, extractPrimary as s2ExtractPrimary, compareWithOpenAlex as s2Compare } from '../ingestion/adapters/semanticscholar-adapter.js';
+import { searchChecked, normalize as normalizePaper } from '../ingestion/adapters/openalex-adapter.js';
+import { loadIndex as loadRetractionIndex } from '../ingestion/adapters/retraction-watch-adapter.js';
+import { fetchByDoiBatch as s2FetchByDoiBatch } from '../ingestion/adapters/semanticscholar-adapter.js';
 import { scoreEntity } from './lib/confidence-scorer.js';
 import { PAPER_SCHEMA } from '../../src/lib/schemas/paper.js';
 import { gate } from './lib/validation-gate.js';
+import { loadJsonlStrict, assertLoaded } from './lib/jsonl-io.js';
+import { pMap } from './lib/p-map.js';
+import { PAPER_RATE_LIMITER } from './lib/rate-limiter.js';
+import { runCoverageStage } from './lib/linker-coverage-runner.js';
+import { DEFAULT_PAPERS_FRESHNESS_DAYS, PAPERS_STAMP_FIELD } from './lib/linker-coverage.js';
+import { enrichWithS2, applyRetraction } from './lib/paper-linker-helpers.js';
 
-/**
- * Cross-validate one OpenAlex-normalized paper against S2.
- * Mutates the paper in place:
- *   - Adds s2_paper_id / arxiv_id / venue (S2-supplied primary fields)
- *   - Backfills pmid if missing
- *   - Appends 's2' to provenance.sources
- *   - Records conflicts (if any) in cross_source_agreement (Paper does not
- *     carry that field; we log only). Future schema may add per-paper agreement.
- *   - Recomputes confidence via scoreEntity (single → multi-source bump)
- * Returns true if S2 enriched the paper.
- */
-function enrichWithS2(paper, s2Map) {
-    if (!paper.doi) return false;
-    const raw = s2Map.get(paper.doi.toLowerCase());
-    if (!raw) return false;
-    const s2Primary = s2ExtractPrimary(raw);
-    if (!s2Primary) return false;
-
-    const cmp = s2Compare(paper, s2Primary);
-
-    // Merge S2 primary fields (only fill gaps, don't overwrite OpenAlex truth)
-    if (!paper.s2_paper_id) paper.s2_paper_id = s2Primary.s2_paper_id;
-    if (!paper.arxiv_id && s2Primary.arxiv_id) paper.arxiv_id = s2Primary.arxiv_id;
-    if (!paper.pmid && s2Primary.pmid) paper.pmid = s2Primary.pmid;
-    if (!paper.venue && s2Primary.venue) paper.venue = s2Primary.venue;
-    if (paper.is_open_access == null && s2Primary.is_open_access != null) {
-        paper.is_open_access = s2Primary.is_open_access;
-    }
-
-    // Append S2 to provenance.sources
-    const timestamp = new Date().toISOString();
-    paper.provenance.sources.push({
-        source: 's2',
-        source_id: s2Primary.s2_paper_id,
-        timestamp,
-        extraction_method: 's2_graph_v1_batch_doi',
-    });
-    paper.provenance.last_updated = timestamp;
-
-    // Recompute confidence to reflect 2 sources. Paper schema does not yet
-    // carry per-entity confidence; the function will return a score we can
-    // optionally store on paper.confidence (V0.3 contract addition).
-    const scored = scoreEntity({
-        provenance: paper.provenance,
-        confidence: { cross_source_agreement: { structural_match: cmp.conflicts.length === 0, conflicts: cmp.conflicts } },
-        stats: {},
-    });
-    paper.confidence = {
-        overall: scored.overall,
-        method: scored.method,
-        cross_source_agreement: { structural_match: cmp.conflicts.length === 0, conflicts: cmp.conflicts },
-    };
-
-    return true;
-}
-
-/**
- * Apply Retraction Watch PRIMARY FACTS to a normalized paper.
- * Reason categorization is V0.4 — not consumed here.
- * Mutates paper in place. Returns true if a retraction was applied.
- */
-function applyRetraction(paper, rwIndex) {
-    const info = lookupRetraction(paper, rwIndex);
-    if (!info) return false;
-    paper.is_retracted = true;
-    paper.retraction_doi = info.retraction_doi || null;
-    paper.retraction_date = info.retraction_date || null;
-    paper.retraction_nature = info.nature || null;
-    paper.retraction_source = 'crossref_retraction_watch';
-    return true;
-}
-
-const LIMIT = parseInt(process.argv.find(a => a.startsWith('--limit='))?.split('=')[1] || '50');
+const LABEL = 'PAPER-LINKER';
+const SOURCE = 'paper_linker';
 const PAPERS_PER_COMPOUND = parseInt(process.argv.find(a => a.startsWith('--per-compound='))?.split('=')[1] || '25');
 const INPUT = process.argv.find(a => a.startsWith('--input='))?.split('=')[1]
     || './output/linked/compounds-enriched.jsonl';
 const CLINICAL_ONLY = process.argv.includes('--clinical-only');
 const OUTPUT_DIR = './output/linked';
-const REQUEST_DELAY_MS = 100; // OpenAlex is fast + has polite pool
+const FRESHNESS_DAYS = Number(process.argv.find(a => a.startsWith('--freshness-days='))?.split('=')[1])
+    || Number(process.env.PAPER_FRESHNESS_DAYS) || DEFAULT_PAPERS_FRESHNESS_DAYS;
+const CHUNK_SIZE_OVERRIDE = Number(process.argv.find(a => a.startsWith('--chunk-size='))?.split('=')[1]) || null;
+const OPENALEX_CONCURRENCY = Number(process.env.PAPER_CONCURRENCY) || 6;
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-async function loadCompounds(file) {
-    const content = await fs.readFile(file, 'utf-8');
-    return content.split('\n').filter(Boolean).map(l => JSON.parse(l));
+async function writeJsonl(file, records) {
+    const stream = createWriteStream(file, { encoding: 'utf-8' });
+    for (const r of records) {
+        if (!stream.write(JSON.stringify(r) + '\n')) await once(stream, 'drain');
+    }
+    stream.end();
+    await once(stream, 'finish');
 }
 
 function getSearchName(compound) {
-    // For OpenAlex: prefer specific name over generic IUPAC (too long, low signal)
     if (compound.synonyms && compound.synonyms.length > 0) {
-        // Use shortest synonym (usually most common/specific name)
         const sorted = [...compound.synonyms].sort((a, b) => a.length - b.length);
         return sorted[0];
     }
@@ -121,122 +77,146 @@ function getSearchName(compound) {
     return `CID ${compound.pubchem_cid}`;
 }
 
+/**
+ * Query + normalize papers for ONE compound (no shared-state mutation -- safe in
+ * a pMap worker). Returns per-compound papers/links/retractions; the caller folds
+ * them into the shared dedup maps synchronously after pMap returns.
+ */
+async function processOneCompound(compound, rwIndex) {
+    const searchName = getSearchName(compound);
+    await PAPER_RATE_LIMITER.acquire(); // bound the true OpenAlex request rate
+    const { ok, results: rawPapers } = await searchChecked(searchName, PAPERS_PER_COMPOUND);
+    // FETCH-FAILURE (all sub-queries errored): return early with ok:false so the
+    // caller does NOT stamp this compound -- it stays eligible + is retried next
+    // wrap. Stamping a transient failure would skip it for the whole freshness
+    // window ([[cross_cycle_silent_data_loss]]).
+    if (!ok) {
+        return { compound, ok: false, papers: [], links: [], retracted: [], trialMentions: 0, s2Enriched: 0, s2Conflicts: 0 };
+    }
+
+    const normalized = [];
+    for (const raw of rawPapers) {
+        const paper = normalizePaper(raw, compound.id, 'concept_match');
+        if (!paper) continue;
+        applyRetraction(paper, rwIndex);
+        normalized.push(paper);
+    }
+
+    const dois = normalized.map(p => p.doi).filter(Boolean);
+    const s2Map = dois.length > 0 ? await s2FetchByDoiBatch(dois) : new Map();
+    let s2Enriched = 0;
+    let s2Conflicts = 0;
+    for (const paper of normalized) {
+        if (enrichWithS2(paper, s2Map)) {
+            s2Enriched++;
+            if (paper.confidence?.cross_source_agreement?.conflicts?.length) s2Conflicts++;
+        }
+    }
+    for (const paper of normalized) {
+        if (paper.confidence) continue;
+        const agreement = { structural_match: false, conflicts: [] };
+        const scored = scoreEntity({ provenance: paper.provenance, confidence: { cross_source_agreement: agreement }, stats: {} });
+        paper.confidence = { overall: scored.overall, method: scored.method, cross_source_agreement: agreement };
+    }
+
+    const papers = [];
+    const links = [];
+    const retracted = [];
+    let trialMentions = 0;
+    for (const paper of normalized) {
+        if (!gate(paper, PAPER_SCHEMA, `paper:${paper.id}`).passed) continue;
+        const key = paper.openalex_id || paper.doi;
+        if (!key) continue;
+        papers.push({ key, paper });
+        if (paper.is_retracted) {
+            retracted.push({
+                paper_id: paper.id, openalex_id: paper.openalex_id, doi: paper.doi, title: paper.title,
+                compound_id: compound.id, compound_name: searchName, publication_year: paper.publication_year,
+            });
+        }
+        if (paper.mentioned_trial_ids?.length > 0) trialMentions += paper.mentioned_trial_ids.length;
+        links.push({
+            compound_id: compound.id, paper_id: paper.id, openalex_id: paper.openalex_id,
+            doi: paper.doi, mention_confidence: 70, extraction_method: 'concept_match',
+        });
+    }
+    return { compound, ok: true, papers, links, retracted, trialMentions, s2Enriched, s2Conflicts };
+}
+
+// Query OpenAlex for one chunk, write the entity outputs, return queried ids.
+function makeQueryChunk(rwIndex) {
+    return async function queryChunk(slice, _nowIso) {
+        const perCompound = await pMap(slice, OPENALEX_CONCURRENCY, c => processOneCompound(c, rwIndex));
+        const allPapers = new Map(); // key -> Paper
+        const paperLinks = [];
+        const retractedPapers = [];
+        const queriedIds = [];
+        let totalTrialMentions = 0;
+        let s2Enriched = 0;
+        let s2Conflicts = 0;
+        let queryErrorCount = 0; // LOUD: OpenAlex fetch failures (total per-compound outage)
+        for (const r of perCompound) {
+            // FETCH-FAILURE: do NOT stamp -- stays eligible + retried next wrap.
+            if (!r.ok) {
+                queryErrorCount++;
+                console.warn(`[${LABEL}] query FAILED for ${r.compound.id} -- NOT stamping, stays eligible`);
+                continue;
+            }
+            // Genuine query (HTTP 200): zero papers still counts -- the stamp advances coverage.
+            queriedIds.push(r.compound.id);
+            for (const { key, paper } of r.papers) if (!allPapers.has(key)) allPapers.set(key, paper);
+            for (const link of r.links) paperLinks.push(link);
+            for (const ret of r.retracted) retractedPapers.push(ret);
+            totalTrialMentions += r.trialMentions;
+            s2Enriched += r.s2Enriched;
+            s2Conflicts += r.s2Conflicts;
+        }
+        const papersOut = [...allPapers.values()].sort((a, b) => String(a.id).localeCompare(String(b.id)));
+        paperLinks.sort((a, b) => (a.compound_id + String(a.paper_id)).localeCompare(b.compound_id + String(b.paper_id)));
+        retractedPapers.sort((a, b) => String(a.paper_id).localeCompare(String(b.paper_id)));
+
+        await writeJsonl(path.join(OUTPUT_DIR, 'papers.jsonl'), papersOut);
+        await writeJsonl(path.join(OUTPUT_DIR, 'paper-links.jsonl'), paperLinks);
+        await writeJsonl(path.join(OUTPUT_DIR, 'retracted-papers.jsonl'), retractedPapers);
+
+        const retractRate = papersOut.length > 0 ? (100 * retractedPapers.length / papersOut.length).toFixed(2) : 0;
+        console.log(`[${LABEL}] this-run papers=${papersOut.length} links=${paperLinks.length} retracted=${retractedPapers.length} (${retractRate}%) NCT_mentions=${totalTrialMentions} s2=${s2Enriched}/${paperLinks.length} (conflicts ${s2Conflicts})`);
+        // LOUD outage visibility (M8): an OpenAlex fetch failure is COUNTED, never silent.
+        if (queryErrorCount > 0) {
+            console.warn(`[${LABEL}] query_error_count=${queryErrorCount} (OpenAlex fetch failures this run -- those compounds stay eligible for retry)`);
+        }
+        return { queriedIds, queryErrorCount };
+    };
+}
+
 async function main() {
-    console.log(`[PAPER-LINKER] V0.1 — input: ${INPUT}, limit: ${LIMIT}, per-compound: ${PAPERS_PER_COMPOUND}`);
-    if (CLINICAL_ONLY) console.log(`[PAPER-LINKER] Filter: max_phase >= 1`);
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    console.log(`[${LABEL}] V0.2 PR-B cursored-advance | input: ${INPUT} | per-compound: ${PAPERS_PER_COMPOUND} | freshness=${FRESHNESS_DAYS}d | concurrency=${OPENALEX_CONCURRENCY}`);
+    if (CLINICAL_ONLY) console.log(`[${LABEL}] Filter: max_phase >= 1`);
 
     await fs.mkdir(OUTPUT_DIR, { recursive: true });
-
-    // Load Retraction Watch canonical index (auto-syncs if stale)
     const rwIndex = await loadRetractionIndex();
-    console.log(`[PAPER-LINKER] Retraction Watch: ${rwIndex.record_count} records loaded (DOI:${rwIndex.with_doi}, PMID:${rwIndex.with_pmid})`);
+    console.log(`[${LABEL}] Retraction Watch: ${rwIndex.record_count} records loaded (DOI:${rwIndex.with_doi}, PMID:${rwIndex.with_pmid})`);
 
-    let compounds = await loadCompounds(INPUT);
+    let compounds = await loadJsonlStrict(INPUT);
+    assertLoaded(compounds, LABEL, INPUT);
     if (CLINICAL_ONLY) {
         compounds = compounds.filter(c => c.drug_status?.max_phase != null && c.drug_status.max_phase >= 1);
     }
-    compounds = compounds.slice(0, LIMIT);
-    console.log(`[PAPER-LINKER] Processing ${compounds.length} compounds`);
 
-    const allPapers = new Map(); // openalex_id → Paper entity (dedup)
-    const paperLinks = [];
-    const retractedPapers = [];
-    let processed = 0;
-    let totalTrialMentions = 0;
-    let s2Enriched = 0;
-    let s2Conflicts = 0;
-
-    for (const compound of compounds) {
-        const searchName = getSearchName(compound);
-        const rawPapers = await search(searchName, PAPERS_PER_COMPOUND);
-
-        // First pass: normalize OpenAlex papers + apply Retraction Watch
-        const normalized = [];
-        for (const raw of rawPapers) {
-            const paper = normalizePaper(raw, compound.id, 'concept_match');
-            if (!paper) continue;
-            applyRetraction(paper, rwIndex);
-            normalized.push(paper);
-        }
-
-        // Second pass: cross-source S2 batch lookup by DOI (max 500 per call)
-        const dois = normalized.map(p => p.doi).filter(Boolean);
-        const s2Map = dois.length > 0 ? await s2FetchByDoiBatch(dois) : new Map();
-        for (const paper of normalized) {
-            if (enrichWithS2(paper, s2Map)) {
-                s2Enriched++;
-                if (paper.confidence?.cross_source_agreement?.conflicts?.length) s2Conflicts++;
-            }
-        }
-
-        // V0.5.1: ensure every paper has confidence (Principle 5). enrichWithS2 only assigns it on match.
-        for (const paper of normalized) {
-            if (paper.confidence) continue;
-            const agreement = { structural_match: false, conflicts: [] };
-            const scored = scoreEntity({ provenance: paper.provenance, confidence: { cross_source_agreement: agreement }, stats: {} });
-            paper.confidence = { overall: scored.overall, method: scored.method, cross_source_agreement: agreement };
-        }
-
-        for (const paper of normalized) {
-            const result = gate(paper, PAPER_SCHEMA, `paper:${paper.id}`);
-            if (!result.passed) continue;
-
-            const key = paper.openalex_id || paper.doi;
-            if (!key) continue;
-
-            if (!allPapers.has(key)) {
-                allPapers.set(key, paper);
-                if (paper.is_retracted) {
-                    retractedPapers.push({
-                        paper_id: paper.id,
-                        openalex_id: paper.openalex_id,
-                        doi: paper.doi,
-                        title: paper.title,
-                        compound_id: compound.id,
-                        compound_name: searchName,
-                        publication_year: paper.publication_year,
-                    });
-                }
-                if (paper.mentioned_trial_ids?.length > 0) totalTrialMentions += paper.mentioned_trial_ids.length;
-            }
-            paperLinks.push({
-                compound_id: compound.id,
-                paper_id: paper.id,
-                openalex_id: paper.openalex_id,
-                doi: paper.doi,
-                mention_confidence: 70,
-                extraction_method: 'concept_match',
-            });
-        }
-
-        processed++;
-        if (processed % 5 === 0 || processed === compounds.length) {
-            console.log(`[PAPER-LINKER] Progress: ${processed}/${compounds.length} | unique papers: ${allPapers.size} | retracted: ${retractedPapers.length} | NCT mentions: ${totalTrialMentions}`);
-        }
-        await sleep(REQUEST_DELAY_MS);
-    }
-
-    const papersFile = path.join(OUTPUT_DIR, 'papers.jsonl');
-    const linksFile = path.join(OUTPUT_DIR, 'paper-links.jsonl');
-    const retractedFile = path.join(OUTPUT_DIR, 'retracted-papers.jsonl');
-
-    await fs.writeFile(papersFile, [...allPapers.values()].map(p => JSON.stringify(p)).join('\n'));
-    await fs.writeFile(linksFile, paperLinks.map(l => JSON.stringify(l)).join('\n'));
-    await fs.writeFile(retractedFile, retractedPapers.map(r => JSON.stringify(r)).join('\n'));
-
-    const retractRate = allPapers.size > 0 ? (100 * retractedPapers.length / allPapers.size).toFixed(2) : 0;
-
-    console.log(`\n[PAPER-LINKER] Complete`);
-    console.log(`  Compounds processed:    ${processed}`);
-    console.log(`  Unique papers:          ${allPapers.size}`);
-    console.log(`  Compound-paper links:   ${paperLinks.length}`);
-    console.log(`  Retracted papers:       ${retractedPapers.length} (${retractRate}%) - V0.4 Negative Evidence`);
-    console.log(`  NCT IDs in abstracts:   ${totalTrialMentions} (paper-trial cross-link signals)`);
-    console.log(`  S2 cross-source enriched: ${s2Enriched}/${paperLinks.length} (conflicts: ${s2Conflicts})`);
-    console.log(`\n  Outputs:`);
-    console.log(`    ${papersFile}`);
-    console.log(`    ${linksFile}`);
-    console.log(`    ${retractedFile}`);
+    await runCoverageStage({
+        label: LABEL, source: SOURCE, stampField: PAPERS_STAMP_FIELD,
+        freshnessDays: FRESHNESS_DAYS, chunkSizeOverride: CHUNK_SIZE_OVERRIDE,
+        compounds, nowMs, nowIso, queryChunk: makeQueryChunk(rwIndex),
+    });
+    console.log(`[${LABEL}] SUCCESS`);
 }
 
-main().catch(err => { console.error('[PAPER-LINKER] Fatal:', err); process.exit(1); });
+const isDirectRun = import.meta.url === `file://${process.argv[1]}`
+    || import.meta.url.endsWith(process.argv[1]?.replace(/\\/g, '/'));
+if (isDirectRun) {
+    main().catch(err => { console.error(`[${LABEL}] Fatal:`, err); process.exit(1); });
+}
+
+export { main, processOneCompound };
