@@ -18,7 +18,7 @@
 import { writeFileSync } from 'fs';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import {
-    LINKER_LABEL, buildDiseaseRecord, dedupeBySciweonId, buildNamespaceCounts,
+    LINKER_LABEL, buildDiseaseRecord, dedupeBySciweonId, buildNamespaceCounts, assertOtRecordCount,
 } from './lib/disease-linker-helpers.js';
 import { streamDecompressForEach } from './lib/stream-decompress-foreach.js';
 
@@ -78,6 +78,9 @@ async function main() {
         { label: LINKER_LABEL, hasHeader: false, onMalformed: 'count' });
     if (parseErrors > 0) console.warn(`[${LINKER_LABEL}] ${parseErrors} JSON parse errors skipped`);
     console.log(`[${LINKER_LABEL}] Loaded ${totalOtRows} OT disease rows from ${cursor.r2_key}`);
+    // NO SILENT DROP: OT rows SEEN must equal the cursor's record-of-truth (a clean
+    // truncation/cursor-drift would otherwise under-read the OT disease bulk silently).
+    assertOtRecordCount(totalOtRows, cursor.record_count, LINKER_LABEL);
 
     const { deduped, duplicates } = dedupeBySciweonId(built);
     const namespaceCounts = buildNamespaceCounts(deduped);

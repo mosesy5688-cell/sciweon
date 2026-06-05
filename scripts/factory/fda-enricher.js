@@ -18,6 +18,18 @@ const DATA_DIR = './output/linked';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+/**
+ * FILL-not-replace merge of openFDA signals onto a compound's existing
+ * fda_signals ([[cross_cycle_silent_data_loss]]). The openFDA aggregateSignals
+ * object carries NO faers_* fields, so a full replace wiped the prior-cycle
+ * FAERS Cat-E signal (faers_top_adr_terms / faers_total_top_count) that
+ * compound-faers-enricher stamps onto the SAME record.fda_signals. Spread-merge
+ * preserves any pre-existing fields while letting the fresh openFDA fields win.
+ */
+export function mergeFdaSignals(existing, signals) {
+    return { ...(existing || {}), ...signals };
+}
+
 async function writeJsonl(file, records) {
     await fs.writeFile(file, records.map(r => JSON.stringify(r)).join('\n'));
 }
@@ -44,7 +56,10 @@ async function main() {
         const recalls = await fetchRecallsByUnii(unii, 10);
         const signals = aggregateSignals(labels, recalls);
         if (signals) {
-            c.fda_signals = signals;
+            // FILL-not-replace ([[cross_cycle_silent_data_loss]]): fda runs BEFORE
+            // faers each cron over the full withUnii set; mergeFdaSignals preserves
+            // any pre-existing faers_* (and other) fields while updating openFDA.
+            c.fda_signals = mergeFdaSignals(c.fda_signals, signals);
             if (signals.label_count > 0) labelHit++;
             if (signals.recall_count > 0) recallHit++;
             if (signals.has_boxed_warning) boxedWarning++;
@@ -65,4 +80,6 @@ async function main() {
     console.log(`  With boxed warning (Cat D NegEvidence): ${boxedWarning}`);
 }
 
-main().catch(err => { console.error('[FDA-ENRICHER] Fatal:', err); process.exit(1); });
+const isDirectRun = import.meta.url === `file://${process.argv[1]}`
+    || import.meta.url.endsWith(process.argv[1]?.replace(/\\/g, '/'));
+if (isDirectRun) main().catch(err => { console.error('[FDA-ENRICHER] Fatal:', err); process.exit(1); });

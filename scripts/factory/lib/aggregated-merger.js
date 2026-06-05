@@ -42,15 +42,11 @@ const LINKED_DIR = './output/linked';
 // Files to merge from previous aggregated bundle. Mirrors Stage 3's
 // AGGREGATED_FILES list.
 //
-// PR-CORE-DRUG-LABEL-LEAK followup 2026-05-28: drug-labels.jsonl added.
-// Previously NOT in MERGE_FILES even though it was published in
-// AGGREGATED_FILES; F3 stage-3-merger only iterates MERGE_FILES so prev
-// cycle's drug-labels.jsonl never participated in the merge, making the
-// file effectively REPLACE-per-cycle. F2 cur (unhydrated) overwrote prev
-// (hydrated post-promote) silently. Adding drug-labels.jsonl here makes
-// it cumulative + activates the deepMergeDrugLabel strategy registered
-// in MERGE_STRATEGY_PER_FILE below. Verified inert via F3 26552377679
-// (Path Y merged but deadcode -- merger never invoked deepMergeDrugLabel).
+// PR-CORE-DRUG-LABEL-LEAK followup 2026-05-28: drug-labels.jsonl added (it was
+// published in AGGREGATED_FILES but NOT in MERGE_FILES -> the stage-3-merger
+// only iterates MERGE_FILES, so prev drug-labels.jsonl never merged = effectively
+// REPLACE-per-cycle, F2 unhydrated cur silently overwrote prev hydrated). Adding
+// it here makes it cumulative + activates the deepMergeDrugLabel strategy below.
 const MERGE_FILES = [
     'compounds-enriched.jsonl',
     'bioactivities.jsonl',
@@ -71,7 +67,9 @@ function defaultKey(rec) {
 
 function linkKey(rec) {
     const compound = rec?.compound_id || rec?.subject?.compound_id || '';
-    const trial = rec?.trial_id || rec?.subject?.trial_id || '';
+    // M3: trial/ctis-trial-linker write `nct_id` (NO trial_id); reading trial_id
+    // first -> null key -> trial-links bypassed dedup -> unbounded dup accumulation.
+    const trial = rec?.nct_id || rec?.trial_id || rec?.subject?.trial_id || '';
     const paper = rec?.paper_id || rec?.subject?.paper_id || '';
     const other = trial || paper || '';
     if (!compound || !other) return null;
@@ -155,6 +153,10 @@ export function mergeRecords(currentRecords, previousRecords, keyFn, strategyFn)
         fromCurrent++;
     }
 
+    // M3 LOUD no-key guard: no-key records bypass dedup -> future key drift silently accumulates dups (the nct_id bug class). Surface the count.
+    if (noKeyRecords.length > 0) {
+        console.warn(`[AGGREGATED-MERGER] WARN: ${noKeyRecords.length} no-key records bypassed dedup (pass-through) -- if keyed, the key extractor may have drifted (dup accumulation risk).`);
+    }
     return {
         merged: [...byKey.values(), ...noKeyRecords],
         stats: {
@@ -218,10 +220,9 @@ export async function mergeLocalAggregatedWithPrevious(previousBuffers) {
             : (typeof prevRaw === 'string' ? prevRaw : '');
         const previousRecords = parseJsonl(prevText);
 
-        // PR-FDA-SRS-3c: prev-load boundary mass-backfill for compounds.
-        // Runs on the FULL prev array (including prev-only records that never
-        // enter deepMergeCompound). The misplaced PR-FDA-SRS-3 call inside
-        // deepMergeCompound silent-skipped 28,097 prev-only records.
+        // PR-FDA-SRS-3c: prev-load boundary mass-backfill for compounds. Runs on
+        // the FULL prev array (incl prev-only records that never enter
+        // deepMergeCompound; the misplaced SRS-3 call there silent-skipped 28,097).
         let bootstrapStats = null;
         if (fname === 'compounds-enriched.jsonl') {
             bootstrapStats = bootstrapPrevRecords(previousRecords);

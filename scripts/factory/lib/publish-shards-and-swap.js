@@ -61,6 +61,14 @@ export async function swapLatestPointer(client, bucket, updates, expectKeys = []
     for (let attempt = 1; attempt <= SWAP_MAX_RETRIES; attempt++) {
         const { json: current, etag } = await getLatest(client, bucket);
         const merged = { ...current, ...updates };
+        // FIX M4: a null/undefined update value CLEARS that key from latest.json
+        // (true removal, not a `"key": null` residue). The stage-4 orchestrator
+        // sets neg_evidence_manifest_key=null on a skipped-neg run to drop a stale
+        // prior-day key; dropping it here makes the worker's dual-path see it ABSENT
+        // -> legacy whole-file path (vs a 503 on a shard-less date).
+        for (const [k, v] of Object.entries(updates)) {
+            if (v === null || v === undefined) delete merged[k];
+        }
         // Preserve a derivable manifest_key if neither side supplied one.
         if (!merged.manifest_key && merged.latest_snapshot_date) {
             merged.manifest_key = `snapshots/${merged.latest_snapshot_date}/manifest.json`;

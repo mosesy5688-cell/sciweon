@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
-import { mergeRecords, mergeLocalAggregatedWithPrevious, MERGE_FILES } from '../../scripts/factory/lib/aggregated-merger.js';
+import { mergeRecords, mergeLocalAggregatedWithPrevious, MERGE_FILES, KEY_FN_PER_FILE } from '../../scripts/factory/lib/aggregated-merger.js';
 
 const LINKED_DIR = './output/linked';
 
@@ -72,6 +72,47 @@ describe('mergeRecords', () => {
         const { merged, stats } = mergeRecords(current, previous, () => null);
         expect(merged.length).toBe(2);  // both passthrough, no dedupe
         expect(stats.no_key_passthrough).toBe(2);
+    });
+
+    // FIX M3 ([[cross_cycle_silent_data_loss]]): trial-linker + ctis-trial-linker
+    // write `nct_id` (NO trial_id). linkKey previously read trial_id first -> ''
+    // -> null key -> trial-links bypassed dedup (pass-through from prev+current)
+    // -> unbounded duplicate accumulation. linkKey now reads nct_id first.
+    const trialLinkKey = KEY_FN_PER_FILE['trial-links.jsonl'] as (r: any) => string | null;
+    const paperLinkKey = KEY_FN_PER_FILE['paper-links.jsonl'] as (r: any) => string | null;
+
+    function trialLink(cid: number, nct: string) {
+        return { compound_id: `sciweon::compound::CID:${cid}`, nct_id: nct, intervention_name: `drug${cid}` };
+    }
+    function paperLink(cid: number, paperId: string) {
+        return { compound_id: `sciweon::compound::CID:${cid}`, paper_id: paperId };
+    }
+
+    it('M3: trial-links DEDUP across cycles (same compound_id+nct_id, not unbounded accumulation)', () => {
+        // Previous cycle published this trial-link.
+        const previous = [trialLink(2244, 'NCT00000001'), trialLink(2244, 'NCT00000002')];
+        // Current cycle re-derives the SAME pair (+ a new one).
+        const current = [trialLink(2244, 'NCT00000001'), trialLink(2244, 'NCT00000003')];
+        const { merged, stats } = mergeRecords(current, previous, trialLinkKey);
+        // 3 distinct (compound,nct) pairs -> 3 records, NOT 5 (the dup accumulation bug).
+        expect(merged.length).toBe(3);
+        expect(stats.no_key_passthrough).toBe(0); // every trial-link now keyed
+        expect(stats.replaced_by_current).toBe(1); // NCT00000001 re-keyed -> deduped
+        const ncts = (merged as any[]).map(r => r.nct_id).sort();
+        expect(ncts).toEqual(['NCT00000001', 'NCT00000002', 'NCT00000003']);
+    });
+
+    it('M3: trial-link key is non-null for the real {compound_id, nct_id} link shape', () => {
+        expect(trialLinkKey(trialLink(2244, 'NCT00000001'))).toBe('sciweon::compound::CID:2244::NCT00000001');
+    });
+
+    it('M3 regression: paper-links still DEDUP (no regression to the paper path)', () => {
+        const previous = [paperLink(2244, 'sciweon::paper::DOI:10.1/a'), paperLink(2244, 'sciweon::paper::DOI:10.1/b')];
+        const current = [paperLink(2244, 'sciweon::paper::DOI:10.1/a'), paperLink(2244, 'sciweon::paper::DOI:10.1/c')];
+        const { merged, stats } = mergeRecords(current, previous, paperLinkKey);
+        expect(merged.length).toBe(3); // a,b,c — a deduped
+        expect(stats.no_key_passthrough).toBe(0);
+        expect(stats.replaced_by_current).toBe(1);
     });
 
     it('massive merge ~10K records stays within memory bound', () => {

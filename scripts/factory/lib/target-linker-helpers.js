@@ -146,3 +146,17 @@ export function parseJsonlBuffer(buf) {
     }
     return records;
 }
+
+/**
+ * NO SILENT DROP ([[cross_cycle_silent_data_loss]]): records SEEN (streamed +
+ * parsed) MUST equal the cursor's record-of-truth. A mismatch = a truncated
+ * decompress or cursor/artifact drift -> the OT bulk was under-read silently.
+ * Sibling cursor-backed linkers (uniprot-target-enrich.js:107-109,
+ * mesh-concept-linker.js) already HALT LOUD on this; copy the exact shape.
+ */
+export function assertOtRecordCount(recordsSeen, recordCount, label = 'TARGET-LINKER') {
+    if (recordsSeen !== recordCount) {
+        throw new Error(`[${label}] HALT: records_seen=${recordsSeen} != cursor.record_count=${recordCount} `
+            + `(artifact/cursor drift or truncated decompress -- per [[cross_cycle_silent_data_loss]])`);
+    }
+}
