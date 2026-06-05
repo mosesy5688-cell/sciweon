@@ -177,10 +177,10 @@ describe('backfillOneSource (rxnorm) — PR-RXN-1g Fix A bulk pre-pass', () => {
 
 describe('backfillOneSource (openfda_faers)', () => {
     it('stamps fda_signals.faers_top_adr_terms on UNII-bearing records', async () => {
-        vi.mocked(fetchFaersSignalsByUnii).mockResolvedValue([
-            { term: 'HEADACHE', count: 100 },
-            { term: 'NAUSEA', count: 50 },
-        ]);
+        vi.mocked(fetchFaersSignalsByUnii).mockResolvedValue({
+            terms: [{ term: 'HEADACHE', count: 100 }, { term: 'NAUSEA', count: 50 }],
+            truncated: false,
+        } as never);
         const compounds = [
             mkCompound('sciweon::compound::CID:5', { external_ids: { unii: 'U1' } }),
         ];
@@ -194,7 +194,7 @@ describe('backfillOneSource (openfda_faers)', () => {
     });
 
     it('stamps empty array when adapter returns no signals (records the negative outcome)', async () => {
-        vi.mocked(fetchFaersSignalsByUnii).mockResolvedValue([]);
+        vi.mocked(fetchFaersSignalsByUnii).mockResolvedValue({ terms: [], truncated: false } as never);
         const compounds = [mkCompound('sciweon::compound::CID:6', { external_ids: { unii: 'U2' } })];
         const r = await backfillOneSource('openfda_faers', compounds);
         // r.stamped uses isEligible round-trip: after stamping with empty

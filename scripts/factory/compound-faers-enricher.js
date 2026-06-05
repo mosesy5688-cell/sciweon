@@ -163,7 +163,7 @@ async function main() {
         sleepMsBetween: REQUEST_DELAY_MS, initialCursor: cursor,
         logPrefix: '[FAERS-ENRICHER]', logEveryNRecords: 100,
     });
-    console.log(`[FAERS-ENRICHER] Drain done | terminatedBy=${drain.terminatedBy} | chunksDrained=${drain.chunksDrained} | processedInRun=${drain.processedInRun} | remainingBacklog=${drain.remainingBacklog} | drainErrorCount=${drain.drainErrorCount ?? 0}`);
+    console.log(`[FAERS-ENRICHER] Drain done | terminatedBy=${drain.terminatedBy} | chunksDrained=${drain.chunksDrained} | processedInRun=${drain.processedInRun} | remainingBacklog=${drain.remainingBacklog}`);
 
     let withFaersData = 0;
     let totalReports = 0;
