@@ -24,9 +24,10 @@
  *   }
  *
  * Bounds (defense-in-depth):
- *   - MAX_QUEUE_DEPTH = 500. Queue larger than this means PubChem is in a
- *     real outage and we must surface — caller checks depth and throws
- *     before advancing cursor so the next cron retries the full window.
+ *   - MAX_QUEUE_DEPTH = 1500 (Cycle 21 raised 500 -> 1500 after in-run retry
+ *     landed; see the constant note below). Queue larger than this means
+ *     PubChem is in a real outage and we must surface — caller checks depth
+ *     and throws before advancing cursor so the next cron retries the full window.
  *   - MAX_RETRIES_PER_ENTRY = 10. After 10 unsuccessful retries an entry
  *     is classified as "permanently deprecated CID" (PubChem does retract
  *     duplicate / superseded compounds); pruneExhausted() returns these so

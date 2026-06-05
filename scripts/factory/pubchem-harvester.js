@@ -29,13 +29,14 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { getCompound } from '../ingestion/adapters/pubchem-adapter.js';
-import { COMPOUND_SCHEMA } from '../../src/lib/schemas/compound.js';
-import { gate, getCurrentMode, MODE_WARN } from './lib/validation-gate.js';
+import { getCurrentMode, MODE_WARN } from './lib/validation-gate.js';
+import {
+    makeState, processEntity, runBatchPass2, assertNoLoss, PROP_CHUNK_SIZE, BATCH_DELAY_MS,
+} from './lib/harvester-pass2.js';
 
 const LIMIT = parseInt(process.argv.find(a => a.startsWith('--limit='))?.split('=')[1] || '1000');
 const START_CID = parseInt(process.argv.find(a => a.startsWith('--start-cid='))?.split('=')[1] || '1');
 const OUTPUT_DIR = process.env.OUTPUT_DIR || './output/compounds';
-const BATCH_DELAY_MS = 250; // 4 req/sec — PubChem rate limit is 5/sec
 const WARN_RATIO_THRESHOLD = 0.01; // A.2: sustained drift > 1% trips THROW in WARN mode
 
 function parseRetryList(raw) {
@@ -55,6 +56,12 @@ function parseRetryList(raw) {
 const RETRY_CIDS = parseRetryList(process.env.RETRY_CIDS || '');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// processEntity / makeState / runBatchPass2 / assertNoLoss live in
+// lib/harvester-pass2.js (extracted PR-2 so the batch path is independently
+// testable + this file stays under the CES 250-line monolith cap). Pass-1's
+// single-CID path (processOneCid below) calls the SHARED processEntity so the
+// single-CID + batch outputs are byte-identical.
+
 async function processOneCid(cid, state) {
     state.attempted++;
     let entity;
@@ -67,41 +74,7 @@ async function processOneCid(cid, state) {
         return;
     }
     state.fetched++;
-    if (!entity) {
-        // V0.5.6 (2026-05-19): track the CID instead of silently dropping it.
-        // Adapter returns null for deprecated/superseded CIDs or records that
-        // failed InChIKey normalization — operator needs a paper trail per
-        // [[feedback_cross_cycle_silent_data_loss]] Pattern A.
-        state.noPropertyRecord.push(cid);
-        console.warn(`[PUBCHEM] CID ${cid}: no property record (deprecated/superseded or missing InChIKey) — tracked in manifest.no_property_record_cids`);
-        return;
-    }
-
-    // gate() in REJECT mode:
-    //   - throws on primary violations (chain halts; bad primary data
-    //     must NEVER pollute production R2).
-    //   - returns {passed: false, excluded: true, exclusion_reason} on
-    //     scope-tier violations (intentional out-of-domain exclusions
-    //     like macromolecules > 10000 Da). Caller skips + telemetry-buckets.
-    //     Added 2026-05-27 PR-HARVEST-SCOPE-TIER after F1 run 26512200020
-    //     halted the entire 5000-CID range on a single CID:111615 macromolecule
-    //     (18657 Da) -- batch of 1600 successful records lost to halt-before-commit.
-    //   - returns {passed: true} otherwise (derived-only warnings allowed).
-    const result = gate(entity, COMPOUND_SCHEMA, `CID:${cid}`);
-    if (result.excluded) {
-        state.excludedOutOfScope.push({
-            cid,
-            reason: result.exclusion_reason,
-            exclusions: result.exclusions?.map(e => ({ path: e.path, error: e.error })) ?? [],
-        });
-        return;
-    }
-    state.entities.push(entity);
-    state.valid++;
-    if (result.warnings) {
-        state.warned++;
-        state.violationsLog.push({ cid, warnings: result.warnings });
-    }
+    processEntity(cid, entity, state);
 }
 
 function buildHistogram(violationsLog) {
@@ -126,19 +99,7 @@ async function main() {
 
     await fs.mkdir(OUTPUT_DIR, { recursive: true });
 
-    const state = {
-        attempted: 0,
-        fetched: 0,
-        valid: 0,
-        warned: 0,
-        entities: [],
-        violationsLog: [],
-        failedFetches: [],
-        noPropertyRecord: [],
-        retrySuccesses: [],
-        retryFailures: [],
-        excludedOutOfScope: [],  // PR-HARVEST-SCOPE-TIER: scope-tier exclusions (macromolecules etc.)
-    };
+    const state = makeState();
 
     if (RETRY_CIDS.length > 0) {
         console.log(`[HARVESTER] === Pass 1: drain ${RETRY_CIDS.length} retry CIDs ===`);
@@ -155,14 +116,15 @@ async function main() {
         console.log(`[HARVESTER] Retry pass: ${state.retrySuccesses.length} succeeded, ${state.retryFailures.length} failed again`);
     }
 
-    console.log(`[HARVESTER] === Pass 2: range CID ${START_CID} to ${START_CID + LIMIT - 1} ===`);
-    for (let cid = START_CID; cid < START_CID + LIMIT; cid++) {
-        await processOneCid(cid, state);
-        if (state.attempted % 50 === 0) {
-            console.log(`[HARVESTER] Progress: ${state.attempted} attempted | ${state.fetched} fetched | ${state.valid} valid | ${state.warned} warned | ${state.excludedOutOfScope.length} excluded_scope | ${state.failedFetches.length} fetch_failed | ${state.noPropertyRecord.length} no_record`);
-        }
-        await sleep(BATCH_DELAY_MS);
-    }
+    console.log(`[HARVESTER] === Pass 2: range CID ${START_CID} to ${START_CID + LIMIT - 1} (batched, ${PROP_CHUNK_SIZE}-CID chunks) ===`);
+    await runBatchPass2(state, START_CID, LIMIT);
+
+    // NO-LOSS INVARIANT (paramount): a silent drop is now a HARD LOUD failure.
+    // Covers both passes — Pass-1 (processOneCid) and Pass-2 (runBatchPass2)
+    // feed the same buckets and both increment attempted. Asserted after the
+    // counts are final and BEFORE the manifest is written (the manifest only
+    // serializes these same counts; it does not change them).
+    assertNoLoss(state);
 
     const rangeTag = `${START_CID}-${START_CID + LIMIT - 1}`;
     const outputFile = path.join(OUTPUT_DIR, `compounds-cid-${rangeTag}.jsonl`);
@@ -219,4 +181,10 @@ async function main() {
     }
 }
 
-main().catch(err => { console.error('[HARVESTER] Fatal:', err.message); process.exit(1); });
+// Only auto-run as the CLI entry point; importing for tests must NOT trigger
+// a full harvest run (processEntity / runBatchPass2 / assertNoLoss are exported).
+const isDirectRun = import.meta.url === `file://${process.argv[1]}`
+    || import.meta.url.endsWith(process.argv[1]?.replace(/\\/g, '/') ?? '');
+if (isDirectRun) {
+    main().catch(err => { console.error('[HARVESTER] Fatal:', err.message); process.exit(1); });
+}

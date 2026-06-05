@@ -9,8 +9,8 @@
  *   Transient PubChem fetch failures (HTTP 5xx / network / timeout) are no
  *   longer silently dropped. Each failed CID is recorded in
  *   R2:state/harvest-retry-queue.json and re-attempted by the next run's
- *   pass-1 drain. Queue depth is capped at 500 — exceeding the cap halts
- *   the chain (real PubChem outage rather than transient blips).
+ *   pass-1 drain. Queue depth is capped at MAX_QUEUE_DEPTH (1500) — exceeding
+ *   the cap halts the chain (real PubChem outage rather than transient blips).
  *
  * Outputs:
  *   R2 raw/pubchem/incremental/<run_id>/compounds-cid-N-M.jsonl
