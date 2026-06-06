@@ -178,20 +178,38 @@ describe('adapter checked variants distinguish fetch-failure from genuine-empty'
         globalThis.fetch = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ studies: [] }) })) as any;
         const r = await searchByInterventionChecked('nonexistent-drug', 100);
         expect(r.ok).toBe(true);
+        expect(r.terminal).toBe(false);
         expect(r.studies).toEqual([]);
     });
 
-    it('CT.gov searchByInterventionChecked: HTTP 503 -> ok:false (fetch failure, NOT stamped)', async () => {
+    it('CT.gov searchByInterventionChecked: HTTP 503 -> ok:false TRANSIENT (terminal:false, NOT stamped, stays eligible)', async () => {
         globalThis.fetch = vi.fn(async () => ({ ok: false, status: 503, json: async () => ({}) })) as any;
         const r = await searchByInterventionChecked('aspirin', 100);
         expect(r.ok).toBe(false);
+        expect(r.terminal).toBe(false); // 5xx is transient -> the PR-1 degrade path, stays eligible
         expect(r.studies).toEqual([]);
     });
 
-    it('CT.gov searchByInterventionChecked: network/timeout reject -> ok:false', async () => {
+    it('CT.gov searchByInterventionChecked: HTTP 429 -> ok:false TRANSIENT (terminal:false -- rate limit, retry)', async () => {
+        globalThis.fetch = vi.fn(async () => ({ ok: false, status: 429, json: async () => ({}) })) as any;
+        const r = await searchByInterventionChecked('aspirin', 100);
+        expect(r.ok).toBe(false);
+        expect(r.terminal).toBe(false); // 429 is transient, NOT terminal
+    });
+
+    it('CT.gov searchByInterventionChecked: HTTP 400 -> ok:false TERMINAL (terminal:true -- malformed/unsearchable, NOT a transient error)', async () => {
+        globalThis.fetch = vi.fn(async () => ({ ok: false, status: 400, json: async () => ({}) })) as any;
+        const r = await searchByInterventionChecked('(1S)-4,17-dimethyl-[bracketed-iupac]', 100);
+        expect(r.ok).toBe(false);
+        expect(r.terminal).toBe(true); // 400 = malformed query -> terminal, must NOT inflate queryErrorCount
+        expect(r.studies).toEqual([]);
+    });
+
+    it('CT.gov searchByInterventionChecked: network/timeout reject -> ok:false TRANSIENT (terminal:false, no status)', async () => {
         globalThis.fetch = vi.fn(async () => { throw new Error('AbortError: timeout'); }) as any;
         const r = await searchByInterventionChecked('aspirin', 100);
         expect(r.ok).toBe(false);
+        expect(r.terminal).toBe(false); // a network reject carries no HTTP status -> transient
         expect(r.studies).toEqual([]);
     });
 
