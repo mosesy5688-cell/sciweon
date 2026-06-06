@@ -29,6 +29,14 @@ jobs:
       R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
       S2_API_KEY: ${{ secrets.S2_API_KEY }}
+      # PR-FACTORY3-OPENFDA-KEY: the openFDA api_key. The stage-3 aggregated
+      # backfill (aggregated-backfill-enrich.js openfda_faers source) re-enriches
+      # the WHOLE-corpus FAERS backlog and fetches openFDA -- keyless = 1,000
+      # req/day -> the FAERS uncap backfill returns null for every record (0
+      # stamps) and was MASKED as SATURATION_CONFIRMED. 5b wired this into
+      # factory-2 but MISSED that F3's backfill also calls openFDA. Keyed =
+      # ~120,000/day. The pre-flight gate below HARD-FAILS the prod job if absent.
+      OPENFDA_API_KEY: ${{ secrets.OPENFDA_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -42,6 +50,18 @@ jobs:
           else
             npm install
           fi
+      # PROD HARD-STOP: string-presence check ONLY, NO network. openFDA is
+      # fetched in this stage's aggregated backfill (openfda_faers source ->
+      # enrichOneFaers -> fetchFaersSignalsByUnii); a missing key would silently
+      # truncate the FAERS re-enrich to 0 stamps and MASK it as saturation. Fail
+      # loud here rather than degrade silently. (Mirrors factory-2-process.yml.)
+      - name: Pre-flight - require OPENFDA_API_KEY
+        run: |
+          if [ -z "${OPENFDA_API_KEY}" ]; then
+            echo "::error::OPENFDA_API_KEY secret is absent. openFDA keyless = 1,000 req/day -> FAERS silently truncates. Provision the secret before running stage 2."
+            exit 1
+          fi
+          echo "OPENFDA_API_KEY present (length ${#OPENFDA_API_KEY}) -- keyed openFDA enabled."
       - name: Install zstd CLI
         # PR-OT-4: stage-3 OT merge uses native zstd CLI to decompress the
         # ~15 MB / ~144 MB inflated OT bulk artifact (same Constitution-
