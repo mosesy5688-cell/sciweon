@@ -9,7 +9,7 @@
  */
 
 import { scoreDataPoint } from '../../factory/lib/confidence-scorer.js';
-import { extractResultsSignals } from './clinicaltrials-helpers.js';
+import { extractResultsSignals, fetchJson } from './clinicaltrials-helpers.js';
 import {
     shouldFetchNextPage, nextSinceTokenAfterLoop,
 } from '../../factory/lib/pagination-control.js';
@@ -19,17 +19,7 @@ export const supportsIncremental     = true;
 export const fallbackFullRefreshDays = 14;
 
 const CT_BASE = 'https://clinicaltrials.gov/api/v2/studies';
-const REQUEST_TIMEOUT_MS = 20000;
 const INCREMENTAL_PAGE_SIZE = 200;
-
-async function fetchJson(url) {
-    const res = await fetch(url, {
-        headers: { 'Accept': 'application/json' },
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}: ${url}`);
-    return res.json();
-}
 
 /**
  * Fetch a single trial's results section by NCT ID. Returns only the
@@ -65,21 +55,33 @@ export async function fetchResultsByNctId(nctId) {
     }
 }
 
-// extractResultsSignals lives in clinicaltrials-helpers.js (CES split)
+// extractResultsSignals + fetchJson (+ CtFetchError carrying the HTTP status for the terminal-vs-transient split) live in clinicaltrials-helpers.js (CES split).
 
 /**
- * Search trials by intervention name. Returns { ok, studies }: ok:true on HTTP 200
- * (even 0 results = a genuine empty), ok:false on a caught fetch error -- which the
- * caller MUST NOT stamp fresh (stays eligible + retried), per PR-B + [[cross_cycle_silent_data_loss]].
+ * Search trials by intervention name. Returns { ok, terminal, studies }:
+ *   - ok:true                  HTTP 200 (even 0 results = a genuine empty).
+ *   - ok:false, terminal:false TRANSIENT (429 / 5xx / network / timeout) -- the caller
+ *                              MUST NOT stamp fresh; stays eligible + retried next wrap
+ *                              (PR-B + [[cross_cycle_silent_data_loss]]).
+ *   - ok:false, terminal:true  TERMINAL/unsearchable (HTTP 400 -- a malformed query.intr,
+ *                              e.g. a bracketed IUPAC the Essie parser rejects). Retry is
+ *                              futile, so the caller must NOT count it as a transient
+ *                              error (no queryErrorCount inflate, no frozen-cursor).
+ * The trial-linker skips no-searchable-name compounds BEFORE the request (see
+ * trial-search-name.js); this terminal signal is the defense-in-depth so a stray 400
+ * can never freeze the cursor.
  */
 export async function searchByInterventionChecked(name, pageSize = 100) {
     try {
         const url = `${CT_BASE}?query.intr=${encodeURIComponent(name)}&pageSize=${pageSize}&format=json`;
         const data = await fetchJson(url);
-        return { ok: true, studies: data?.studies ?? [] };
+        return { ok: true, terminal: false, studies: data?.studies ?? [] };
     } catch (e) {
-        console.warn(`[CT] intervention "${name}": ${e.message}`);
-        return { ok: false, studies: [] };
+        // HTTP 400 = a malformed/unsearchable query (deterministic; retry futile) -> TERMINAL.
+        // Everything else (429 / 5xx / network / timeout / no-status) is a TRANSIENT outage.
+        const terminal = e?.status === 400;
+        console.warn(`[CT] intervention "${name}": ${e.message}${terminal ? ' (terminal/unsearchable -- not a transient failure)' : ''}`);
+        return { ok: false, terminal, studies: [] };
     }
 }
 

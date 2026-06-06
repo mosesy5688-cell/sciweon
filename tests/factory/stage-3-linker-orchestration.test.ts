@@ -133,15 +133,73 @@ vi.mock('../../scripts/ingestion/adapters/clinicaltrials-adapter.js', () => ({
 import { queryChunk as trialQueryChunk } from '../../scripts/factory/trial-linker.js';
 
 describe('ITEM 4: trial-linker queryChunk no-truncation guard (total outage)', () => {
-    beforeEach(() => { createWriteStreamSpy.mockClear(); });
+    beforeEach(() => { createWriteStreamSpy.mockClear(); searchByInterventionChecked.mockReset(); });
 
-    it('every compound ok:false -> queriedIds=[] -> writeJsonl is SKIPPED (prior file preserved)', async () => {
-        searchByInterventionChecked.mockResolvedValue({ ok: false, studies: [] });
+    it('every compound ok:false (TRANSIENT) -> queriedIds=[] -> writeJsonl SKIPPED + queryErrorCount=2', async () => {
+        searchByInterventionChecked.mockResolvedValue({ ok: false, terminal: false, studies: [] });
         const slice = [{ id: 'sciweon::compound::CID:1', synonyms: ['aspirin'] }, { id: 'sciweon::compound::CID:2', synonyms: ['ibuprofen'] }];
         const res = await trialQueryChunk(slice, '2026-06-05T00:00:00.000Z');
         expect(res.queriedIds).toEqual([]);
         expect(res.queryErrorCount).toBe(2);
         // The mock throws if createWriteStream is called; reaching here proves it was NOT.
         expect(createWriteStreamSpy).not.toHaveBeenCalled();
+    });
+});
+
+// ---- THE 400-FLOOD FIX: no_searchable_name terminal handling ---------------------
+describe('trial-linker queryChunk: no_searchable_name terminal (the HTTP 400 flood fix)', () => {
+    beforeEach(() => { createWriteStreamSpy.mockClear(); searchByInterventionChecked.mockReset(); });
+
+    // A compound with NO rxnorm_name, NO clean synonym, NO usable name -> pickTrialSearchName
+    // returns no_searchable_name. These must NOT reach CT.gov (no 400) and must NOT count as
+    // a transient error; they ARE processed (pushed to queriedIds -> cursor advances + stamped).
+    const noNameCompound = (n: number) => ({ id: `sciweon::compound::CID:${n}`, external_ids: {}, synonyms: ['50-78-2'] });
+
+    it('a no_searchable_name compound is PROCESSED (in queriedIds) + NOT a queryErrorCount + never hits CT.gov', async () => {
+        const slice = [noNameCompound(1)];
+        const res = await trialQueryChunk(slice, '2026-06-05T00:00:00.000Z');
+        // Processed (cursor advances + stamped) -- a recorded queryable negative, not an error.
+        expect(res.queriedIds).toEqual(['sciweon::compound::CID:1']);
+        expect(res.queryErrorCount).toBe(0);
+        // The CT.gov adapter was NEVER called -- no doomed 400-ing request.
+        expect(searchByInterventionChecked).not.toHaveBeenCalled();
+        // Zero trials this chunk -> writes skipped (prior trials.jsonl preserved, no truncation).
+        expect(createWriteStreamSpy).not.toHaveBeenCalled();
+    });
+
+    it('an ALL-no_searchable_name chunk -> queriedIds NON-EMPTY + queryErrorCount=0 (CANNOT trip the frozen-cursor THROW)', async () => {
+        const slice = [noNameCompound(1), noNameCompound(2), noNameCompound(3)];
+        const res = await trialQueryChunk(slice, '2026-06-05T00:00:00.000Z');
+        // The frozen-cursor THROW fires only on queried==0 AND queryErrorCount==0. Here
+        // queried==3 (>0), so assertCoverageProgress(eligible, 3, ...) returns {degrade:false}:
+        // the cursor ADVANCES (not a frozen-cursor halt) and these are stamped, not retried forever.
+        expect(res.queriedIds.length).toBe(3);
+        expect(res.queryErrorCount).toBe(0);
+        expect(searchByInterventionChecked).not.toHaveBeenCalled();
+    });
+
+    it('a stray HTTP 400 that DOES reach CT.gov (terminal:true) is treated as no_searchable_name, NOT a transient error', async () => {
+        // A searchable-looking name that the adapter reports terminal (400). Defense-in-depth:
+        // it is PROCESSED (queriedIds), NOT counted in queryErrorCount -> cannot inflate the
+        // transient count or freeze the cursor.
+        searchByInterventionChecked.mockResolvedValue({ ok: false, terminal: true, studies: [] });
+        const slice = [{ id: 'sciweon::compound::CID:9', synonyms: ['some-odd-name'] }];
+        const res = await trialQueryChunk(slice, '2026-06-05T00:00:00.000Z');
+        expect(res.queriedIds).toEqual(['sciweon::compound::CID:9']);
+        expect(res.queryErrorCount).toBe(0);
+    });
+
+    it('MIXED chunk: a genuine 429 (transient) stays eligible (queryErrorCount) while a no_searchable_name is processed', async () => {
+        // CID:1 has a real synonym -> hits CT.gov -> 429 transient (ok:false, terminal:false) -> error.
+        // CID:2 has no usable name -> no_searchable_name -> processed, not an error.
+        searchByInterventionChecked.mockResolvedValue({ ok: false, terminal: false, studies: [] });
+        const slice = [
+            { id: 'sciweon::compound::CID:1', external_ids: {}, synonyms: ['ibuprofen'] }, // searchable -> 429
+            noNameCompound(2),                                                              // no_searchable_name
+        ];
+        const res = await trialQueryChunk(slice, '2026-06-05T00:00:00.000Z');
+        expect(res.queryErrorCount).toBe(1);                       // only the 429 counts as transient
+        expect(res.queriedIds).toEqual(['sciweon::compound::CID:2']); // only the no-name one processed
+        expect(searchByInterventionChecked).toHaveBeenCalledTimes(1); // CT.gov hit only for the searchable one
     });
 });

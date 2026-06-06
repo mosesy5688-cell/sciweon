@@ -77,18 +77,40 @@ async function queryChunk(slice, _nowIso) {
     const negativeEvidenceRaw = [];
     const sourceCounts = {};
     const queriedIds = [];
+    const noSearchableNameSample = []; // a few CIDs for loud telemetry
 
-    let queryErrorCount = 0; // LOUD: CT.gov fetch failures (429/5xx/timeout/outage)
+    let queryErrorCount = 0;        // LOUD: CT.gov fetch failures (429/5xx/timeout/outage -- TRANSIENT)
+    let noSearchableNameCount = 0;  // LOUD: compounds with NO CT.gov-searchable name (terminal, NOT an error)
 
     const perCompound = await pMap(slice, CTGOV_CONCURRENCY, async (compound) => {
         const { name: searchName, source: searchSource } = pickTrialSearchName(compound);
+        // NO CT.gov-searchable name (no rxnorm_name, no clean synonym, only IUPAC/CID):
+        // do NOT send a doomed query (IUPAC -> HTTP 400; `CID:<n>` -> zero-hit waste).
+        // Resolve in-place WITHOUT a network call / a rate-limiter token.
+        if (searchSource === 'no_searchable_name') {
+            return { compound, searchName, searchSource, noSearchableName: true };
+        }
         await TRIAL_RATE_LIMITER.acquire(); // bound the true CT.gov request rate
-        const { ok, studies } = await searchByInterventionChecked(searchName, 100);
-        return { compound, searchName, searchSource, ok, trials: studies };
+        const { ok, terminal, studies } = await searchByInterventionChecked(searchName, 100);
+        return { compound, searchName, searchSource, ok, terminal, trials: studies };
     });
 
-    for (const { compound, searchName, searchSource, ok, trials } of perCompound) {
+    for (const { compound, searchName, searchSource, ok, terminal, noSearchableName, trials } of perCompound) {
         sourceCounts[searchSource] = (sourceCounts[searchSource] ?? 0) + 1;
+        // NO CT.gov-SEARCHABLE NAME -- a recorded queryable negative, NOT a fetch
+        // failure ([[evidence_not_verdict]]). It IS processed: push to queriedIds so
+        // the cursor ADVANCES + it is stamped (re-evaluated when its stamp goes stale
+        // in the freshness window, picking up a name that appears later). It is NOT
+        // counted in queryErrorCount, so it can never inflate the transient count or
+        // (as an all-no_searchable_name chunk) trip the frozen-cursor THROW.
+        // A 400 that still reached CT.gov (terminal:true -- belt-and-suspenders) is
+        // the SAME class: unsearchable, deterministic, NOT transient -> treat as such.
+        if (noSearchableName || terminal) {
+            noSearchableNameCount++;
+            if (noSearchableNameSample.length < 5) noSearchableNameSample.push(compound.id);
+            queriedIds.push(compound.id); // PROCESSED -> advances the cursor, gets stamped
+            continue;
+        }
         // FETCH-FAILURE (not a genuine result): do NOT stamp -- the compound stays
         // eligible + is retried next wrap. Stamping it would skip it for the whole
         // freshness window ([[cross_cycle_silent_data_loss]]).
@@ -122,13 +144,26 @@ async function queryChunk(slice, _nowIso) {
     trialLinks.sort((a, b) => (a.compound_id + a.nct_id).localeCompare(b.compound_id + b.nct_id));
     negativeEvidenceRaw.sort((a, b) => (a.nct_id + a.compound_id).localeCompare(b.nct_id + b.compound_id));
 
-    // ITEM 4 (PR-1) NO-TRUNCATION: a TOTAL outage (zero genuinely-queried compounds)
-    // would write [] over trials.jsonl, truncating the PRIOR run's file -> downstream
-    // assertLoaded (trial-results-enricher.js) HARD-FAILS on the empty file. SKIP the
-    // write so the prior-run file is left intact (the cumulative merge reads the prior
-    // file, so no data is lost; the chunk stays eligible per the coverage degrade path).
-    if (queriedIds.length === 0) {
-        console.warn(`[${LABEL}] TOTAL outage (0 compounds genuinely queried) -- SKIPPING entity-file writes to preserve prior trials.jsonl (no truncation). query_error_count=${queryErrorCount}`);
+    // LOUD telemetry (no-silent-loss): the no-searchable-name compounds are RECORDED,
+    // never silently skipped. They ARE counted in queriedIds (cursor advances + they
+    // are stamped), distinct from a transient error -- re-evaluated each freshness
+    // window so a name that appears later is picked up.
+    if (noSearchableNameCount > 0) {
+        console.warn(`[${LABEL}] no_searchable_name=${noSearchableNameCount} (no rxnorm_name/clean synonym -> only IUPAC/CID, NOT CT.gov-searchable; skipped the query, stamped as processed -- NOT a fetch failure). sample=${JSON.stringify(noSearchableNameSample)}`);
+    }
+
+    // ITEM 4 (PR-1) NO-TRUNCATION + the no_searchable_name fix: writing [] over
+    // trials.jsonl truncates the PRIOR run's file -> downstream assertLoaded
+    // (snomed/loinc/bidirectional linkers) HARD-FAILS on the empty file. SKIP the
+    // write whenever there is NOTHING to persist this chunk -- either a TOTAL outage
+    // (queriedIds=[]) OR a chunk that produced zero trials (e.g. an all-
+    // no_searchable_name slice, or a slice whose genuine queries all returned empty).
+    // The cursor still advances (queriedIds is returned), the prior trials.jsonl is
+    // left intact (the cumulative merge reads it), so NO data is lost and NO downstream
+    // HALT is triggered.
+    if (queriedIds.length === 0 || trialsOut.length === 0) {
+        const why = queriedIds.length === 0 ? 'TOTAL outage (0 compounds genuinely queried)' : 'no trials produced this chunk';
+        console.warn(`[${LABEL}] ${why} -- SKIPPING entity-file writes to preserve prior trials.jsonl (no truncation). queried=${queriedIds.length} no_searchable_name=${noSearchableNameCount} query_error_count=${queryErrorCount}`);
         return { queriedIds, queryErrorCount };
     }
 

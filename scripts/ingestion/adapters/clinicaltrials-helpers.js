@@ -1,7 +1,31 @@
 /**
- * ClinicalTrials.gov results signal extraction helpers.
+ * ClinicalTrials.gov results signal extraction + fetch helpers.
  * Extracted from clinicaltrials-adapter.js to keep that file under CES 250-line limit.
  */
+
+const REQUEST_TIMEOUT_MS = 20000;
+
+/**
+ * A fetch error carrying the HTTP status so callers can split a TERMINAL client
+ * error (400 malformed/unsearchable query) from a TRANSIENT one (429/5xx/timeout).
+ * `status` is the numeric HTTP status, or null for a network/timeout reject.
+ */
+export class CtFetchError extends Error {
+    constructor(status, url) {
+        super(`HTTP ${status}: ${url}`);
+        this.name = 'CtFetchError';
+        this.status = status;
+    }
+}
+
+export async function fetchJson(url) {
+    const res = await fetch(url, {
+        headers: { 'Accept': 'application/json' },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new CtFetchError(res.status, url);
+    return res.json();
+}
 
 export function extractResultsSignals(raw) {
     const hasResults = raw.hasResults === true;
