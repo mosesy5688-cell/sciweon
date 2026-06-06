@@ -12,14 +12,53 @@
  * Exit codes preserved from the original stage-4 block:
  *   7 compound publish fail · 8 compound integrity fail · 11 neg publish/gate
  *   fail · 9 swap fail. Prune failure is non-fatal (warn).
+ *   12 (PR-COMPOUND-GUARD): a compound SERVING projection .gz key is absent
+ *   pre-swap -> refuse to swap latest.json (mirror the compound-shard exit 7).
  */
 
 import path from 'path';
+import { HeadObjectCommand } from '@aws-sdk/client-s3';
 import { publishCompoundShards } from './compound-shard-publisher.js';
 import { verifyShardIntegrity } from './compound-shard-pointer.js';
 import { swapLatestPointer } from './publish-shards-and-swap.js';
 import { publishNegAndGate } from './stage-4-neg-publish.js';
 import { pruneOldNegShards } from './neg-shard-prune.js';
+
+// PR-COMPOUND-GUARD: the two serving projection R2 keys snapshot-uploader writes
+// under snapshots/<date>/ (xref-index.json gzips to xref-index.json.gz). The
+// worker resolve/search paths depend on them, so refuse to swap latest.json if
+// either is absent (a stale-pointer-over-missing-projection availability bug).
+function projectionKeys(snapshotDate) {
+    return [
+        `snapshots/${snapshotDate}/compounds-search.jsonl.gz`,
+        `snapshots/${snapshotDate}/xref-index.json.gz`,
+    ];
+}
+
+async function objectExists(client, bucket, key) {
+    try {
+        await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+        return true;
+    } catch (err) {
+        if (err.name === 'NotFound' || err.name === 'NoSuchKey' || err.$metadata?.httpStatusCode === 404) {
+            return false;
+        }
+        throw err; // transient/auth error is not an absence signal -> propagate
+    }
+}
+
+/**
+ * Probe both projection .gz keys. Returns { ok, missing[] }. A transient/auth
+ * head() error propagates (the caller treats a probe error as a refusal too).
+ * Exported so the guard's presence logic is unit-testable without the 90s drain.
+ */
+export async function compoundProjectionsPresent(client, bucket, snapshotDate) {
+    const missing = [];
+    for (const key of projectionKeys(snapshotDate)) {
+        if (!(await objectExists(client, bucket, key))) missing.push(key);
+    }
+    return { ok: missing.length === 0, missing };
+}
 
 export async function runShardPublishAndSwap({ client, bucketName, snapshotDate }) {
     // 1. Compound shards.
@@ -61,6 +100,27 @@ export async function runShardPublishAndSwap({ client, bucketName, snapshotDate 
         console.error('[STAGE-4] Refusing to swap latest.json pointer — neg sharded path unsafe/incomplete.');
         process.exit(11);
     }
+
+    // 3b. PR-COMPOUND-GUARD pre-swap PRESENCE PROBE: both serving projection .gz
+    // keys must exist under snapshots/<date>/ before the terminal swap (mirror
+    // the compound-shard exit 7 guard). snapshot-uploader uploads every
+    // snapshots/<date>/ file BEFORE this orchestrator runs the swap, so an absent
+    // key means the projection was never produced -> refuse to advance latest.json.
+    console.log('\n[STAGE-4] === Compound projection presence probe (pre-swap) ===');
+    let probe;
+    try {
+        probe = await compoundProjectionsPresent(client, bucketName, snapshotDate);
+    } catch (err) {
+        console.error(`[STAGE-4] Compound projection head() errored: ${err.message}`);
+        console.error('[STAGE-4] Refusing to swap latest.json -- compound projection probe errored.');
+        process.exit(12);
+    }
+    if (!probe.ok) {
+        console.error(`[STAGE-4] Compound projection missing: ${probe.missing.join(', ')}`);
+        console.error('[STAGE-4] Refusing to swap latest.json -- compound projection missing');
+        process.exit(12);
+    }
+    console.log('[STAGE-4] Both compound projections present (pre-swap probe PASS)');
 
     // 4. ONE terminal swap (compound + neg keys).
     console.log('\n[STAGE-4] === ONE terminal latest.json swap (compound + neg keys) ===');

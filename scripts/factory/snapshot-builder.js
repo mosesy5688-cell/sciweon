@@ -32,10 +32,12 @@ import { SNAPSHOT_FILES } from './lib/aggregated-files.js';
 import { LOINC_ATTRIBUTION } from './lib/umls-concept-streams.js';
 import { streamSnapshotFile } from './lib/stream-snapshot-file.js';
 
-// PR-T1.1-LEVER: only the neg-evidence whole-file is emitted via the streaming
-// path (it stays additive + preserved after the FDA preserve-all uncap, so it
-// can grow large). The streaming entry is byte-identical to the in-memory one.
-const STREAMING_FILES = new Set(['neg-evidence.jsonl']);
+// PR-T1.1-LEVER: neg-evidence whole-file is emitted via the streaming path (it
+// stays additive + preserved after the FDA preserve-all uncap, so it can grow
+// large). PR-COMPOUND-GUARD: compounds-search.jsonl is ALSO streamed (it is a
+// per-compound projection that grows with the corpus). The streaming entry is
+// byte-identical to the in-memory one.
+const STREAMING_FILES = new Set(['neg-evidence.jsonl', 'compounds-search.jsonl']);
 
 const SOURCE_DIR = './output/linked';
 const SNAPSHOT_ROOT = './snapshots';
@@ -43,7 +45,12 @@ const SNAPSHOT_ROOT = './snapshots';
 // V0.5.x: refuse to publish a snapshot without these files. Prevents the
 // empty-snapshot regression where snapshot-uploader pushed a manifest with
 // no data, overwriting the R2 latest pointer to point at nothing.
-const REQUIRED_FILES = ['compounds-enriched.jsonl'];
+// PR-COMPOUND-GUARD (Step-5a): the two compound SERVING projections are
+// REQUIRED -- the worker resolve/search paths depend on them, so latest.json
+// must NOT advance over a missing projection (HARD-FAIL, exit 1). This applies
+// in BOTH the streaming branch (compounds-search.jsonl) and the gzip branch
+// (xref-index.json -> xref-index.json.gz).
+const REQUIRED_FILES = ['compounds-enriched.jsonl', 'compounds-search.jsonl', 'xref-index.json'];
 
 function sha256(buf) {
     return createHash('sha256').update(buf).digest('hex');
@@ -86,11 +93,18 @@ async function main() {
         let entry;
 
         if (STREAMING_FILES.has(fname)) {
-            // Streaming path: never loads the whole file into memory. Same
-            // skip-if-absent/empty semantics (neg-evidence is not REQUIRED).
+            // Streaming path: never loads the whole file into memory. A REQUIRED
+            // streaming file (PR-COMPOUND-GUARD: compounds-search.jsonl) that is
+            // absent/empty HARD-FAILS (mirrors the gzip branch) so latest.json
+            // never advances over a missing projection; non-required (neg-evidence)
+            // keeps the skip-if-absent semantics.
             let st = null;
             try { st = await fs.stat(sourcePath); } catch { st = null; }
             if (!st || st.size === 0) {
+                if (REQUIRED_FILES.includes(fname)) {
+                    console.error(`[SNAPSHOT-BUILDER] Required file ${fname} missing or empty. Refusing to publish empty snapshot.`);
+                    process.exit(1);
+                }
                 console.log(`  ${fname.padEnd(35)} (absent, skip)`);
                 continue;
             }

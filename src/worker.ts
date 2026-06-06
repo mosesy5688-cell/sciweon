@@ -40,6 +40,11 @@ export interface Env {
     // Phase 1 ships without encryption (shard-crypto.js stub returns null);
     // worker decoder uses no-op passthrough when this is unset (Gemini #2).
     SHARD_AES_KEY?: string;
+    // PR-COMPOUND-GUARD (Step-5a) optional override (string, bytes) for the
+    // loadTier1Legacy compressed-size ceiling. Unset -> COMPOUNDS_MAX_BYTES
+    // default. Lets an operator tune the LOUD 503 tripwire after an R2 head of
+    // the live compounds-enriched.jsonl.gz.
+    COMPOUNDS_MAX_BYTES?: string;
 }
 
 export default {

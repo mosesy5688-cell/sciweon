@@ -1,11 +1,28 @@
 /**
- * Compound search — substring scan over the enriched snapshot JSONL.
+ * Compound search — substring scan over a COMPACT search projection.
+ *
+ * PR-COMPOUND-GUARD: reads `compounds-search.jsonl.gz` (built by
+ * compound-projection-builder.js) instead of the full compounds-enriched
+ * file. The projection carries EXACTLY the union of fields scoreMatch +
+ * summarize read (id, pubchem_cid, chembl_id, synonyms[], iupac_name,
+ * molecular_formula, molecular_weight.value, drug_status.max_phase,
+ * confidence.overall) in their NESTED shapes, so scoreMatch/summarize run
+ * BYTE-IDENTICALLY against a projection record. It EXCLUDES fda_signals
+ * (unused here) -> the projection is INVARIANT under the FDA preserve-all
+ * uncap that would otherwise re-OOM this whole-file reader.
  *
  * Scoring: exact CID/ChEMBL/synonym = 90-100, starts-with = 60-70,
  * contains = 30-50. Caller passes query already lowercased.
+ *
+ * Fallback (deploy transition): when the projection is ABSENT (404, between
+ * this PR's deploy and the first F4 that publishes it) fall back to the full
+ * compounds-enriched file so search stays alive.
  */
 
 import { fetchR2GunzippedText, fetchR2JsonText } from './r2-fetch';
+
+const SEARCH_PROJECTION = 'compounds-search.jsonl.gz';
+const FULL_ENRICHED = 'compounds-enriched.jsonl.gz';
 
 export interface CompoundSummary {
     id: string;
@@ -23,7 +40,10 @@ interface SearchHit extends CompoundSummary {
     _score: number;
 }
 
-function scoreMatch(query: string, compound: Record<string, unknown>): number {
+// Exported for the projection round-trip test (compound-projection-builder.test.ts):
+// it locks that scoreMatch + summarize run BYTE-IDENTICALLY against a projection
+// record vs the full enriched record.
+export function scoreMatch(query: string, compound: Record<string, unknown>): number {
     const synonyms = (compound.synonyms as string[] | null) ?? [];
     const iupac = ((compound.iupac_name as string) ?? '').toLowerCase();
     const formula = ((compound.molecular_formula as string) ?? '').toLowerCase();
@@ -42,7 +62,7 @@ function scoreMatch(query: string, compound: Record<string, unknown>): number {
     return 0;
 }
 
-function summarize(compound: Record<string, unknown>): CompoundSummary {
+export function summarize(compound: Record<string, unknown>): CompoundSummary {
     const synonyms = (compound.synonyms as string[] | null) ?? [];
     const name = synonyms[0] ?? (compound.iupac_name as string) ?? String(compound.pubchem_cid ?? '');
     const mwObj = compound.molecular_weight as { value?: number } | null;
@@ -71,7 +91,7 @@ export async function searchCompounds(
     const date = ptr.latest_snapshot_date;
     if (!date) return [];
 
-    const text = await fetchR2GunzippedText(bucket, `snapshots/${date}/compounds-enriched.jsonl.gz`);
+    const text = await fetchSearchCorpus(bucket, date);
     const hits: SearchHit[] = [];
 
     for (const line of text.split('\n')) {
@@ -84,4 +104,17 @@ export async function searchCompounds(
 
     hits.sort((a, b) => b._score - a._score);
     return hits.slice(0, limit).map(({ _score: _s, ...rest }) => rest);
+}
+
+/**
+ * Fetch the compact search projection; on 404 (projection not yet published
+ * for this date — deploy transition) fall back to the full enriched file.
+ * A head() probe distinguishes "absent" (fall back) from a genuine read
+ * failure (propagate as a thrown error rather than mask a corrupt projection).
+ */
+async function fetchSearchCorpus(bucket: R2Bucket, date: string): Promise<string> {
+    const projKey = `snapshots/${date}/${SEARCH_PROJECTION}`;
+    const head = await bucket.head(projKey);
+    if (head) return fetchR2GunzippedText(bucket, projKey);
+    return fetchR2GunzippedText(bucket, `snapshots/${date}/${FULL_ENRICHED}`);
 }

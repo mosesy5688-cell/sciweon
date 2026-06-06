@@ -147,3 +147,45 @@ describe('handleMcp — tools/call sciweon_search', () => {
         expect(compound.confidence_overall).toBe(80);
     });
 });
+
+describe('sciweon_search projection equality + fallback (PR-COMPOUND-GUARD)', () => {
+    // The compact search projection carries EXACTLY the fields scoreMatch +
+    // summarize read in their nested shapes, so a query returns IDENTICAL ranked
+    // results whether the worker reads the projection or the full enriched file.
+    const FULL = [
+        JSON.stringify({ ...JSON.parse(ASPIRIN), fda_signals: [{ x: 1 }] }), // uncap-style extra field
+        METFORMIN,
+    ].join('\n');
+    // the projection is the SAME records minus fda_signals (what the builder emits).
+    const PROJ = [ASPIRIN, METFORMIN].join('\n');
+
+    function bucketWith(keys: Record<string, string>) {
+        const store: Record<string, { bytes: Uint8Array; etag: string }> = {
+            'snapshots/latest.json': {
+                bytes: new TextEncoder().encode(JSON.stringify({ latest_snapshot_date: '2026-05-18' })),
+                etag: 'ptr',
+            },
+        };
+        for (const [k, v] of Object.entries(keys)) store[`snapshots/2026-05-18/${k}`] = { bytes: gzipSync(v), etag: k };
+        return makeMockBucket(store);
+    }
+
+    async function search(bucket: R2Bucket, q: string) {
+        const res = await handleMcp(mcpSearch(q), makeEnv(bucket), fakeCtx());
+        const body = await res.json() as any;
+        return JSON.parse(body.result.content[0].text).results;
+    }
+
+    it('projection yields IDENTICAL ranked results to the full file (golden equality)', async () => {
+        const fromFull = await search(bucketWith({ 'compounds-enriched.jsonl.gz': FULL }), 'a');
+        const fromProj = await search(
+            bucketWith({ 'compounds-search.jsonl.gz': PROJ, 'compounds-enriched.jsonl.gz': FULL }), 'a');
+        expect(fromProj).toEqual(fromFull);
+        expect(fromProj.length).toBeGreaterThan(0);
+    });
+
+    it('falls back to the full enriched file when the projection is ABSENT (404)', async () => {
+        const results = await search(bucketWith({ 'compounds-enriched.jsonl.gz': FULL }), 'aspirin');
+        expect(results[0].pubchem_cid).toBe(2244);
+    });
+});

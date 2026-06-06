@@ -119,6 +119,17 @@ export const AGGREGATED_FILES = Object.freeze([
     'neg-evidence.jsonl',
     'sciweon-search-index.json',
     'target-index.json',
+    // PR-COMPOUND-GUARD (Step-5a): the compound SERVING projections
+    // (compound-projection-builder.js, built in stage-3). Both are PUBLIC
+    // (id->cid + a search summary; no proprietary content) -> they flow into
+    // BOTH AGGREGATED_FILES and SNAPSHOT_FILES (NOT in the UMLS-omitted set).
+    // compounds-search.jsonl is STREAMED by snapshot-builder (it can grow large);
+    // xref-index.json is gzipped to xref-index.json.gz in R2 (worker reads it via
+    // fetchR2GunzippedText). Both are REQUIRED_FILES in snapshot-builder so a
+    // missing projection HARD-FAILS the build (no latest.json advance without
+    // them) and stage-4 head()-probes both .gz keys before the terminal swap.
+    'compounds-search.jsonl',
+    'xref-index.json',
 ]);
 
 /**

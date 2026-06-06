@@ -8,7 +8,7 @@
  *   503  R2 binding missing
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { handleXrefs } from '../../src/worker/api/xrefs';
 import type { Env } from '../../src/worker';
 
@@ -16,6 +16,13 @@ function gzipSync(text: string): Uint8Array {
     const { gzipSync: nodeGzip } = require('zlib');
     return new Uint8Array(nodeGzip(Buffer.from(text, 'utf-8')));
 }
+
+// xref-index-loader uses caches.default; Node has none -> always-miss shim.
+beforeAll(() => {
+    if (typeof (globalThis as any).caches === 'undefined') {
+        (globalThis as any).caches = { default: { async match() { return undefined; }, async put() { } } };
+    }
+});
 
 interface MockObject { bytes: Uint8Array; etag: string; }
 function makeMockBucket(store: Record<string, MockObject>) {
@@ -139,5 +146,36 @@ describe('handleXrefs', () => {
     it('cache-control header set on 200', async () => {
         const res = await call('?id=2244', makeEnv(bucket()));
         expect(res.headers.get('cache-control')).toContain('max-age');
+    });
+
+    // PR-COMPOUND-GUARD: a non-CID id resolves via the xref-index PROJECTION
+    // end-to-end (resolveEntity reads the index; loadTier1 then fetches the
+    // bundle). The index is the resolution path; the full file remains for the
+    // bundle hydration (loadTier1 legacy fallback when no manifest key).
+    function indexedBucket() {
+        return makeMockBucket({
+            'snapshots/latest.json': {
+                bytes: new TextEncoder().encode(JSON.stringify({ latest_snapshot_date: '2026-05-19' })),
+                etag: 'p1',
+            },
+            'snapshots/2026-05-19/xref-index.json.gz': {
+                bytes: gzipSync(JSON.stringify({
+                    version: '1.0', index: { drugbank_id: { DB00945: 2244 }, unii: { R16CO5Y76E: 2244 } },
+                })),
+                etag: 'xi1',
+            },
+            // loadTier1 hydrates the xref bundle from the full file (no manifest key).
+            'snapshots/2026-05-19/compounds-enriched.jsonl.gz': { bytes: gzipSync(aspirinJsonl), etag: 'd1' },
+        });
+    }
+
+    it('?id=DB00945 resolves via the xref-index projection end-to-end', async () => {
+        const res = await call('?id=DB00945', makeEnv(indexedBucket()));
+        expect(res.status).toBe(200);
+        const body = await res.json() as any;
+        expect(body.resolved).toBe(true);
+        expect(body.matched_on).toBe('drugbank_id');
+        expect(body.canonical_id).toBe('sciweon::compound::CID:2244');
+        expect(body.xrefs.pubchem_cid).toBe(2244);
     });
 });

@@ -36,6 +36,7 @@ import { downloadStage, uploadStage, deriveRunId } from './lib/r2-stage-bridge.j
 import { executeCumulativeMerge } from './lib/stage-3-merge.js';
 import { buildIndex as buildSearchIndex, OUTPUT_FILE as SEARCH_INDEX_FILE } from './lib/search-index-builder.js';
 import { buildIndex as buildTargetIndex, OUTPUT_FILE as TARGET_INDEX_FILE } from './lib/target-index-builder.js';
+import { buildProjections as buildCompoundProjections } from './lib/compound-projection-builder.js';
 import { writeFirstRunSentinel } from './lib/aggregated-sentinel.js';
 import { AGGREGATED_FILES, ENRICHED_FILES } from './lib/aggregated-files.js';
 import { enforceCompletenessInvariant } from './lib/aggregated-invariant.js';
@@ -93,15 +94,11 @@ async function main() {
         process.exit(2);
     }
 
-    // PR-UMLS-3 cold-start guard (see lib/snomed-cold-start.js for both invariants): determine
-    // SNOMED cold-start ONCE via a single R2 HEAD on the bulk cursor. cursor ABSENT (404) -> skip
-    // the WHOLE SNOMED sub-pipeline gracefully (Invariant 1, snapshot still ships); cursor PRESENT
-    // + broken artifact -> each stage HARD-FAILS in place (Invariant 2). Threads to linker + cascade.
+    // PR-UMLS-3/4 cold-start guards (lib/{snomed,loinc}-cold-start.js): one R2 HEAD
+    // on each bulk cursor. ABSENT -> skip that vocabulary's sub-pipeline gracefully
+    // (snapshot ships); PRESENT + broken -> each stage HARD-FAILS in place.
     const snomedColdStart = await isSnomedColdStart({ client: makeR2Client('STAGE-3'), bucket: process.env.R2_BUCKET });
     if (snomedColdStart) warnSnomedColdStart();
-
-    // PR-UMLS-4 cold-start guard (see lib/loinc-cold-start.js): same single-R2-HEAD discriminator
-    // on the LOINC bulk cursor, independent of SNOMED. Threads to the linker + cascade identically.
     const loincColdStart = await isLoincColdStart({ client: makeR2Client('STAGE-3'), bucket: process.env.R2_BUCKET });
     if (loincColdStart) warnLoincColdStart();
 
@@ -148,9 +145,8 @@ async function main() {
     // (codes 4/5/6/7); see the helper module header for the full code table.
     await executeCumulativeMerge(runId);
 
-    // PR-CORE-3 (cycle 22): aggregated cumulative backfill, AFTER the merge and BEFORE the
-    // indices (so they reflect backfilled records). Closes the wiring arc PR-CORE-2 missed.
-    // Per D7: non-fatal to F3 - failure logs but the stage still ships downstream output.
+    // PR-CORE-3 (cycle 22): aggregated cumulative backfill, AFTER the merge and
+    // BEFORE the indices. Non-fatal to F3 (logs but ships downstream output).
     console.log('\n[STAGE-3] === PR-CORE-3 cumulative backfill ===');
     try {
         await runScript('aggregated-backfill-enrich.js');
@@ -159,10 +155,9 @@ async function main() {
         console.error(`[STAGE-3] Backfill failed (non-fatal, F3 continues with un-backfilled cumulative): ${err.message}`);
     }
 
-    // PR-OT-4 (cycle 23): Open Targets bulk merge into compound entity. Reads the OT bulk
-    // artifact from R2 and folds known_drug_info + target_associations into chembl_id-bearing
-    // compounds (per [[researcher_needs_anchor]] 2026-05-24). Non-fatal: OT-merge failure leaves
-    // compounds un-OT-enriched but does not block indices or R2 upload (resurfaces next run).
+    // PR-OT-4 (cycle 23): Open Targets bulk merge into the compound entity (folds
+    // known_drug_info + target_associations into chembl_id-bearing compounds).
+    // Non-fatal: leaves compounds un-OT-enriched but does not block upload.
     console.log('\n[STAGE-3] === PR-OT-4 Open Targets stage-3 merge ===');
     try {
         await runScript('open-targets-stage3-merge.js');
@@ -171,16 +166,14 @@ async function main() {
         console.error(`[STAGE-3] OT merge failed (non-fatal, F3 continues with un-OT-enriched compounds): ${err.message}`);
     }
 
-    // PR-SID-1.1c..1.10 (cycle 23 + UMLS): SID stamping cascade (HARD-FAIL) + the post-stamp
-    // UMLS phases (MeSH/SNOMED/LOINC public projections + MeSH/SNOMED cross-link enrichers).
-    // Extracted to lib/stage-3-stampers.js for Art 5.1. Cold-start guard (Invariant 1): when
-    // snomedColdStart / loincColdStart, that vocabulary's cascade entries are excluded while the
-    // rest still run; the snapshot ships without the cold vocabulary. (LOINC crosslink = PR-4b.)
+    // PR-SID-1.1c..1.10 (cycle 23 + UMLS): SID stamping cascade (HARD-FAIL) + the
+    // post-stamp UMLS phases. Extracted to lib/stage-3-stampers.js. Cold-start
+    // guard excludes a cold vocabulary's entries while the rest run.
     await runSidStampingCascade(runScript, { skipSnomed: snomedColdStart, skipLoinc: loincColdStart });
 
-    // V0.5.3 Tier 1.5 search index — rebuild SQLite FTS5 over cumulative aggregated, AFTER the
-    // merge so it reflects historical + current compounds. Non-fatal: search endpoint falls
-    // back to ID lookup rather than halting the chain (search is enhancement, not lifeline).
+    // V0.5.3 Tier 1.5 search index — rebuild over cumulative aggregated, AFTER the
+    // merge. Non-fatal (search is enhancement, not lifeline). F5: NO worker reads
+    // this output; compounds-search.jsonl (below) supersedes it for the worker.
     console.log('\n[STAGE-3] === Build Tier 1.5 search index (FTS5) ===');
     try {
         const stats = await buildSearchIndex({
@@ -191,6 +184,13 @@ async function main() {
         console.error(`[STAGE-3] Search index build failed (non-fatal): ${err.message}`);
         console.error('[STAGE-3] Will upload aggregated bundle without search index; previous cycle\'s index remains current in R2 until next successful build.');
     }
+
+    // PR-COMPOUND-GUARD (Step-5a): emit the compound SERVING projections BEFORE
+    // stage-4 downloads AGGREGATED_FILES. HARD-FAIL (no try-catch): a serving
+    // prerequisite (snapshot-builder REQUIRES them; stage-4 head()-probes them).
+    console.log('\n[STAGE-3] === Build compound serving projections (search + xref-index) ===');
+    const proj = await buildCompoundProjections({});
+    console.log(`[STAGE-3] Compound projections: ${proj.total} compounds, ${proj.collisions} xref collisions`);
 
     // C2-3 target inverse-pivot index. Non-fatal: /api/v1/target/* 404s if absent, rest ships.
     console.log('\n[STAGE-3] === Build target inverse-pivot index ===');

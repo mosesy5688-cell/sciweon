@@ -6,13 +6,20 @@
  * as tests/api/negative-evidence.test.ts.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { classifyIdentifier, resolveEntity } from '../../src/worker/lib/entity-resolver';
 
 function gzipSync(text: string): Uint8Array {
     const { gzipSync: nodeGzip } = require('zlib');
     return new Uint8Array(nodeGzip(Buffer.from(text, 'utf-8')));
 }
+
+// xref-index-loader uses caches.default; Node has none -> always-miss shim.
+beforeAll(() => {
+    if (typeof (globalThis as any).caches === 'undefined') {
+        (globalThis as any).caches = { default: { async match() { return undefined; }, async put() { } } };
+    }
+});
 
 interface MockObject { bytes: Uint8Array; etag: string; }
 function makeMockBucket(store: Record<string, MockObject>) {
@@ -160,5 +167,83 @@ describe('resolveEntity (with mock R2)', () => {
     it('returns null for unclassifiable input', async () => {
         const r = await resolveEntity(bucket(), 'not-a-real-id-format');
         expect(r).toBeNull();
+    });
+});
+
+describe('resolveEntity via xref-index projection (PR-COMPOUND-GUARD)', () => {
+    // The index partitions ALL 7 non-CID kinds; keys = classifyIdentifier's
+    // normalized form. CID is NOT indexed (the resolver fast path never reads it).
+    const xrefIndex = {
+        version: '1.0', snapshot_date: '2026-05-19', generated_at: 'now', total_compounds: 1,
+        index: {
+            chembl_id: { CHEMBL25: 2244 },
+            inchi_key: { 'BSYNRYMUTXBXSQ-UHFFFAOYSA-N': 2244 },
+            unii: { R16CO5Y76E: 2244 },
+            drugbank_id: { DB00945: 2244 },
+            chebi_id: { 'CHEBI:15365': 2244 },
+            kegg_drug_id: { D00109: 2244 },
+            rxcui: { 1191: 2244 },
+        },
+    };
+
+    function indexedBucket(extra: Record<string, MockObject> = {}) {
+        return makeMockBucket({
+            'snapshots/latest.json': {
+                bytes: new TextEncoder().encode(JSON.stringify({ latest_snapshot_date: '2026-05-19' })),
+                etag: 'p1',
+            },
+            'snapshots/2026-05-19/xref-index.json.gz': {
+                bytes: gzipSync(JSON.stringify(xrefIndex)), etag: 'xi1',
+            },
+            // intentionally NO compounds-enriched -> proves the index path is used.
+            ...extra,
+        });
+    }
+
+    const allKinds: [string, string][] = [
+        ['CHEMBL25', 'chembl_id'],
+        ['BSYNRYMUTXBXSQ-UHFFFAOYSA-N', 'inchi_key'],
+        ['UNII:R16CO5Y76E', 'unii'],
+        ['DB00945', 'drugbank_id'],
+        ['CHEBI:15365', 'chebi_id'],
+        ['D00109', 'kegg_drug_id'],
+        ['RXCUI:1191', 'rxcui'],
+    ];
+
+    for (const [raw, kind] of allKinds) {
+        it(`resolves ${kind} (${raw}) via the index`, async () => {
+            const r = await resolveEntity(indexedBucket(), raw);
+            expect(r?.cid).toBe(2244);
+            expect(r?.matched_on).toBe(kind);
+        });
+    }
+
+    it('CID fast-path is unchanged (never reads the index file)', async () => {
+        const r = await resolveEntity(indexedBucket(), 'CID:2244');
+        expect(r).toEqual({ canonical: 'sciweon::compound::CID:2244', cid: 2244, matched_on: 'pubchem_cid' });
+    });
+
+    it('a kind miss in the index -> null (authoritative absence)', async () => {
+        const r = await resolveEntity(indexedBucket(), 'CHEMBL999999');
+        expect(r).toBeNull();
+    });
+
+    it('deploy-transition fallback: projection ABSENT (404) -> whole-file scan', async () => {
+        // No xref-index.json.gz; the legacy compounds-enriched scan must resolve.
+        const bucket = makeMockBucket({
+            'snapshots/latest.json': {
+                bytes: new TextEncoder().encode(JSON.stringify({ latest_snapshot_date: '2026-05-19' })),
+                etag: 'p1',
+            },
+            'snapshots/2026-05-19/compounds-enriched.jsonl.gz': {
+                bytes: gzipSync(JSON.stringify({
+                    id: 'sciweon::compound::CID:2244', pubchem_cid: 2244, chembl_id: 'CHEMBL25',
+                })),
+                etag: 'd1',
+            },
+        });
+        const r = await resolveEntity(bucket, 'CHEMBL25');
+        expect(r?.cid).toBe(2244);
+        expect(r?.matched_on).toBe('chembl_id');
     });
 });

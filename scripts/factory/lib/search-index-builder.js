@@ -6,6 +6,11 @@
  * sciweon's API-only function (no SSR rendering = no SQL JOIN/BM25 needed).
  * See feedback_pattern_transfer_function_match for the framing correction.
  *
+ * F5 (PR-COMPOUND-GUARD): NO worker reads this sciweon-search-index.json output
+ * -- compounds-search.jsonl.gz (compound-projection-builder.js) supersedes it
+ * for the worker compound-search path. This builder is a dormant duplicate; its
+ * removal is deferred (cleanup PR), not done here.
+ *
  * Output: ./output/linked/sciweon-search-index.json
  * Format (single file with per-type indices):
  *   {
