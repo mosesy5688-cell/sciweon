@@ -175,6 +175,17 @@ function makeQueryChunk(rwIndex) {
         paperLinks.sort((a, b) => (a.compound_id + String(a.paper_id)).localeCompare(b.compound_id + String(b.paper_id)));
         retractedPapers.sort((a, b) => String(a.paper_id).localeCompare(String(b.paper_id)));
 
+        // ITEM 4 (PR-1) NO-TRUNCATION: a TOTAL outage (zero genuinely-queried
+        // compounds) would write [] over papers.jsonl, truncating the PRIOR run's
+        // file -> downstream assertLoaded (bidirectional-linker.js) HARD-FAILS on the
+        // empty file. SKIP the write so the prior-run file is left intact (the
+        // cumulative merge reads the prior file, so no data is lost; the chunk stays
+        // eligible per the coverage runner's degrade path).
+        if (queriedIds.length === 0) {
+            console.warn(`[${LABEL}] TOTAL outage (0 compounds genuinely queried) -- SKIPPING entity-file writes to preserve prior papers.jsonl (no truncation). query_error_count=${queryErrorCount}`);
+            return { queriedIds, queryErrorCount };
+        }
+
         await writeJsonl(path.join(OUTPUT_DIR, 'papers.jsonl'), papersOut);
         await writeJsonl(path.join(OUTPUT_DIR, 'paper-links.jsonl'), paperLinks);
         await writeJsonl(path.join(OUTPUT_DIR, 'retracted-papers.jsonl'), retractedPapers);

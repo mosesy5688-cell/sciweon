@@ -99,17 +99,34 @@ describe('stampQueriedAt', () => {
     });
 });
 
-describe('assertCoverageProgress (eligible>0 && queried==0 -> LOUD throw)', () => {
-    it('THROWS when there were eligible compounds but none were queried (frozen cursor)', () => {
+describe('assertCoverageProgress (PR-1: frozen-cursor THROW vs outage DEGRADE verdict)', () => {
+    it('FROZEN CURSOR (queried==0, queryErrorCount==0) still THROWS (HALT, unchanged message)', () => {
+        // No errors AND nothing queried -> a genuine drain/cursor bug -> LOUD halt (F3 exits 1).
         expect(() => assertCoverageProgress(1234, 0, 'TRIAL-LINKER')).toThrow(/HALT/);
         expect(() => assertCoverageProgress(1234, 0, 'TRIAL-LINKER')).toThrow(/eligible=1234 but queried=0/);
         expect(() => assertCoverageProgress(1234, 0, 'TRIAL-LINKER')).toThrow(/cursor is frozen/);
+        // Explicit zero-error opts -> same throw.
+        expect(() => assertCoverageProgress(1234, 0, 'TRIAL-LINKER', { queryErrorCount: 0, chunkAttempted: 1234 }))
+            .toThrow(/HALT/);
     });
-    it('does NOT throw when at least one was queried', () => {
-        expect(() => assertCoverageProgress(1234, 1, 'TRIAL-LINKER')).not.toThrow();
-        expect(() => assertCoverageProgress(1234, 1234, 'TRIAL-LINKER')).not.toThrow();
+    it('OUTAGE (queried==0, chunkAttempted>0, queryErrorCount>0) returns {degrade:true} (no throw)', () => {
+        // Some/all of the attempted chunk errored -> a 3rd-party outage, not our bug.
+        expect(assertCoverageProgress(1234, 0, 'PAPER-LINKER', { queryErrorCount: 50, chunkAttempted: 50 }))
+            .toEqual({ degrade: true });
+        // queryErrorCount > 0 is the gate (NOT >= chunkAttempted): a partial-error chunk that still
+        // reached queried==0 means the only outcomes were failures -> degrade.
+        expect(assertCoverageProgress(1234, 0, 'PAPER-LINKER', { queryErrorCount: 1, chunkAttempted: 50 }))
+            .toEqual({ degrade: true });
     });
-    it('does NOT throw when there was nothing eligible (all fresh)', () => {
-        expect(() => assertCoverageProgress(0, 0, 'PAPER-LINKER')).not.toThrow();
+    it('NORMAL (queried>0) returns {degrade:false} (no throw)', () => {
+        expect(assertCoverageProgress(1234, 1, 'TRIAL-LINKER', { queryErrorCount: 0, chunkAttempted: 1234 }))
+            .toEqual({ degrade: false });
+        expect(assertCoverageProgress(1234, 1234, 'TRIAL-LINKER')).toEqual({ degrade: false });
+        // queried>0 even WITH some errors is normal progress (the cursor advanced).
+        expect(assertCoverageProgress(1234, 5, 'TRIAL-LINKER', { queryErrorCount: 10, chunkAttempted: 50 }))
+            .toEqual({ degrade: false });
+    });
+    it('nothing eligible (all fresh) returns {degrade:false} (no throw)', () => {
+        expect(assertCoverageProgress(0, 0, 'PAPER-LINKER')).toEqual({ degrade: false });
     });
 });

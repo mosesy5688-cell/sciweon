@@ -44,6 +44,7 @@ import { runSidStampingCascade } from './lib/stage-3-stampers.js';
 import { makeR2Client } from './lib/sid-stage3-shared.js';
 import { isSnomedColdStart, warnSnomedColdStart } from './lib/snomed-cold-start.js';
 import { isLoincColdStart, warnLoincColdStart } from './lib/loinc-cold-start.js';
+import { runLinkerStage } from './lib/stage-3-linkers.js';
 
 const SCRIPT_DIR = 'scripts/factory';
 
@@ -57,25 +58,6 @@ function runScript(name) {
         child.on('close', code => code === 0 ? resolve() : reject(new Error(`${name} exit ${code}`)));
         child.on('error', reject);
     });
-}
-
-async function runSequential(label, tasks) {
-    console.log(`\n[STAGE-3] === ${label} (sequential) ===`);
-    const summaries = [];
-    for (const t of tasks) {
-        try {
-            await t.fn();
-            summaries.push({ task: t.name, ok: true, error: null });
-        } catch (err) {
-            // V0.5.x policy (2026-05-15): any sub-script failure halts the stage
-            // IMMEDIATELY. Do NOT continue and do NOT let `uploadStage` run on
-            // partial data — bad data must never pollute production R2.
-            console.error(`[STAGE-3] ${label}/${t.name} failed: ${err.message}`);
-            summaries.push({ task: t.name, ok: false, error: err.message });
-            throw new Error(`[STAGE-3] ${label}/${t.name} failed — stage aborted before R2 upload to prevent pollution. Original error: ${err.message}`);
-        }
-    }
-    return summaries;
 }
 
 async function main() {
@@ -102,43 +84,16 @@ async function main() {
     const loincColdStart = await isLoincColdStart({ client: makeR2Client('STAGE-3'), bucket: process.env.R2_BUCKET });
     if (loincColdStart) warnLoincColdStart();
 
-    // V0.5.x: trials run sequentially (last-writer-wins on trials.jsonl); papers/targets/
-    // diseases/mesh each own disjoint output files so parallel-safe (PR-UMLS-2 mesh too).
-    const [trialResults, paperResults, targetResults, diseaseResults, meshResults, snomedResults, loincResults] = await Promise.all([
-        runSequential('Trials', [
-            { name: 'trial-linker', fn: () => runScript('trial-linker.js') },
-            { name: 'ctis-trial-linker', fn: () => runScript('ctis-trial-linker.js') },
-            { name: 'trial-results-enricher', fn: () => runScript('trial-results-enricher.js') },
-        ]),
-        runSequential('Papers', [
-            { name: 'paper-linker', fn: () => runScript('paper-linker.js') },
-        ]),
-        runSequential('Targets', [
-            { name: 'target-linker', fn: () => runScript('target-linker.js') },
-            // PR-UNIPROT-2b: enrich targets.jsonl by UniProt accession (all-organism). SEQUENTIAL after target-linker -- same output/linked/targets.jsonl.
-            { name: 'uniprot-target-enrich', fn: () => runScript('uniprot-target-enrich.js') },
-        ]),
-        runSequential('Diseases', [
-            { name: 'disease-linker', fn: () => runScript('disease-linker.js') },
-        ]),
-        runSequential('MeSH', [{ name: 'mesh-concept-linker', fn: () => runScript('mesh-concept-linker.js') }]),
-        // PR-UMLS-3: snomed-concept-linker owns snomed-concepts.jsonl (disjoint) -> parallel-safe.
-        // Cold-start guard: skipped (no R2 cursor) so the linker's no-catch cursor read can never throw + meltdown the daily cascade before the first SNOMED harvest materializes.
-        snomedColdStart
-            ? Promise.resolve([{ task: 'snomed-concept-linker', ok: true, error: null, skipped: 'snomed-cold-start' }])
-            : runSequential('SNOMED', [{ name: 'snomed-concept-linker', fn: () => runScript('snomed-concept-linker.js') }]),
-        // PR-UMLS-4: loinc-concept-linker owns loinc-concepts.jsonl (disjoint) -> parallel-safe.
-        // Cold-start guard: skipped (no R2 cursor) so the linker's no-catch cursor read can never
-        // throw and meltdown the daily cascade before the first LOINC harvest materializes.
-        loincColdStart
-            ? Promise.resolve([{ task: 'loinc-concept-linker', ok: true, error: null, skipped: 'loinc-cold-start' }])
-            : runSequential('LOINC', [{ name: 'loinc-concept-linker', fn: () => runScript('loinc-concept-linker.js') }]),
-    ]);
-
-    const crossLinkResults = await runSequential('Cross-link + Negative Evidence', [
-        { name: 'bidirectional-linker', fn: () => runScript('bidirectional-linker.js') },
-        { name: 'neg-evidence-builder', fn: () => runScript('neg-evidence-builder.js') },
-    ]);
+    // PR-1 F3 outage-decouple: the linker groups (parallel, disjoint output files,
+    // trials sequential) + the cross-link group now run via lib/stage-3-linkers.js,
+    // each WRAPPED non-fatal -- a thrown linker/cross-link branch (frozen cursor /
+    // real bug / cross-link assertLoaded) is CAUGHT + recorded as a failed summary
+    // (so it still drives the exit code) instead of ABORTING the stage before the
+    // FAERS backfill. A 3rd-party paper/trial OUTAGE degrades (exits 0) and is NOT a
+    // failure -> F3 exits 0 -> F4 publishes the FAERS payoff. (Was: an un-wrapped
+    // Promise.all + cross-link runSequential that re-threw and killed the backfill.)
+    const linkerStage = await runLinkerStage(runScript, { snomedColdStart, loincColdStart });
+    const { trialResults, paperResults, crossLinkResults } = linkerStage.groups;
 
     // V0.5.2.1 cumulative aggregation extracted to lib/stage-3-merge.js (cycle 22 PR-CORE-3
     // split for Art 5.1). Hard-fails via process.exit on the suspicious-prior-state cases
@@ -223,10 +178,10 @@ async function main() {
         console.warn(`[STAGE-3] Failed to write first_run_complete sentinel (non-fatal): ${err.message}`);
     }
 
-    const failureCount = trialResults.filter(r => !r.ok).length
-        + paperResults.filter(r => !r.ok).length
-        + diseaseResults.filter(r => !r.ok).length
-        + crossLinkResults.filter(r => !r.ok).length;
+    // PR-1: failureCount excludes a DEGRADED linker (it exited 0 -> ok:true) so an
+    // outage-only run exits 0 (F4 publishes the FAERS payoff); a genuine throw is
+    // ok:false -> counted -> F3 exits 1 (no publish). Computed in lib/stage-3-linkers.js.
+    const failureCount = linkerStage.failureCount;
 
     const elapsed = Math.round((Date.now() - startTime) / 1000);
     console.log(`\n[STAGE-3] === Summary ===`);
