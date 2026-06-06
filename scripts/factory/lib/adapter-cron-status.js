@@ -15,7 +15,16 @@
  * STALLED_THRESHOLD_DAYS. If an adapter hasn't actually fetched anything
  * within that window — flag as failed so canary-issue-manage opens a
  * tracking Issue. [[feedback_cross_cycle_silent_data_loss]] closure.
+ *
+ * #246 — the flat STALLED_THRESHOLD_DAYS is cadence-UNAWARE and false-positives
+ * long-cadence sources (who-atc: a 30-day source flagged stalled at 14.8d). The
+ * stalled threshold is now PER-SOURCE via lib/source-cron-cadence.js
+ * (threshold = max(flat, cadence + grace)). Daily sources keep the flat 14d
+ * genuine-stall detection; a long-cadence source still alarms, just at its
+ * cadence-correct threshold ([[no_shortcut_in_science]] / no-silent-loss).
  */
+
+import { stalledThresholdFor } from './source-cron-cadence.js';
 
 const ADAPTER_NAME_RE = /^Adapter \[([^\]]+)\]$/;
 const DEFAULT_STALLED_THRESHOLD_DAYS = 14;
@@ -53,12 +62,21 @@ export function transformGhaJobsToReport(jobs, runId, generatedAt, opts = {}) {
         if (ghaPassed) {
             const cur = cursors.get(source);
             if (cur) {
-                const lastSuccessAge = ageDays(cur.last_success_at, now);
-                if (lastSuccessAge > thresholdDays) {
+                // #246: per-source cadence-aware threshold (long-cadence sources
+                // such as who-atc are not stalled until past cadence + grace).
+                const srcThreshold = stalledThresholdFor(source, thresholdDays);
+                // Effective staleness: time since the last REAL fetch when known,
+                // else the cursor's own age (never-succeeded). Both are gated on
+                // the same cadence-aware threshold so a fresh long-cadence source
+                // is not flagged before its first fetch is even due, while a
+                // genuinely-quiet source still alarms past cadence + grace.
+                const cursorAge = ageDays(cur.last_updated, now);
+                const effectiveAge = cur.last_success_at ? ageDays(cur.last_success_at, now) : cursorAge;
+                if (effectiveAge > srcThreshold) {
                     record.passed = false;
                     record.error = cur.last_success_at
-                        ? `stalled: last_success_at ${lastSuccessAge.toFixed(1)}d ago (>${thresholdDays}d, status=${cur.status ?? 'unknown'})`
-                        : `stalled: never succeeded (cursor age ${ageDays(cur.last_updated, now).toFixed(1)}d, status=${cur.status ?? 'unknown'})`;
+                        ? `stalled: last_success_at ${effectiveAge.toFixed(1)}d ago (>${srcThreshold}d, status=${cur.status ?? 'unknown'})`
+                        : `stalled: never succeeded (cursor age ${cursorAge.toFixed(1)}d, >${srcThreshold}d, status=${cur.status ?? 'unknown'})`;
                     record.stalled = true;
                 }
             }
