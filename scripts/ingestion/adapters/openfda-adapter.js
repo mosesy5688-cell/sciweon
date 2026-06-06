@@ -36,6 +36,7 @@
  */
 
 import { fetchOpenFda, redactApiKey, OPENFDA_REQUEST_DELAY_MS } from '../../factory/lib/openfda-auth.js';
+import { fetchAllPages, MAX_PAGES_PER_UNII } from '../../factory/lib/openfda-paginate.js';
 
 // V2 adapter contract: reactive UNII-keyed lookup — FDA openFDA has no stable incremental cursor.
 export const supportsIncremental = false;
@@ -55,16 +56,19 @@ const REQUEST_DELAY_MS = OPENFDA_REQUEST_DELAY_MS;
 // eligible + the error is counted loudly. All warn lines are pre-redacted.
 
 /**
- * Fetch drug label(s) by FDA UNII. Multiple labels may exist for the same
- * substance (different formulations / manufacturers).
- * @returns {Promise<Array|null>} [] on genuine-empty/404, null on fetch failure.
+ * Fetch ALL drug labels by FDA UNII, paginated to completion (R3). Multiple
+ * labels exist per substance (formulations / manufacturers); the probe measured
+ * up to 2499 -> ~3 pages. Every page flows through the ONE shared TokenBucket
+ * (fetchOpenFda). ANY page failure -> null (never stamp a partial as complete).
+ * @returns {Promise<{results:Array, truncated:boolean}|null>} object (results
+ *   possibly empty) on success/genuine-empty; null on fetch failure.
  */
-export async function fetchLabelsByUnii(unii, limit = 5) {
-    if (!unii) return [];
-    const url = `${OPENFDA_BASE}/drug/label.json?search=openfda.unii:${encodeURIComponent(unii)}&limit=${limit}`;
+export async function fetchLabelsByUnii(unii, pageLimit = 1000) {
+    if (!unii) return { results: [], truncated: false };
+    const build = (skip, lim) =>
+        `${OPENFDA_BASE}/drug/label.json?search=openfda.unii:${encodeURIComponent(unii)}&limit=${lim}&skip=${skip}`;
     try {
-        const data = await fetchOpenFda(url);
-        return data?.results ?? [];        // null (404) -> [] genuine-empty
+        return await fetchAllPages(fetchOpenFda, build, { pageLimit });
     } catch (e) {
         console.warn(`[OPENFDA] label ${unii}: ${redactApiKey(e.message)}`);
         return null;                       // FETCH FAILURE sentinel
@@ -87,7 +91,7 @@ export async function fetchLabelsByUnii(unii, limit = 5) {
  *   failure. `truncated` (part 5) = results.length >= the requested limit, i.e.
  *   the count is a TOP-N SLICE, not the full distinct-term set.
  */
-export async function fetchFaersSignalsByUnii(unii, limit = 20) {
+export async function fetchFaersSignalsByUnii(unii, limit = 1000) {
     if (!unii) return { terms: [], truncated: false };
     const url = `${OPENFDA_BASE}/drug/event.json?search=patient.drug.openfda.unii:${encodeURIComponent(unii)}&count=patient.reaction.reactionmeddrapt.exact&limit=${limit}`;
     try {
@@ -104,15 +108,19 @@ export async function fetchFaersSignalsByUnii(unii, limit = 20) {
 }
 
 /**
- * Fetch recall events by UNII.
- * @returns {Promise<Array|null>} [] on genuine-empty/404, null on fetch failure.
+ * Fetch ALL recall events by UNII, paginated to completion (R3). The probe
+ * measured up to 13 recalls (1 page); the full set is REQUIRED so
+ * most_severe_recall_class + recall_count are computed over EVERY recall (the
+ * old limit-10 falsely-cleaned a Class-I at rank 11). ANY page failure -> null.
+ * @returns {Promise<{results:Array, truncated:boolean}|null>} object on
+ *   success/genuine-empty; null on fetch failure.
  */
-export async function fetchRecallsByUnii(unii, limit = 10) {
-    if (!unii) return [];
-    const url = `${OPENFDA_BASE}/drug/enforcement.json?search=openfda.unii:${encodeURIComponent(unii)}&limit=${limit}`;
+export async function fetchRecallsByUnii(unii, pageLimit = 1000) {
+    if (!unii) return { results: [], truncated: false };
+    const build = (skip, lim) =>
+        `${OPENFDA_BASE}/drug/enforcement.json?search=openfda.unii:${encodeURIComponent(unii)}&limit=${lim}&skip=${skip}`;
     try {
-        const data = await fetchOpenFda(url);
-        return data?.results ?? [];        // null (404) -> [] genuine-empty
+        return await fetchAllPages(fetchOpenFda, build, { pageLimit });
     } catch (e) {
         console.warn(`[OPENFDA] recall ${unii}: ${redactApiKey(e.message)}`);
         return null;                       // FETCH FAILURE sentinel
@@ -120,16 +128,21 @@ export async function fetchRecallsByUnii(unii, limit = 10) {
 }
 
 /**
- * Extract PRIMARY-only signals from a UNII's worth of FDA data.
- * Aggregates across multiple labels (one substance can have many label
- * records). Returns a flat fda_signals object suitable for compound.
+ * Extract PRIMARY-only signals from a UNII's worth of FDA data (preserve-all,
+ * NO slices -- the schema runaway guards bound the size, fail-soft on overflow).
+ * Aggregates across ALL labels (one substance has many label records). R5:
+ * collects EVERY boxed warning into boxed_warnings[] (no 1-of-N drop) while
+ * keeping boxed_warning_text = the FIRST (back-compat). R3: recomputes
+ * most_severe_recall_class over the FULL paginated recall set + carries the
+ * label_truncated / recall_truncated flags.
+ * @param {object} [flags] { labelTruncated, recallTruncated } from R3 pagination
  */
-export function aggregateSignals(labels, recalls) {
+export function aggregateSignals(labels, recalls, flags = {}) {
     const labelsArr = labels ?? [];
     const recallsArr = recalls ?? [];
     if (labelsArr.length === 0 && recallsArr.length === 0) return null;
 
-    let boxedWarning = null;
+    const boxedWarnings = [];   // R5: ALL warnings, full text, no slice.
     const pharmClassEpc = new Set();
     const pharmClassMoa = new Set();
     const applicationNumbers = new Set();
@@ -137,8 +150,10 @@ export function aggregateSignals(labels, recalls) {
     let hasContraindications = false;
 
     for (const lbl of labelsArr) {
-        if (!boxedWarning && Array.isArray(lbl.boxed_warning) && lbl.boxed_warning.length > 0) {
-            boxedWarning = lbl.boxed_warning[0].slice(0, 4000);
+        if (Array.isArray(lbl.boxed_warning)) {
+            for (const w of lbl.boxed_warning) {
+                if (typeof w === 'string' && w.length > 0) boxedWarnings.push({ text: w });
+            }
         }
         if (lbl.indications_and_usage) hasIndications = true;
         if (lbl.contraindications) hasContraindications = true;
@@ -148,25 +163,26 @@ export function aggregateSignals(labels, recalls) {
         for (const a of (o.application_number ?? [])) applicationNumbers.add(a);
     }
 
-    const recallClassifications = recallsArr.map(r => r.classification).filter(Boolean);
     const recallClassRanking = { 'Class I': 3, 'Class II': 2, 'Class III': 1 };
     let mostSevere = null;
     let mostSevereRank = 0;
-    for (const c of recallClassifications) {
-        const rank = recallClassRanking[c] ?? 0;
-        if (rank > mostSevereRank) { mostSevereRank = rank; mostSevere = c; }
+    for (const r of recallsArr) {
+        const rank = recallClassRanking[r.classification] ?? 0;
+        if (rank > mostSevereRank) { mostSevereRank = rank; mostSevere = r.classification; }
     }
 
-    return {
+    const firstWarning = boxedWarnings.length > 0 ? boxedWarnings[0].text : null;
+    const out = {
         has_drug_label: labelsArr.length > 0,
         label_count: labelsArr.length,
-        has_boxed_warning: boxedWarning !== null,
-        boxed_warning_text: boxedWarning,
+        has_boxed_warning: boxedWarnings.length > 0,
+        boxed_warning_text: firstWarning,
+        boxed_warnings: boxedWarnings,
         has_indications: hasIndications,
         has_contraindications: hasContraindications,
-        application_numbers: [...applicationNumbers].slice(0, 20),
-        pharm_class_epc: [...pharmClassEpc].slice(0, 20),
-        pharm_class_moa: [...pharmClassMoa].slice(0, 20),
+        application_numbers: [...applicationNumbers],
+        pharm_class_epc: [...pharmClassEpc],
+        pharm_class_moa: [...pharmClassMoa],
         recall_count: recallsArr.length,
         most_severe_recall_class: mostSevere,
         sources: [
@@ -174,6 +190,9 @@ export function aggregateSignals(labels, recalls) {
             ...(recallsArr.length > 0 ? ['openfda_enforcement'] : []),
         ],
     };
+    if (flags.labelTruncated) out.label_truncated = true;
+    if (flags.recallTruncated) out.recall_truncated = true;
+    return out;
 }
 
-export { REQUEST_DELAY_MS };
+export { REQUEST_DELAY_MS, MAX_PAGES_PER_UNII };

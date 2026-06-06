@@ -31,8 +31,7 @@ export const COMPOUND_SCHEMA = {
     // ─── Structure ───
     smiles_canonical: { type: 'string', required: true, maxLength: 4000 },
     inchi: { type: 'string', required: true, maxLength: 4000 },
-    // Molecular formula: allows elements (C, Ca, Fe...) + counts + charge (+/-) suffixes
-    // Examples: C9H18NO4+, [Fe+3], C6H12O6
+    // Molecular formula: elements + counts + charge (+/-) suffix. e.g. C9H18NO4+
     molecular_formula: { type: 'string', required: true, pattern: /^([A-Z][a-z]?\d*)+[+\-\d]*$/ },
     molecular_weight: {
         type: 'object', required: true,
@@ -43,7 +42,6 @@ export const COMPOUND_SCHEMA = {
     },
 
     // ─── Names ───
-    // Cycle-4 CID:24763 hit length 2712 (macromolecule). Widened 1000 → 10000.
     iupac_name: { type: 'string', required: false, maxLength: 10000 },
     synonyms: { type: 'array', required: false, maxItems: 100, itemType: 'string' },
 
@@ -54,8 +52,7 @@ export const COMPOUND_SCHEMA = {
             log_p: {
                 type: 'object', required: false,
                 shape: {
-                    // PR #20 widened max 30 → 80. Cycle-4 CID:24763 hit -70.2
-                    // (macromolecule); widened min -25 → -150.
+                    // min/max widened for macromolecules (CID:24763 hit -70.2).
                     value: { type: 'number', min: -150, max: 80 },
                     method: { type: 'string', enum: ['XLogP3', 'AlogP', 'computed'] },
                 },
@@ -69,13 +66,11 @@ export const COMPOUND_SCHEMA = {
                 },
             },
             complexity: { type: 'number', required: false, min: 0 },
-            // 50 → 100 (5K CID) → 1000 (cycle-4 CID:24763 had 116 donors / 191 acceptors,
-            // macromolecule). Large biomolecules have hundreds of H-bond sites.
+            // max 1000: large biomolecules have hundreds of H-bond sites.
             h_bond_donors: { type: 'integer', required: false, min: 0, max: 1000 },
             h_bond_acceptors: { type: 'integer', required: false, min: 0, max: 1000 },
             rotatable_bonds: { type: 'integer', required: false, min: 0, max: 200 },
-            // Lipinski Rule of Five — computed from above 4 fields
-            // Drug-likeness quick check. AI Agent screening uses this heavily.
+            // Lipinski Rule of Five — computed from above 4 fields (drug-likeness).
             lipinski_violations: { type: 'integer', required: false, min: 0, max: 4 },
             qed: { type: 'number', required: false, min: 0, max: 1 },
             aromatic_rings: { type: 'integer', required: false, min: 0, max: 50 },
@@ -102,13 +97,8 @@ export const COMPOUND_SCHEMA = {
     },
 
     // ─── Structural Fingerprint (V0.3.5 — Agent need #2) ───
-    // PubChem CACTVS 881-bit substructure keys, base64-encoded.
-    // NIH-computed primary fingerprint (parallel to XLogP/TPSA computed
-    // properties). Enables Tanimoto similarity search without RDKit dep.
-    //
-    // For V0.3.5 5K compound scale, brute-force Tanimoto pairwise is fine.
-    // V0.1b 111M scale will require ANN index (HNSW); fingerprint format
-    // stays the same, index added as separate R2 artifact.
+    // PubChem CACTVS 881-bit substructure keys, base64-encoded. NIH-computed
+    // primary fingerprint; enables Tanimoto similarity search without RDKit.
     fingerprint: {
         type: 'object', required: false,
         shape: {
@@ -123,11 +113,9 @@ export const COMPOUND_SCHEMA = {
     },
 
     // ─── KEGG Drug Network (V0.3.5 #3) ───
-    // Kyoto University KEGG Drug entry: target genes (NCBI Gene IDs) +
-    // pathway IDs + disease indications + ATC codes. Enables Agent to
-    // answer "what pathway does this drug act on / what diseases?"
-    // PRIMARY-only: international IDs (NCBI Gene / WHO ATC / KEGG pathway).
-    // NOT consumed: CLASS DG-hierarchy / EFFICACY prose (KEGG team derived).
+    // Kyoto University KEGG Drug entry: target genes (NCBI Gene IDs) + pathway
+    // IDs + disease indications + ATC codes. PRIMARY-only international IDs;
+    // CLASS DG-hierarchy / EFFICACY prose (KEGG-derived) NOT consumed.
     kegg_drug: {
         type: 'object', required: false,
         shape: {
@@ -158,42 +146,55 @@ export const COMPOUND_SCHEMA = {
 
     // ─── FDA Regulatory Signals (V0.3.4 openFDA) ───
     // FDA-curated drug regulatory data — black box warnings + recall history.
-    // Direct input for V0.4 Negative Evidence DB categories D (drug
-    // withdrawal + black box) and pharmacological context.
+    // Direct input for V0.4 Negative Evidence DB categories D + pharm context.
     fda_signals: {
         type: 'object', required: false,
         shape: {
             has_drug_label: { type: 'boolean', required: false },
             label_count: { type: 'integer', required: false, min: 0 },
             has_boxed_warning: { type: 'boolean', required: false },
-            // FDA-mandated boxed warning text (primary fact, sponsor-supplied
-            // via FDA-required label sections). NOT a derived classification.
-            boxed_warning_text: { type: 'string', required: false, maxLength: 4000 },
+            // PR-T1.1a uncap 4000->40000 (Max 1355). Back-compat = FIRST warning.
+            boxed_warning_text: { type: 'string', required: false, maxLength: 40000 },
+            // R5: ALL boxed warnings across ALL labels (preserve-all, no 1-of-N
+            // drop). Max 16/compound; cap 50 = runaway guard.
+            boxed_warnings: {
+                type: 'array', required: false, maxItems: 50,
+                itemShape: { text: { type: 'string', required: true, maxLength: 40000 } },
+            },
             has_indications: { type: 'boolean', required: false },
             has_contraindications: { type: 'boolean', required: false },
-            application_numbers: { type: 'array', required: false, itemType: 'string', maxItems: 20 },
-            // FDA Established Pharmacologic Class — FDA authoritative international
-            // standard, parallel to WHO ATC codes (authoritative-source exempt).
-            pharm_class_epc: { type: 'array', required: false, itemType: 'string', maxItems: 20 },
-            pharm_class_moa: { type: 'array', required: false, itemType: 'string', maxItems: 20 },
+            // PR-T1.1a uncap maxItems 20->200 (Max 33).
+            application_numbers: { type: 'array', required: false, itemType: 'string', maxItems: 200 },
+            // FDA Established Pharmacologic Class (authoritative, parallel to WHO
+            // ATC). PR-T1.1a uncap maxItems 20->100 (Max epc 39 / moa 11).
+            pharm_class_epc: { type: 'array', required: false, itemType: 'string', maxItems: 100 },
+            pharm_class_moa: { type: 'array', required: false, itemType: 'string', maxItems: 100 },
             recall_count: { type: 'integer', required: false, min: 0 },
             most_severe_recall_class: {
                 type: 'string', required: false,
                 enum: ['Class I', 'Class II', 'Class III', null],
             },
-            // V0.4.1 FAERS signal-level aggregation
-            // Agent demand: quantified safety signals ("compound X has N
-            // hepatotoxicity reports"), not 24M individual records.
-            // MedDRA PT (Preferred Terms) — ICH international medical
-            // vocabulary, primary authoritative-source exempt.
+            // R3 LOUD truncation flags: a UNII whose label/recall set exceeded
+            // MAX_PAGES_PER_UNII (flagged, never silently cut).
+            label_truncated: { type: 'boolean', required: false },
+            recall_truncated: { type: 'boolean', required: false },
+            // V0.4.1 FAERS signal-level aggregation (MedDRA PT, ICH vocabulary,
+            // authoritative-source exempt). PR-T1.1a uncap: maxItems 30->1000
+            // (openFDA count ceiling, P95=1000) + term maxLength 200->2000 (the
+            // adversary panel's MISSED per-item cap). Runaway guards.
             faers_top_adr_terms: {
-                type: 'array', required: false, maxItems: 30,
+                type: 'array', required: false, maxItems: 1000,
                 itemShape: {
-                    term: { type: 'string', required: true, maxLength: 200 },
+                    term: { type: 'string', required: true, maxLength: 2000 },
                     count: { type: 'integer', required: true, min: 0 },
                 },
             },
             faers_total_top_count: { type: 'integer', required: false, min: 0 },
+            // R4 re-enrich (one-shot-convergent): FAERS enrich schema version
+            // stamped on SUCCESS/terminal-poison. v2 = uncap. A record < v2 (or
+            // no faers_top_adr_terms array) is re-eligible so the uncap backfills
+            // v1 compounds; once re-queried it converges -- no full re-bill.
+            faers_enrich_version: { type: 'integer', required: false, min: 0 },
             sources: { type: 'array', required: false, itemType: 'string', maxItems: 5 },
         },
     },

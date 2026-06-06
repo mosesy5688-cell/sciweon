@@ -62,7 +62,11 @@ export const NEG_EVIDENCE_SCHEMA = {
         type: 'object', required: true,
         shape: {
             reason_category: { type: 'string', required: false, maxLength: 100 },
-            reason_text: { type: 'string', required: false, maxLength: 4000 },
+            // PR-T1.1a uncap: 4000 -> 40000. The boxed-warning NegEvidence
+            // carries the FULL FDA-mandated warning text (preserve-all); the
+            // adversary panel's 3rd missed cap was neg-builders-fda's .slice(0,
+            // 4000) -- removed there, this 40000 schema cap now bounds it.
+            reason_text: { type: 'string', required: false, maxLength: 40000 },
             extraction_method: {
                 type: 'string', required: true,
                 enum: [

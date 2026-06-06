@@ -62,6 +62,64 @@ export const SCOPE_VIOLATION_RULES = [
         errorPattern: /^length \d+ > maxLength/,
         exclusion_reason: 'oversized_status_reason',
     },
+    // 2026-06-06 (PR-T1.1a FDA UNCAP, R1 the KEYSTONE -- RESILIENCE FIRST):
+    // fda_signals.* are preserve-all FDA-curated primary facts whose runaway
+    // guards (compound.js / neg-evidence.js, lifted to the openFDA-measured
+    // ceilings) are set WELL ABOVE the live P95 yet BELOW the NXVF shard guard.
+    // Today these fields classify `primary` -> a single over-cap field would
+    // THROW in REJECT mode (validation-gate.js) via cross-source-linker.js's
+    // per-record gate -> halt the ENTIRE F3 chain for ALL records over ONE fat
+    // field. The founder ruling is RESILIENCE before SCALE: an overflow on a
+    // preserve-all FDA field must FAIL-SOFT (skip + telemetry the ONE record),
+    // never hard-halt the stage. errorPattern stays narrow (only the overflow
+    // kinds `items N > maxItems` / `length N > maxLength`), so a missing/typed/
+    // pattern violation on the same field is still a primary halt.
+    {
+        pathPattern: /\.faers_top_adr_terms$/,
+        errorPattern: /^items \d+ > maxItems/,
+        exclusion_reason: 'oversized_faers_top_adr_terms',
+    },
+    {
+        pathPattern: /\.faers_top_adr_terms\[\d+\]\.term$/,
+        errorPattern: /^length \d+ > maxLength/,
+        exclusion_reason: 'oversized_faers_adr_term',
+    },
+    {
+        pathPattern: /\.application_numbers$/,
+        errorPattern: /^items \d+ > maxItems/,
+        exclusion_reason: 'oversized_application_numbers',
+    },
+    {
+        pathPattern: /\.pharm_class_epc$/,
+        errorPattern: /^items \d+ > maxItems/,
+        exclusion_reason: 'oversized_pharm_class_epc',
+    },
+    {
+        pathPattern: /\.pharm_class_moa$/,
+        errorPattern: /^items \d+ > maxItems/,
+        exclusion_reason: 'oversized_pharm_class_moa',
+    },
+    {
+        pathPattern: /\.boxed_warning_text$/,
+        errorPattern: /^length \d+ > maxLength/,
+        exclusion_reason: 'oversized_boxed_warning_text',
+    },
+    {
+        pathPattern: /\.boxed_warnings$/,
+        errorPattern: /^items \d+ > maxItems/,
+        exclusion_reason: 'oversized_boxed_warnings',
+    },
+    {
+        pathPattern: /\.boxed_warnings\[\d+\]\.text$/,
+        errorPattern: /^length \d+ > maxLength/,
+        exclusion_reason: 'oversized_boxed_warning_item',
+    },
+    // neg-evidence (compound FDA NegEvidence reason text overflow).
+    {
+        pathPattern: /\.reason_text$/,
+        errorPattern: /^length \d+ > maxLength/,
+        exclusion_reason: 'oversized_reason_text',
+    },
 ];
 
 export function classifyViolations(
