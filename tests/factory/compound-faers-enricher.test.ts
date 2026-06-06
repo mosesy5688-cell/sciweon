@@ -37,9 +37,16 @@ describe('isEligible truth table', () => {
     it('faers_top_adr_terms unset -> eligible (never queried / fetch-failed)', () => {
         expect(isEligible(mk('c'))).toBe(true);
     });
-    it('faers_top_adr_terms is an array ([] or filled) -> not eligible (done)', () => {
-        expect(isEligible(mk('c', { fda_signals: { faers_top_adr_terms: [] } }))).toBe(false);
-        expect(isEligible(mk('c', { fda_signals: { faers_top_adr_terms: [{ term: 'X', count: 1 }] } }))).toBe(false);
+    it('R4: array stamped AT current version (v2) -> not eligible (done)', () => {
+        const v2 = (terms) => ({ fda_signals: { faers_top_adr_terms: terms, faers_enrich_version: 2 } });
+        expect(isEligible(mk('c', v2([])))).toBe(false);
+        expect(isEligible(mk('c', v2([{ term: 'X', count: 1 }])))).toBe(false);
+    });
+    it('R4: array stamped at v1 (no/old faers_enrich_version) -> RE-eligible (uncap backfill)', () => {
+        // A 5b-era record: faers_top_adr_terms array but version < 2. The uncap
+        // must re-query it (this is the one-shot-convergent re-enrich).
+        expect(isEligible(mk('c', { fda_signals: { faers_top_adr_terms: [] } }))).toBe(true);
+        expect(isEligible(mk('c', { fda_signals: { faers_top_adr_terms: [{ term: 'X', count: 1 }], faers_enrich_version: 1 } }))).toBe(true);
     });
 });
 

@@ -78,10 +78,11 @@ describe('openfda-adapter -- api_key wiring + sentinel', () => {
 
     it('status-class sentinel: 404 -> genuine empty; 500 -> null failure', async () => {
         process.env.OPENFDA_API_KEY = 'k';
-        // 404 -> [] (labels/recalls) and { terms:[] } (faers)
+        // 404 -> { results: [], truncated: false } (paginated labels/recalls) and
+        // { terms:[] } (faers).
         globalThis.fetch = vi.fn(async () => makeResponse(404));
-        expect(await fetchLabelsByUnii('U1')).toEqual([]);
-        expect(await fetchRecallsByUnii('U1')).toEqual([]);
+        expect(await fetchLabelsByUnii('U1')).toEqual({ results: [], truncated: false });
+        expect(await fetchRecallsByUnii('U1')).toEqual({ results: [], truncated: false });
         expect(await fetchFaersSignalsByUnii('U1')).toEqual({ terms: [], truncated: false });
         // 500 -> null on all three (fetch failure)
         globalThis.fetch = vi.fn(async () => makeResponse(500));

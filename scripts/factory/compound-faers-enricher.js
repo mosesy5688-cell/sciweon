@@ -33,8 +33,14 @@ const SOURCE = 'openfda_faers';
 const DATA_DIR = './output/linked';
 const DRAIN_BUDGET_MS = Number(process.env.ADAPTER_DRAIN_BUDGET_MS) || 25 * 60 * 1000;
 const COLD_START_MS = Number(process.env.ADAPTER_DRAIN_COLD_START_MS) || DEFAULT_CHUNK_DURATION_ESTIMATE_MS;
-const FAERS_LIMIT = 30;            // KEEP 30 in 5b (uncap = 5c, atomic w/ schema lift).
+const FAERS_LIMIT = 1000;          // PR-T1.1a uncap (5c): 30 -> 1000 (openFDA count ceiling).
 const MAX_FAERS_ATTEMPTS = 3;      // poison-UNII bound (part 4): terminal after N failures.
+// R4 one-shot-convergent re-enrich version. v2 = the uncap (FAERS_LIMIT 1000).
+// A record stamped < 2 (or with no faers_top_adr_terms array) is re-eligible so
+// the uncap backfills already-stamped v1 compounds; stamping v2 on the genuine
+// outcome (success / terminal-poison) makes it CONVERGE (leave the eligible
+// set) -- never re-billing the whole corpus every cron.
+export const CURRENT_FAERS_ENRICH_VERSION = 2;
 
 // LOUD per-run telemetry (part 3 + 6). faers_error_count is cumulative;
 // faersFailuresByMinute keys wall-minute -> count so the run can report a
@@ -75,8 +81,13 @@ async function writeJsonl(file, records) {
 // eligible; Array.isArray([])=true completes.
 export function isEligible(record) {
     if (!record?.external_ids?.unii) return false;
+    // R4: a v1-stamped record (faers_enrich_version < CURRENT) is RE-eligible so
+    // the uncap backfills it, even though faers_top_adr_terms is already an
+    // array. Once re-queried at v2 the version check passes -> converges.
+    const version = record?.fda_signals?.faers_enrich_version ?? 0;
+    if (version < CURRENT_FAERS_ENRICH_VERSION) return true;
     const terms = record?.fda_signals?.faers_top_adr_terms;
-    if (Array.isArray(terms)) return false; // already attempted/terminal
+    if (Array.isArray(terms)) return false; // already attempted/terminal at current version
     return true;
 }
 
@@ -113,6 +124,9 @@ export async function enrichOne(record) {
             record.fda_signals.faers_top_adr_terms = [];
             record.fda_signals.faers_total_top_count = 0;
             record.fda_signals.faers_queried_at = new Date().toISOString();
+            // R4: stamp the version so a terminal-poison record CONVERGES (does
+            // not stay in the re-eligible set forever via the version path).
+            record.fda_signals.faers_enrich_version = CURRENT_FAERS_ENRICH_VERSION;
         }
         return record;
     }
@@ -122,8 +136,10 @@ export async function enrichOne(record) {
     record.fda_signals.faers_top_adr_terms = terms;
     record.fda_signals.faers_total_top_count = terms.reduce((s, r) => s + r.count, 0);
     record.fda_signals.faers_queried_at = new Date().toISOString();
-    // Saturation flag (part 5): the count is a TOP-N slice, not the full set.
-    // KEEP limit=30 here; the uncap is 5c (atomic with the schema cap lift).
+    // R4: stamp the version so the record CONVERGES (leaves the re-eligible set).
+    record.fda_signals.faers_enrich_version = CURRENT_FAERS_ENRICH_VERSION;
+    // Saturation flag (part 5): even at limit=1000 the openFDA count CANNOT
+    // paginate past 1000 (API ceiling) -> truncated stays meaningful.
     if (result.truncated) record.fda_signals.faers_truncated = true;
     if (!Array.isArray(record.fda_signals.sources)) record.fda_signals.sources = [];
     if (terms.length > 0 && !record.fda_signals.sources.includes('openfda_faers')) {

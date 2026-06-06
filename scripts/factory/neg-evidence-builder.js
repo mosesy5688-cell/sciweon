@@ -22,7 +22,7 @@ import { NEG_EVIDENCE_TYPES, buildNegAnchorPayload } from '../../src/lib/schemas
 import { gate } from './lib/validation-gate.js';
 import { buildTrialNegEvidence } from './lib/neg-builders-trial.js';
 import { buildBioassayInactive, buildPaperRetraction } from './lib/neg-builders-paper-bio.js';
-import { buildFdaSignals } from './lib/neg-builders-fda.js';
+import { buildFdaSignals, boxedWarningStats, resetBoxedWarningStats } from './lib/neg-builders-fda.js';
 import { loadJsonlStrict } from './lib/jsonl-io.js';
 
 const DATA_DIR = './output/linked';
@@ -60,6 +60,7 @@ async function main() {
         stats[r.evidence_type]++;
     };
 
+    resetBoxedWarningStats();
     for (const r of buildTrialNegEvidence(trials, negRaw)) trackOrThrow(r);
     for (const r of buildPaperRetraction(papers)) trackOrThrow(r);
     for (const r of buildBioassayInactive(bioactivities)) trackOrThrow(r);
@@ -71,7 +72,17 @@ async function main() {
     for (const r of records) {
         const result = gate(r, NEG_EVIDENCE_SCHEMA, r.id);
         if (result.passed) { validated.push(r); validCount++; }
-        else invalidCount++;
+        else {
+            // R2 fix ([[cross_cycle_silent_data_loss]]): the prior code counted
+            // invalidCount but logged NO per-record reason -> a too-long
+            // reason_text drop (or any drop) was SILENT. Log WHICH record + WHY
+            // (excluded = scope fail-soft; otherwise a real validation drop).
+            invalidCount++;
+            const why = result.excluded
+                ? `scope-excluded (${result.exclusion_reason})`
+                : 'validation-failed';
+            console.warn(`[NEG-BUILDER] DROPPED ${r.id} [${r.evidence_type}]: ${why}`);
+        }
     }
 
     // PR-SID-1.7-pre.1: post-validation anchor enrichment for stamper.
@@ -100,6 +111,9 @@ async function main() {
     for (const r of validated) bySeverity[r.severity] = (bySeverity[r.severity] ?? 0) + 1;
     console.log(`  By severity:             critical=${bySeverity.critical} | major=${bySeverity.major} | minor=${bySeverity.minor} | unknown=${bySeverity.unknown}`);
     console.log(`  Anchor metadata:         attached=${anchorMetadataAttached} | skipped=${anchorMetadataSkipped}`);
+    // R5 LOUD one-but-not-other: how many compounds served the migrated
+    // boxed_warnings[] vs the legacy single-text fallback (un-migrated).
+    console.log(`  Boxed warnings:          migrated_array=${boxedWarningStats.migratedArray} | legacy_fallback=${boxedWarningStats.legacyFallback} | array_but_no_text=${boxedWarningStats.arrayButNoText}`);
 }
 
 main().catch(err => { console.error('[NEG-BUILDER] Fatal:', err); process.exit(1); });

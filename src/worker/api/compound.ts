@@ -4,6 +4,14 @@
  * Returns full enriched compound data (Tier 1) or PubChem stub (Tier 2).
  * _tier field in response body indicates which tier served the result.
  * Tier 2 compounds include only structural basics (no bioactivity / no trials).
+ *
+ * R2 (PR-T1.1a serving note): the FDA preserve-all uncap GROWS fda_signals on
+ * the compound record (boxed_warnings[], full FAERS terms, etc.). /compound
+ * serves that grown record via the BOUNDED per-record RANGE-READ in loadTier1
+ * (compound-loader.ts loadTier1Sharded -> fetchR2RangeBytes reads exactly
+ * entry.size, one record). The 5a compound-guard projections cover only the
+ * search / resolve doors; the publish-time bounds (10MB shard / 64MB record)
+ * are the serving guard, so a fat fda_signals record never OOMs the isolate.
  */
 
 import type { Env } from '../../worker';
