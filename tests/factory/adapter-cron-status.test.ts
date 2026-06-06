@@ -189,5 +189,56 @@ describe('transformGhaJobsToReport', () => {
             });
             expect(over.adapters[0].stalled).toBe(true);
         });
+
+        // #246 — per-source CADENCE-AWARE threshold = max(flat, cadence + grace)
+        // (lib/source-cron-cadence.js). NOT a blanket bump: daily sources keep
+        // the flat 14d genuine-stall detection; a long-cadence source still
+        // alarms past cadence + grace (no-silent-loss). who-atc cadence=30,
+        // nci-thesaurus cadence=14, grace=7. Helper: cursor at `successTs`.
+        const withCursor = (src: string, successTs: string) => new Map([[src, {
+            last_success_at: successTs, status: 'no_updates',
+        }]]);
+        const run = (src: string, successTs: string) =>
+            transformGhaJobsToReport([okJob(src)], `r-${src}`, NOW, {
+                cursors: withCursor(src, successTs), stalledThresholdDays: 14,
+            }).adapters[0];
+
+        // 14.8d before NOW = 2026-05-07T16:48:00Z -- the exact #246 false positive.
+        it('#246 repro: who-atc (30d cadence) at 14.8d -> NOT stalled', () => {
+            const a = run('who-atc', '2026-05-07T16:48:00Z');
+            expect(a.passed).toBe(true);
+            expect(a.stalled).toBeUndefined();
+        });
+
+        it('who-atc still NOT stalled just under cadence+grace (36d < 37d)', () => {
+            expect(run('who-atc', '2026-04-16T12:00:00Z').stalled).toBeUndefined();
+        });
+
+        it('who-atc genuinely broken past cadence+grace (~68d > 37d) STILL alarms at 37d', () => {
+            const a = run('who-atc', '2026-03-15T12:00:00Z');
+            expect(a.passed).toBe(false);
+            expect(a.stalled).toBe(true);
+            expect(a.error).toContain('>37d'); // cadence-correct threshold in the alarm
+        });
+
+        // chembl fallbackFullRefreshDays=30 is a full-refresh CEILING, not its
+        // fetch cadence (it fetches daily) -> intentionally no cadence entry ->
+        // keeps the flat 14d. dailymed (fallback=90) likewise stays flat-14d.
+        it('DAILY sources (dailymed / chembl, no cadence entry) STILL stalled at flat 14d', () => {
+            for (const src of ['dailymed', 'chembl']) {
+                const a = run(src, '2026-05-06T12:00:00Z'); // 16 days
+                expect(a.stalled).toBe(true);
+                expect(a.error).toContain('>14d'); // flat threshold preserved
+            }
+        });
+
+        // nci-thesaurus 14d cadence: grace lifts the alarm to 21d so it does not
+        // flap stalled around every 14d fetch tick, but still alarms past 21d.
+        it('nci-thesaurus (14d cadence): not stalled at 16d, alarms at 32d (threshold 21d)', () => {
+            expect(run('nci-thesaurus', '2026-05-06T12:00:00Z').stalled).toBeUndefined(); // 16d
+            const broken = run('nci-thesaurus', '2026-04-20T12:00:00Z'); // 32d
+            expect(broken.stalled).toBe(true);
+            expect(broken.error).toContain('>21d');
+        });
     });
 });
