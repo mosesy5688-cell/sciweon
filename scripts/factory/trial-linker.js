@@ -122,6 +122,16 @@ async function queryChunk(slice, _nowIso) {
     trialLinks.sort((a, b) => (a.compound_id + a.nct_id).localeCompare(b.compound_id + b.nct_id));
     negativeEvidenceRaw.sort((a, b) => (a.nct_id + a.compound_id).localeCompare(b.nct_id + b.compound_id));
 
+    // ITEM 4 (PR-1) NO-TRUNCATION: a TOTAL outage (zero genuinely-queried compounds)
+    // would write [] over trials.jsonl, truncating the PRIOR run's file -> downstream
+    // assertLoaded (trial-results-enricher.js) HARD-FAILS on the empty file. SKIP the
+    // write so the prior-run file is left intact (the cumulative merge reads the prior
+    // file, so no data is lost; the chunk stays eligible per the coverage degrade path).
+    if (queriedIds.length === 0) {
+        console.warn(`[${LABEL}] TOTAL outage (0 compounds genuinely queried) -- SKIPPING entity-file writes to preserve prior trials.jsonl (no truncation). query_error_count=${queryErrorCount}`);
+        return { queriedIds, queryErrorCount };
+    }
+
     await writeJsonl(path.join(OUTPUT_DIR, 'trials.jsonl'), trialsOut);
     await writeJsonl(path.join(OUTPUT_DIR, 'trial-links.jsonl'), trialLinks);
     await writeJsonl(path.join(OUTPUT_DIR, 'negative-evidence-raw.jsonl'), negativeEvidenceRaw);

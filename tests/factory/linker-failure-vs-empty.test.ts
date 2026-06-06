@@ -110,15 +110,48 @@ describe('runCoverageStage: failure-vs-empty stamp logic', () => {
         expect(isEligibleForQuery(reload[0], TRIALS_STAMP_FIELD, DEFAULT_TRIALS_FRESHNESS_DAYS, NOW)).toBe(false);
     });
 
-    it('a TOTAL outage (all compounds ok:false) -> queriedIds=[] -> assertCoverageProgress THROWS (loud)', async () => {
+    it('PR-1: a TOTAL outage (all compounds ok:false, queryErrorCount>0) -> non-fatal DEGRADE (no throw)', async () => {
+        // Was "THROWS"; PR-1 decouples a 3rd-party outage from an F3 abort: runCoverageStage
+        // RESOLVES with degraded:true + queriedCount:0, and NEITHER the stamp store NOR the
+        // cursor store is mutated (chunk stays eligible, retried next run -> no-silent-loss).
         const queryChunk = vi.fn(async (slice: any[]) => ({ queriedIds: [], queryErrorCount: slice.length }));
+        const res = await runCoverageStage({
+            label: 'TRIAL-LINKER', source: SOURCE, stampField: TRIALS_STAMP_FIELD,
+            freshnessDays: DEFAULT_TRIALS_FRESHNESS_DAYS, chunkSizeOverride: 50,
+            compounds: corpus(5), nowMs: NOW, nowIso: NOW_ISO, queryChunk,
+        });
+        expect(res.degraded).toBe(true);
+        expect(res.queriedCount).toBe(0);
+        // No stamp written -> the whole chunk stays eligible.
+        expect(fakeStampStore.has(SOURCE)).toBe(false);
+        // Cursor NOT advanced (the real silent-skip vector) -> the failed chunk is re-attempted.
+        expect(fakeCursorStore.has(SOURCE)).toBe(false);
+    });
+
+    it('PR-1: queryChunk REJECTS (throws, e.g. OpenAlex/S2 outage) -> DEGRADE, NOT a throw out of runCoverageStage', async () => {
+        const queryChunk = vi.fn(async () => { throw new Error('OpenAlex HTTP 429 (Too Many Requests)'); });
+        const res = await runCoverageStage({
+            label: 'PAPER-LINKER', source: SOURCE, stampField: TRIALS_STAMP_FIELD,
+            freshnessDays: DEFAULT_TRIALS_FRESHNESS_DAYS, chunkSizeOverride: 50,
+            compounds: corpus(5), nowMs: NOW, nowIso: NOW_ISO, queryChunk,
+        });
+        expect(res.degraded).toBe(true);
+        expect(res.queriedCount).toBe(0);
+        // The thrown-outage path must ALSO leave both stores untouched.
+        expect(fakeStampStore.has(SOURCE)).toBe(false);
+        expect(fakeCursorStore.has(SOURCE)).toBe(false);
+    });
+
+    it('PR-1: a genuine FROZEN CURSOR (queriedIds=[] with ZERO errors) STILL THROWS (loud, F3 exits 1)', async () => {
+        const queryChunk = vi.fn(async () => ({ queriedIds: [], queryErrorCount: 0 }));
         await expect(runCoverageStage({
             label: 'TRIAL-LINKER', source: SOURCE, stampField: TRIALS_STAMP_FIELD,
             freshnessDays: DEFAULT_TRIALS_FRESHNESS_DAYS, chunkSizeOverride: 50,
             compounds: corpus(5), nowMs: NOW, nowIso: NOW_ISO, queryChunk,
         })).rejects.toThrow(/HALT/);
-        // No stamp was written on the throw -> the whole chunk stays eligible.
+        // Nothing stamped / advanced on the halt.
         expect(fakeStampStore.has(SOURCE)).toBe(false);
+        expect(fakeCursorStore.has(SOURCE)).toBe(false);
     });
 
     it('query_error_count is surfaced in the run telemetry return', async () => {

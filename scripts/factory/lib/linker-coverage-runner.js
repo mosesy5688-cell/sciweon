@@ -14,13 +14,19 @@
  *   3. eligible = NOT fresh (skip-if-stamped within the freshness window)
  *   4. cursored slice via enrichment-cursor (advances across daily runs)
  *   5. caller's queryChunk(slice, nowIso) does the network + writes entity files,
- *      returns { queriedIds }
- *   6. COVERAGE-INVARIANT: eligible>0 && queried==0 -> THROW (no silent ceiling)
+ *      returns { queriedIds } (a THROW here is caught as a non-fatal DEGRADE)
+ *   6. COVERAGE-INVARIANT VERDICT (PR-1): genuine FROZEN CURSOR (queried==0, NO
+ *      errors) -> THROW (no silent ceiling, F3 exits 1); 3rd-party OUTAGE
+ *      (queried==0 WITH errors, or a queryChunk throw) -> non-fatal DEGRADE
+ *      (early-RETURN before stamp + cursor write; chunk stays eligible)
  *   7. terminal commit: write merged stamps + advanced cursor to R2 (LOUD on fail)
  *   8. shared LOUD telemetry (eligible / queried / skipped_fresh / cursor)
  *
  * PRESERVE-ALL: a CADENCE mechanism, never a cap. Every compound is reached in
- * O(N / chunk_size) runs; no Top-N / relevance / volume cut anywhere.
+ * O(N / chunk_size) runs; no Top-N / relevance / volume cut anywhere. A DEGRADE
+ * never stamps + never advances the cursor (no-silent-loss [[cross_cycle_silent_data_loss]]):
+ * a 3rd-party paper/trial API outage can never abort F3 / block the FAERS backfill
+ * / block the F4 publish, while the genuine-frozen-cursor HALT is preserved.
  */
 
 import {
@@ -92,17 +98,52 @@ export async function runCoverageStage({
     console.log(`[${label}] Cursor: prev=${cursor?.cursor_id ?? '(none)'} | chunk_size=${chunkSize} | this-run slice=${chunk.slice.length} | wrapped=${chunk.wrapped}`);
 
     // 5. caller's network query + entity-file writes.
-    const { queriedIds, queryErrorCount = 0 } = await queryChunk(chunk.slice, nowIso);
+    // ITEM 1 (PR-1): a queryChunk REJECTION (an OpenAlex/S2/CT.gov throw, a pMap
+    // rejection, a rate-limiter throw) used to propagate OUT of the runner and
+    // ABORT F3 -- bypassing the count-based check below and killing the unrelated
+    // FAERS backfill + F4 publish. Catch it -> LOUD non-fatal DEGRADE: do NOT
+    // stamp, do NOT advance the cursor, leave the chunk eligible for next run, and
+    // RETURN a degraded result so F3 proceeds. This is the dominant real outage path.
+    let queriedIds, queryErrorCount;
+    try {
+        ({ queriedIds, queryErrorCount = 0 } = await queryChunk(chunk.slice, nowIso));
+    } catch (err) {
+        console.error(
+            `[${label}] DEGRADE: queryChunk threw (external outage: ${err.message}) -- `
+            + `NOT stamping, NOT advancing cursor; chunk stays eligible, retried next run. F3 proceeds.`,
+        );
+        return {
+            degraded: true, queriedCount: 0, queryErrorCount: chunk.slice.length,
+            eligibleCount: eligible.length, skippedFresh, nextCursor: null,
+        };
+    }
     const queriedCount = queriedIds.length;
     if (queryErrorCount > 0) {
         console.warn(`[${label}] query_error_count=${queryErrorCount} this run (fetch failures -> NOT stamped, stay eligible for retry)`);
     }
 
-    // 6. COVERAGE-INVARIANT HARD-FAIL ([[cross_cycle_silent_data_loss]]). Now
-    // EFFECTIVE against a total outage: when every compound in the chunk failed,
-    // queriedIds=[] -> queried=0 -> THROW (LOUD), instead of stamping the chunk
-    // fresh on transient errors and silently skipping it for the whole window.
-    assertCoverageProgress(eligible.length, queriedCount, label);
+    // 6. COVERAGE-INVARIANT VERDICT ([[cross_cycle_silent_data_loss]]). Discriminates
+    // a genuine FROZEN CURSOR (queried==0, NO errors -> THROW/HALT, F3 exits 1) from
+    // a 3rd-party OUTAGE (queried==0 WITH errors -> non-fatal DEGRADE). chunkAttempted
+    // MUST come from chunk.slice.length (the runner is the only place holding the
+    // slice; eligible.length is the wrong denominator). On a degrade we early-RETURN
+    // BEFORE the stamp write AND BEFORE buildNextCursor/writeCursor -- the cursor
+    // advance is the real silent-skip vector (buildNextCursor advances cursor_id from
+    // slice geometry regardless of how many succeeded), so BOTH must be guarded.
+    const verdict = assertCoverageProgress(eligible.length, queriedCount, label, {
+        queryErrorCount, chunkAttempted: chunk.slice.length,
+    });
+    if (verdict.degrade) {
+        console.error(
+            `[${label}] DEGRADE: queried=0 with query_error_count=${queryErrorCount} of `
+            + `${chunk.slice.length} attempted (3rd-party outage) -- NOT stamping, NOT advancing `
+            + `cursor; chunk stays eligible, retried next run. F3 proceeds.`,
+        );
+        return {
+            degraded: true, queriedCount: 0, queryErrorCount,
+            eligibleCount: eligible.length, skippedFresh, nextCursor: null,
+        };
+    }
 
     // 7. terminal commit: merged stamps + advanced cursor to R2 (LOUD on fail).
     const mergedStamps = new Map(stampsMap);

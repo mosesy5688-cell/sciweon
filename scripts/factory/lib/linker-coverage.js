@@ -93,29 +93,57 @@ export function stampQueriedAt(record, stampField, nowIso) {
 }
 
 /**
- * COVERAGE-INVARIANT HARD-FAIL ([[cross_cycle_silent_data_loss]]).
+ * COVERAGE-INVARIANT VERDICT ([[cross_cycle_silent_data_loss]]) -- the
+ * frozen-cursor-vs-outage discriminator (PR-1 F3 outage-decouple).
  *
- * If there were eligible compounds this run but ZERO got queried, the cursor is
- * frozen / stuck (or a drain mis-wire) and the coverage ceiling is silently back
- * -- exactly the B2 bug. THROW LOUD rather than exit 0 on a stuck cursor. Mirrors
- * the sibling record-count guards (uniprot-target-enrich.js / target-linker
- * assertOtRecordCount) that HALT on a silent under-read.
+ * If there were eligible compounds this run but ZERO got queried, EITHER the
+ * cursor is frozen/stuck (a real bug -- the B2 regression) OR every compound in
+ * the chunk hit a 3rd-party OUTAGE (OpenAlex 429 / CT.gov 5xx / S2 outage). The
+ * two are NOT the same incident and must NOT share an exit code:
  *
- * `queried` here means "compounds the drain actually processed this run"
- * (drain.processedInRun), NOT "compounds that got a match" -- a real query that
- * returns zero trials/papers is a legitimate negative result and still counts as
- * progress (the stamp advances the cursor past it).
+ *   - FROZEN CURSOR (queried==0 AND queryErrorCount==0): nothing advanced WITH NO
+ *     errors -> a genuine drain/cursor bug. THROW LOUD (HALT, unchanged message)
+ *     so F3 exits 1 and F4 does NOT publish a broken run. Mirrors the sibling
+ *     record-count guards (uniprot-target-enrich.js / target-linker
+ *     assertOtRecordCount) that HALT on a silent under-read.
+ *   - OUTAGE (queried==0 AND chunkAttempted>0 AND queryErrorCount>0): some/all of
+ *     the attempted chunk errored -> a 3rd-party API is down, not our bug. Return
+ *     { degrade: true } so the runner returns a degraded result WITHOUT stamping
+ *     or advancing the cursor (chunk stays eligible, retried next run) and F3 can
+ *     proceed to the (unrelated) FAERS backfill + F4 publish. NO-SILENT-LOSS is
+ *     preserved: nothing is stamped, nothing advances, the loss is loud telemetry.
+ *   - NORMAL (queried>0, or nothing eligible): { degrade: false }.
+ *
+ * Note the outage condition is `queryErrorCount > 0`, NOT `>= chunkAttempted`: a
+ * chunk where SOME succeeded would have queried>0 (normal), so reaching queried==0
+ * with any error at all means the only outcomes were failures.
+ *
+ * Keep `eligible` as the first arg for the frozen branch (it is the B2-ceiling
+ * denominator the original HALT message reports); chunkAttempted is the SLICE size
+ * the runner attempted this run (the outage denominator). PURE: no Date/IO.
+ *
+ * `queried` here means "compounds the drain actually processed this run", NOT
+ * "compounds that got a match" -- a real query that returns zero trials/papers is
+ * a legitimate negative result and still counts as progress.
  *
  * @param {number} eligible  eligible compound count at run entry
- * @param {number} queried   compounds actually drained/queried this run
+ * @param {number} queried   compounds genuinely queried (HTTP 200) this run
  * @param {string} label     linker LABEL for the HALT message
+ * @param {object} [opts]
+ * @param {number} [opts.queryErrorCount=0]  fetch failures this run
+ * @param {number} [opts.chunkAttempted=0]   compounds in the attempted slice
+ * @returns {{ degrade: boolean }}
  */
-export function assertCoverageProgress(eligible, queried, label) {
-    if (eligible > 0 && queried === 0) {
+export function assertCoverageProgress(eligible, queried, label, { queryErrorCount = 0, chunkAttempted = 0 } = {}) {
+    if (queried === 0 && chunkAttempted > 0 && queryErrorCount > 0) {
+        return { degrade: true }; // OUTAGE -- non-fatal degrade (do NOT stamp / advance).
+    }
+    if (eligible > 0 && queried === 0 && queryErrorCount === 0) {
         throw new Error(
             `[${label}] HALT: eligible=${eligible} but queried=0 -- the coverage cursor is frozen/stuck `
             + `(no compound advanced this run). Refusing to exit 0 on a silent coverage ceiling `
             + `(B2 regression, per [[cross_cycle_silent_data_loss]]).`,
         );
     }
+    return { degrade: false };
 }
