@@ -32,7 +32,8 @@
 
 import { spawn } from 'child_process';
 import path from 'path';
-import { downloadStage, uploadStage, deriveRunId } from './lib/r2-stage-bridge.js';
+import fs from 'fs/promises';
+import { downloadStage, uploadStage, deriveRunId, readStagePointer, downloadStageByRunId } from './lib/r2-stage-bridge.js';
 import { executeCumulativeMerge } from './lib/stage-3-merge.js';
 import { buildIndex as buildSearchIndex, OUTPUT_FILE as SEARCH_INDEX_FILE } from './lib/search-index-builder.js';
 import { buildIndex as buildTargetIndex, OUTPUT_FILE as TARGET_INDEX_FILE } from './lib/target-index-builder.js';
@@ -45,6 +46,9 @@ import { makeR2Client } from './lib/sid-stage3-shared.js';
 import { isSnomedColdStart, warnSnomedColdStart } from './lib/snomed-cold-start.js';
 import { isLoincColdStart, warnLoincColdStart } from './lib/loinc-cold-start.js';
 import { runLinkerStage } from './lib/stage-3-linkers.js';
+import {
+    synthesizeBackfillOnlyLinkerStage, rehydratePriorLinkerFiles, LINKER_ONLY_FILES,
+} from './lib/stage-3-backfill-only.js';
 
 const SCRIPT_DIR = 'scripts/factory';
 
@@ -92,7 +96,33 @@ async function main() {
     // FAERS backfill. A 3rd-party paper/trial OUTAGE degrades (exits 0) and is NOT a
     // failure -> F3 exits 0 -> F4 publishes the FAERS payoff. (Was: an un-wrapped
     // Promise.all + cross-link runSequential that re-threw and killed the backfill.)
-    const linkerStage = await runLinkerStage(runScript, { snomedColdStart, loincColdStart });
+    //
+    // WO_F3 backfill_only branch: a workflow_dispatch with backfill_only=true SKIPS
+    // runLinkerStage entirely (no S2 / OpenAlex / trial-linker re-run -- P-7/cost
+    // isolation) and instead REHYDRATES the prior bundle's linker-only files so the
+    // unchanged cumulative merge / stampers / public builders / projections / upload
+    // still see a COMPLETE local set (else broken F4 publish; see lib/stage-3-
+    // backfill-only.js). The FAERS backfill below runs identically either way.
+    // Default (false / unset, incl. the cron workflow_run path) = the byte-for-byte
+    // unchanged runLinkerStage call.
+    const backfillOnly = process.env.BACKFILL_ONLY === 'true';
+    let linkerStage;
+    if (backfillOnly) {
+        console.log('\n[STAGE-3] === BACKFILL_ONLY=true -> runLinkerStage SKIPPED (S2/OpenAlex/trial-linker NOT re-run) ===');
+        console.log(`[STAGE-3] backfill_only: rehydrating ${LINKER_ONLY_FILES.length} linker-only file(s) from the prior aggregated bundle (fail-loud on any missing/empty).`);
+        await rehydratePriorLinkerFiles({
+            readStagePointer, downloadStageByRunId,
+            writeFile: (p, data) => fs.writeFile(p, data),
+            mkdir: (p, opts) => fs.mkdir(p, opts),
+            pathJoin: path.join,
+            logger: console,
+            snomedColdStart, loincColdStart,
+        });
+        linkerStage = synthesizeBackfillOnlyLinkerStage();
+        console.log('[STAGE-3] backfill_only: synthetic clean linkerStage installed (failureCount=0, empty groups); proceeding to cumulative merge + FAERS backfill.');
+    } else {
+        linkerStage = await runLinkerStage(runScript, { snomedColdStart, loincColdStart });
+    }
     const { trialResults, paperResults, crossLinkResults } = linkerStage.groups;
 
     // V0.5.2.1 cumulative aggregation extracted to lib/stage-3-merge.js (cycle 22 PR-CORE-3
