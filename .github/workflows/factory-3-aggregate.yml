@@ -10,6 +10,21 @@ on:
     types: [completed]
     branches: [main]
   workflow_dispatch:
+    inputs:
+      backfill_only:
+        description: >-
+          When 'true', SKIP the S2/OpenAlex/trial linkers and re-enrich ONLY the
+          existing cumulative corpus via the FAERS/unichem/rxnorm backfill. The
+          prior bundle's linker-only files are rehydrated so F4 still publishes a
+          COMPLETE snapshot (fail-loud if the prior bundle is absent/incomplete).
+          Default 'false' = the normal full F3 path (linkers run). The cron
+          workflow_run trigger always runs the default 'false' path.
+        required: false
+        type: choice
+        default: 'false'
+        options:
+          - 'false'
+          - 'true'
 
 concurrency:
   group: factory-pipeline
@@ -69,6 +84,13 @@ jobs:
         # zstd-codec WASM OOM at ~16MB inputs).
         run: sudo apt-get update -qq && sudo apt-get install -y -qq zstd && zstd --version
       - name: Run stage 3
+        env:
+          # WO_F3 backfill_only: skip the S2/OpenAlex/trial linkers + re-enrich
+          # only the existing corpus's FAERS/unichem/rxnorm backfill. Only the
+          # workflow_dispatch trigger sets github.event.inputs.backfill_only; the
+          # cron workflow_run path leaves it empty -> '|| false' keeps it false so
+          # the scheduled cascade always runs the full linker path UNCHANGED.
+          BACKFILL_ONLY: ${{ github.event.inputs.backfill_only || 'false' }}
         run: node scripts/factory/stage-3-aggregate.js
       - name: Upload stage-3 log artifact
         if: always()
