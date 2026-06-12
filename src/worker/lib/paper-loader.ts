@@ -4,6 +4,7 @@
  */
 
 import { fetchR2GunzippedText, fetchR2JsonText } from './r2-fetch';
+import { toSourceLoadError } from './source-load-error';
 
 interface MentionEntry {
     compound_id?: string;
@@ -30,7 +31,11 @@ export async function loadPapersForCompound(
             } catch { /* skip malformed line */ }
         }
         return records;
-    } catch {
-        return [];
+    } catch (err) {
+        // RK-13: a source READ failure (pointer fetch / gunzip / object-missing)
+        // must NOT be served as an empty result. Classify, emit telemetry, and
+        // throw a typed failure the caller maps to a retryable 502/503. The
+        // genuine queried_clean case still returns [] above (success path).
+        throw toSourceLoadError('papers', `compound:${compoundId}`, err);
     }
 }

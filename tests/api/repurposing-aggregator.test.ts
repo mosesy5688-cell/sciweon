@@ -13,8 +13,10 @@ import {
     summarizeBioactivities,
     summarizeRetracted,
     decideRepurposingVerdict,
+    aggregateRepurposingEvidence,
     type RepurposingSummary,
 } from '../../src/worker/lib/repurposing-aggregator';
+import { SourceLoadError } from '../../src/worker/lib/source-load-error';
 
 function emptySummary(): RepurposingSummary {
     return {
@@ -147,5 +149,45 @@ describe('decideRepurposingVerdict', () => {
         const v = decideRepurposingVerdict(s);
         expect(v.repurposing_signal).toBe('strong');
         expect(v.recommendation).toContain('Multiple progressed trials');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// RK-13 (SOURCE_FAILURE_CONTRACT, N-10) regression guard:
+// a loader source-failure must PROPAGATE out of the aggregator (reject), NOT be
+// caught-and-emptied into a falsely-empty 'none' verdict. The aggregator does
+// not catch SourceLoadError; it lets it bubble to the route/MCP layer (which
+// maps it to a retryable 502/503).
+// ---------------------------------------------------------------------------
+function makeMockBucket(store: Record<string, { size: number; bytes?: Uint8Array; etag: string }>) {
+    return {
+        async head(key: string) {
+            const o = store[key];
+            return o ? { size: o.size, etag: o.etag } : null;
+        },
+        async get(key: string) {
+            const o = store[key];
+            if (!o || !o.bytes) return null;
+            return {
+                etag: o.etag,
+                async arrayBuffer() {
+                    return o.bytes!.buffer.slice(o.bytes!.byteOffset, o.bytes!.byteOffset + o.bytes!.byteLength);
+                },
+            };
+        },
+    } as unknown as R2Bucket;
+}
+
+describe('aggregateRepurposingEvidence RK-13 source-failure propagation', () => {
+    it('a loader source-failure PROPAGATES (rejects), never resolves to a "none" verdict', async () => {
+        // Pointer absent -> every record loader's source read fails (and rejects
+        // with a typed SourceLoadError). The aggregator must NOT swallow it into
+        // empty arrays and decide 'none'; it must reject.
+        const bucket = makeMockBucket({});
+        const outcome = await aggregateRepurposingEvidence(bucket, 'CID:2244', 'https://sciweon.test')
+            .then(v => ({ resolved: true, v }), e => ({ resolved: false, e }));
+        expect(outcome.resolved).toBe(false);
+        // and specifically a loader source-failure (not a generic crash).
+        expect((outcome as { e: unknown }).e).toBeInstanceOf(SourceLoadError);
     });
 });

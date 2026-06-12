@@ -13,6 +13,7 @@
 import type { Env } from '../../worker';
 import { parseCompoundId } from './id-parse';
 import { loadNegEvidenceForCompound, NegShardError } from './neg-evidence-loader';
+import { SourceLoadError } from './source-load-error';
 import { searchCompounds } from './compound-search';
 import { EVIDENCE_TYPES, isKnownEvidenceType, type EvidenceType } from './event-type-taxonomy';
 import { resolveEntity } from './entity-resolver';
@@ -96,8 +97,21 @@ export async function handleToolNegativeEvidence(args: Record<string, unknown>, 
 export async function handleToolRepurposingEvidence(args: Record<string, unknown>, env: Env, req: Request): Promise<unknown> {
     const canonical = requireCid(args);
     const bucket = requireR2(env);
-    const response = await aggregateRepurposingEvidence(bucket, canonical, originOf(req));
-    return textContent(response);
+    try {
+        const response = await aggregateRepurposingEvidence(bucket, canonical, originOf(req));
+        return textContent(response);
+    } catch (err) {
+        // RK-13: a loader source-failure PROPAGATES through the aggregator (never
+        // caught-and-emptied) so the verdict is never computed on falsely-empty
+        // data. Surface as a retryable service error, never a 'none' verdict.
+        if (err instanceof SourceLoadError) {
+            throw new ToolError(
+                -32000,
+                `Repurposing evidence source unavailable (${err.source}: ${err.failure_class}); this is NOT a no-evidence verdict, retry shortly`,
+            );
+        }
+        throw err;
+    }
 }
 
 export async function handleToolResolveEntity(args: Record<string, unknown>, env: Env): Promise<unknown> {
