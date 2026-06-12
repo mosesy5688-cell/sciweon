@@ -6,6 +6,7 @@
 import type { Env } from '../../worker';
 import { parseCompoundId } from '../lib/id-parse';
 import { loadPapersForCompound } from '../lib/paper-loader';
+import { SourceLoadError } from '../lib/source-load-error';
 
 const PATH_RE = /^\/api\/v1\/compound\/([^/]+)\/papers$/;
 
@@ -42,12 +43,31 @@ export async function handlePapers(
         );
     }
 
-    const records = await loadPapersForCompound(env.SCIWEON_R2, parsed.canonical);
-    return Response.json(
-        { id: parsed.canonical, count: records.length, papers: records },
-        {
-            status: 200,
-            headers: { 'cache-control': 'public, max-age=300, s-maxage=900' },
-        },
-    );
+    try {
+        const records = await loadPapersForCompound(env.SCIWEON_R2, parsed.canonical);
+        return Response.json(
+            { id: parsed.canonical, count: records.length, papers: records },
+            {
+                status: 200,
+                headers: { 'cache-control': 'public, max-age=300, s-maxage=900' },
+            },
+        );
+    } catch (err) {
+        // RK-13: a source READ failure is NOT a no-evidence result. Map the typed
+        // SourceLoadError to a retryable status (parse_failed -> 502, else 503)
+        // carrying the contract carriers, never a 200/count:0.
+        if (err instanceof SourceLoadError) {
+            return Response.json(
+                {
+                    error: 'Source unavailable',
+                    source: err.source,
+                    failure_class: err.failure_class,
+                    retryable: err.retryable,
+                    detail: 'Upstream source read failed; this is NOT a no-evidence result. Retry shortly.',
+                },
+                { status: err.failure_class === 'parse_failed' ? 502 : 503 },
+            );
+        }
+        throw err;
+    }
 }

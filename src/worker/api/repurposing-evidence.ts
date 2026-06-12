@@ -19,6 +19,7 @@
 import type { Env } from '../../worker';
 import { parseCompoundId } from '../lib/id-parse';
 import { aggregateRepurposingEvidence } from '../lib/repurposing-aggregator';
+import { SourceLoadError } from '../lib/source-load-error';
 
 const PATH_RE = /^\/api\/v1\/compound\/([^/]+)\/repurposing-evidence$/;
 
@@ -54,6 +55,22 @@ export async function handleRepurposingEvidence(req: Request, env: Env, _ctx: Ex
             },
         });
     } catch (err) {
+        // RK-13: a loader source-failure PROPAGATES through the aggregator (it is
+        // NOT caught-and-emptied) so the verdict is never computed on falsely-empty
+        // data. Map it to a retryable status (parse_failed -> 502, else 503), never
+        // a 'none' verdict at 200.
+        if (err instanceof SourceLoadError) {
+            return Response.json(
+                {
+                    error: 'Source unavailable',
+                    source: err.source,
+                    failure_class: err.failure_class,
+                    retryable: err.retryable,
+                    detail: 'An upstream evidence source read failed; this is NOT a no-evidence verdict. Retry shortly.',
+                },
+                { status: err.failure_class === 'parse_failed' ? 502 : 503 },
+            );
+        }
         const message = err instanceof Error ? err.message : String(err);
         if (/Short read|etag drifted|disappeared/i.test(message)) {
             return Response.json(
