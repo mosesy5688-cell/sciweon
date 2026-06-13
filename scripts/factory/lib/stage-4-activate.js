@@ -71,6 +71,7 @@ export async function verifySnapshotSealPresent(client, bucket, objectPrefix) {
  */
 export async function activateValidatedCandidate({
     client, bucket, identity, compoundManifest, negManifestKey, hasXref, hasSearch,
+    latestKey = LATEST_KEY,
 }) {
     // (3->4 step 5) seal LAST.
     const { manifestHash } = await buildAndSealCandidate({
@@ -79,13 +80,13 @@ export async function activateValidatedCandidate({
     // (step 6+7) re-read + verify the candidate by its OWN keys (never latest).
     await validateCandidate({ client, bucket, identity, expectedHash: manifestHash });
     console.log(`[ACTIVATE] candidate ${PUBLISH_STATES.VALIDATED} -> ${PUBLISH_STATES.ACTIVATABLE}`);
-    // (step 9) CAS the v2 latest.json.
+    // (step 9) CAS the v2 latest.json (default prod key; harness injects isolated).
     const cmKey = compoundManifestKeyOf(compoundManifest, identity.objectPrefix);
     const latest = await swapV2Latest({
-        client, bucket, identity, manifestHash, compoundsManifestKey: cmKey, negManifestKey, hasXref,
+        client, bucket, identity, manifestHash, compoundsManifestKey: cmKey, negManifestKey, hasXref, latestKey,
     });
     // (step 10) post-swap active validation.
-    await postSwapActiveProbe({ client, bucket, identity, manifestHash });
+    await postSwapActiveProbe({ client, bucket, identity, manifestHash, latestKey });
     return { manifestHash, latest };
 }
 
@@ -183,7 +184,7 @@ export async function validateCandidate({ client, bucket, identity, expectedHash
  * candidate is RETAINED but NOT active and the old latest is unchanged (the
  * caller hard-fails the run).
  */
-export async function swapV2Latest({ client, bucket, identity, manifestHash, compoundsManifestKey: cmKey, negManifestKey, hasXref }) {
+export async function swapV2Latest({ client, bucket, identity, manifestHash, compoundsManifestKey: cmKey, negManifestKey, hasXref, latestKey = LATEST_KEY }) {
     const { snapshotId, objectPrefix, snapshotDate, runId, runAttempt, commitSha } = identity;
     // v2 fields REPLACE the legacy pointer wholesale: an immutable_snapshot_v2
     // latest carries no legacy_v1 date-shape (the reader fails loud on a mixed
@@ -208,7 +209,9 @@ export async function swapV2Latest({ client, bucket, identity, manifestHash, com
         manifest_key: null,
     };
     const expectKeys = ['layout_version', 'snapshot_id', 'object_prefix', 'compounds_manifest_key', 'manifest_hash'];
-    return swapLatestPointer(client, bucket, updates, expectKeys);
+    // latestKey DEFAULTS to the production snapshots/latest.json — the isolated
+    // RK-15 V2 harness passes its OWN test pointer so production is untouched.
+    return swapLatestPointer(client, bucket, updates, expectKeys, latestKey);
 }
 
 /**
@@ -216,8 +219,8 @@ export async function swapV2Latest({ client, bucket, identity, manifestHash, com
  * candidate (snapshot_id + object_prefix + manifest_hash). A mismatch means a
  * concurrent writer won; the run fails LOUD (latest was NOT left at us).
  */
-export async function postSwapActiveProbe({ client, bucket, identity, manifestHash }) {
-    const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: LATEST_KEY }));
+export async function postSwapActiveProbe({ client, bucket, identity, manifestHash, latestKey = LATEST_KEY }) {
+    const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: latestKey }));
     const latest = JSON.parse((await streamToBuffer(res.Body)).toString('utf-8'));
     if (latest.layout_version !== LAYOUT_VERSION_V2
         || latest.snapshot_id !== identity.snapshotId

@@ -47,9 +47,9 @@ async function streamToString(body) {
     return Buffer.concat(chunks).toString('utf-8');
 }
 
-async function getLatest(client, bucket) {
+async function getLatest(client, bucket, latestKey = LATEST_KEY) {
     try {
-        const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: LATEST_KEY }));
+        const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: latestKey }));
         const etag = res.ETag;
         const json = JSON.parse(await streamToString(res.Body));
         return { json, etag };
@@ -72,11 +72,17 @@ function isPreconditionFailed(err) {
  * set (e.g. { latest_snapshot_date, compounds_manifest_key,
  * neg_evidence_manifest_key }). `expectKeys` is the list of keys that MUST be
  * present in the re-read after the swap (the post-swap assertion).
+ *
+ * `latestKey` is the pointer object key. It DEFAULTS to the production
+ * `snapshots/latest.json` so every existing producer call site is byte-for-byte
+ * unchanged; an isolated verification harness (RK-15 V2) injects its OWN test
+ * pointer key so a same-day A/B publish proof never touches the production
+ * pointer.
  */
-export async function swapLatestPointer(client, bucket, updates, expectKeys = []) {
+export async function swapLatestPointer(client, bucket, updates, expectKeys = [], latestKey = LATEST_KEY) {
     let lastErr = null;
     for (let attempt = 1; attempt <= SWAP_MAX_RETRIES; attempt++) {
-        const { json: current, etag } = await getLatest(client, bucket);
+        const { json: current, etag } = await getLatest(client, bucket, latestKey);
         const merged = { ...current, ...updates };
         // FIX M4: a null/undefined update value CLEARS that key from latest.json
         // (true removal, not a `"key": null` residue). The stage-4 orchestrator
@@ -91,7 +97,7 @@ export async function swapLatestPointer(client, bucket, updates, expectKeys = []
             merged.manifest_key = `snapshots/${merged.latest_snapshot_date}/manifest.json`;
         }
         const put = {
-            Bucket: bucket, Key: LATEST_KEY,
+            Bucket: bucket, Key: latestKey,
             Body: JSON.stringify(merged), ContentType: 'application/json',
         };
         // IfMatch CAS when we have a current etag; IfNoneMatch:* for first-create.
@@ -122,7 +128,7 @@ export async function swapLatestPointer(client, bucket, updates, expectKeys = []
             throw err;
         }
         // Post-swap re-read assertion: ALL expected keys must be present.
-        const { json: after } = await getLatest(client, bucket);
+        const { json: after } = await getLatest(client, bucket, latestKey);
         const missing = expectKeys.filter(k => after[k] === undefined || after[k] === null);
         if (missing.length === 0) {
             return after;
