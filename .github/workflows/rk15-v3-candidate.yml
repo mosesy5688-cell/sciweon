@@ -1,0 +1,68 @@
+name: RK-15 V3-A Candidate
+
+# RK-15 V3-A — PRODUCTION candidate build (NO production-latest swap).
+#
+# Builds an IMMUTABLE candidate in the PRODUCTION namespace
+# (snapshots/<UTC-date>/<GITHUB_RUN_ID>-<GITHUB_RUN_ATTEMPT>/) from the FIXED
+# Run #1 aggregated source (processed/aggregated/27413864028/), WITHOUT touching
+# production snapshots/latest.json. Max candidate state: VALIDATED / NOT ACTIVE.
+# A SEPARATE later run (RK-15 V3-B Activate) activates ONLY this exact candidate.
+#
+# FOUNDER-TRIGGERED ONLY: workflow_dispatch (no push / no schedule /
+# no workflow_run — F3/F1 are unreachable from here). The candidate-prefix
+# WRITE-GUARD hard-fails any write to snapshots/latest.json, any OTHER snapshot
+# prefix, or the source/aggregated/verification prefixes. Production
+# snapshots/latest.json is GET-only (the before/after invariance check). The job
+# goes RED if the harness exits non-zero.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: 'Fixed Run #1 aggregated source id (MUST be 27413864028)'
+        required: true
+        default: '27413864028'
+        type: string
+      snapshot_date:
+        description: 'UTC snapshot date for the candidate prefix (YYYY-MM-DD; default = today)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  rk15-v3-candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+      - name: Run RK-15 V3-A candidate build (NO production-latest swap)
+        run: >-
+          node scripts/verify/rk15-v3-candidate.js
+          --source-run-id=${{ inputs.source_run_id }}
+          ${{ inputs.snapshot_date && format('--date={0}', inputs.snapshot_date) || '' }}
+      - name: Upload V3-A evidence artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rk15-v3a-evidence
+          path: rk15-v3a-evidence.json
+          retention-days: 90
+          if-no-files-found: warn
