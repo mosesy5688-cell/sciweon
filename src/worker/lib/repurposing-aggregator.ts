@@ -18,8 +18,9 @@ import { fetchR2JsonText } from './r2-fetch';
 import { loadTrialsForCompound } from './trial-loader';
 import { loadBioactivitiesForCompound } from './bioactivity-loader';
 import { loadPapersForCompound } from './paper-loader';
-import { loadNegEvidenceSummary, emptyNegSummary, type NegSummary } from './neg-evidence-loader';
+import { loadNegEvidenceSummary, type NegSummary } from './neg-evidence-loader';
 import { type SnapshotContext, loadSnapshotContext } from './snapshot-context';
+import { toSourceLoadError } from './source-load-error';
 
 const POSITIVE_TRIAL_STATUSES = new Set([
     'RECRUITING', 'ACTIVE_NOT_RECRUITING', 'ENROLLING_BY_INVITATION', 'COMPLETED', 'AVAILABLE',
@@ -179,27 +180,33 @@ export async function aggregateRepurposingEvidence(
     compoundId: string,
     baseUrl: string,
 ): Promise<RepurposingResponse> {
-    // RK-15 PR-A: read latest.json ONCE -> pinned dual-contract ctx, threaded
-    // into loadNegEvidenceSummary. A SnapshotContractError propagates (LOUD); a
-    // plain absent-pointer leaves snapshotDate null + skips the (sharded) neg
-    // summary, preserving the aggregator's prior best-effort behavior.
-    let ctx: SnapshotContext | null = null;
+    // RK-15 PR-A2: read latest.json EXACTLY ONCE at the request entry -> ONE
+    // pinned dual-contract ctx, threaded into EVERY sub-loader (neg + trials +
+    // bioactivities + papers). No sub-loader re-reads latest.json, so a composed
+    // request reads the pointer once and pins one snapshot identity for all
+    // layers. A SnapshotContractError (unknown/mixed/corrupt) PROPAGATES (LOUD —
+    // never a partial/empty/'none' verdict). A plain absent/unreadable pointer is
+    // a source READ failure: surface it as a typed SourceLoadError (LOUD, the
+    // route maps it to a retryable 503) rather than degrading to a falsely-empty
+    // verdict — the loaders can no longer best-effort over a missing pointer
+    // because they all consume this one ctx.
+    let ctx: SnapshotContext;
     try {
         ctx = await loadSnapshotContext(k => fetchR2JsonText(bucket, k));
     } catch (err) {
         if (err instanceof Error && err.name === 'SnapshotContractError') throw err;
-        /* absent/unreadable pointer -> leave ctx null (best-effort) */
+        throw toSourceLoadError('snapshot-pointer', `compound:${compoundId}`, err);
     }
-    const snapshotDate: string | null = ctx ? ctx.snapshot_date : null;
+    const snapshotDate: string = ctx.snapshot_date;
 
     const [trials, bios, papers, neg] = await Promise.all([
-        loadTrialsForCompound(bucket, compoundId),
-        loadBioactivitiesForCompound(bucket, compoundId),
-        loadPapersForCompound(bucket, compoundId),
+        loadTrialsForCompound(bucket, ctx, compoundId),
+        loadBioactivitiesForCompound(bucket, ctx, compoundId),
+        loadPapersForCompound(bucket, ctx, compoundId),
         // PR-T1.1-LEVER: summary path only (manifest entry + first page), NOT
-        // the full neg load — bounds the aggregator's heap too. Skipped when the
-        // pointer is unreadable (ctx null) -> empty neg summary.
-        ctx ? loadNegEvidenceSummary(bucket, ctx, compoundId) : Promise.resolve(emptyNegSummary()),
+        // the full neg load — bounds the aggregator's heap too. Threaded the SAME
+        // pinned ctx so all four layers describe ONE snapshot identity.
+        loadNegEvidenceSummary(bucket, ctx, compoundId),
     ]);
 
     const summary: RepurposingSummary = {

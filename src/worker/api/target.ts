@@ -19,6 +19,8 @@
 
 import type { Env } from '../../worker';
 import { parseUniprotId, loadTargetIndex, getTargetEntry, type TargetEntry } from '../lib/target-loader';
+import { loadSnapshotContext, SnapshotContractError } from '../lib/snapshot-context';
+import { fetchR2JsonText } from '../lib/r2-fetch';
 
 export type TargetSection = 'drugs' | 'trials' | 'negative_evidence';
 
@@ -84,8 +86,20 @@ export async function handleTarget(req: Request, env: Env, _ctx: ExecutionContex
 
     let index;
     try {
-        index = await loadTargetIndex(env.SCIWEON_R2);
+        // RK-15 PR-A2: read snapshots/latest.json EXACTLY ONCE per request ->
+        // ONE pinned SnapshotContext threaded into loadTargetIndex (which no
+        // longer reads the pointer).
+        const ctx = await loadSnapshotContext(k => fetchR2JsonText(env.SCIWEON_R2!, k));
+        index = await loadTargetIndex(env.SCIWEON_R2, ctx);
     } catch (err) {
+        // RK-15 PR-A2: a latest.json contract violation is an integrity failure
+        // (LOUD), never the genuine-absence 404 path below.
+        if (err instanceof SnapshotContractError) {
+            return Response.json(
+                { error: 'Data integrity error', detail: 'snapshots/latest.json failed contract validation. Retry shortly.' },
+                { status: 502 },
+            );
+        }
         const message = err instanceof Error ? err.message : String(err);
         if (/not found|disappeared|missing/i.test(message)) {
             return Response.json(
