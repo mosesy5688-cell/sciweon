@@ -23,6 +23,7 @@
 import { parseCompoundId } from './id-parse';
 import { fetchR2GunzippedText, fetchR2JsonText } from './r2-fetch';
 import { loadXrefKind, xrefIndexExists, type XrefKind } from './xref-index-loader';
+import { type SnapshotContext, loadSnapshotContext } from './snapshot-context';
 
 export type IdentifierKind =
     | 'pubchem_cid'
@@ -104,29 +105,35 @@ export async function resolveEntity(bucket: R2Bucket, raw: string): Promise<Reso
         return { canonical: parsed.canonical, cid: parsed.cid, matched_on: 'pubchem_cid' };
     }
 
-    // Non-CID path: resolve the latest snapshot date.
-    let date: string | undefined;
+    // Non-CID path: read latest.json EXACTLY ONCE and pin the dual-contract
+    // SnapshotContext. SnapshotContractError (unknown/mixed/corrupt) PROPAGATES
+    // (LOUD) — it is not swallowed into a null "unresolvable". A plain pointer
+    // read failure (absent latest) is treated as unresolvable (null).
+    let ctx: SnapshotContext;
     try {
-        const ptrText = await fetchR2JsonText(bucket, 'snapshots/latest.json');
-        date = (JSON.parse(ptrText) as { latest_snapshot_date?: string }).latest_snapshot_date;
-    } catch { return null; }
-    if (!date) return null;
+        ctx = await loadSnapshotContext(k => fetchR2JsonText(bucket, k));
+    } catch (err) {
+        if (err instanceof Error && err.name === 'SnapshotContractError') throw err;
+        return null;
+    }
 
     // Indexed path: load ONLY the queried kind's Map (bounded memory). The
     // xref-index-loader throws on OOM-guard violations (XREF_MAX_BYTES /
     // MAX_XREF_ENTRIES) — those MUST propagate (LOUD), not be swallowed as a
     // false "unresolvable" 404. xrefIndexExists() distinguishes the absent
     // projection (-> legacy fallback) from a present-but-failing read (-> throw).
-    if (await xrefIndexExists(bucket, date)) {
-        const map = await loadXrefKind(bucket, date, c.kind as XrefKind);
+    if (await xrefIndexExists(bucket, ctx)) {
+        const map = await loadXrefKind(bucket, ctx, c.kind as XrefKind);
         const cid = map.get(c.normalized);
         if (typeof cid !== 'number' || !Number.isInteger(cid)) return null;
         return { canonical: `sciweon::compound::CID:${cid}`, cid, matched_on: c.kind };
     }
 
     // F3 fallback (deploy transition): projection not yet published for this
-    // date -> the legacy whole-file scan keeps /xrefs alive until the first F4.
-    return resolveByWholeFileScan(bucket, date, c);
+    // snapshot -> the legacy whole-file scan keeps /xrefs alive until the first
+    // F4. v1-only (a v2 snapshot has no whole-file contract).
+    if (ctx.layout_version !== 'legacy_v1') return null;
+    return resolveByWholeFileScan(bucket, ctx, c);
 }
 
 /**
@@ -135,11 +142,12 @@ export async function resolveEntity(bucket: R2Bucket, raw: string): Promise<Reso
  * universally published this branch is unreachable; it stays for safety.
  */
 async function resolveByWholeFileScan(
-    bucket: R2Bucket, date: string, c: Classified,
+    bucket: R2Bucket, ctx: SnapshotContext, c: Classified,
 ): Promise<ResolvedCompound | null> {
     let text: string;
     try {
-        text = await fetchR2GunzippedText(bucket, `snapshots/${date}/compounds-enriched.jsonl.gz`);
+        // Pinned object_prefix — no re-derivation from a re-read date.
+        text = await fetchR2GunzippedText(bucket, `${ctx.object_prefix}compounds-enriched.jsonl.gz`);
     } catch { return null; }
 
     for (const line of text.split('\n')) {

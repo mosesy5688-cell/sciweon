@@ -1,25 +1,21 @@
 /**
- * NegEvidence loader — PR-T1.1-LEVER bounded serving.
+ * NegEvidence loader — PR-T1.1-LEVER bounded serving (+ RK-15 PR-A pinning).
  *
- * The STORED neg-evidence stays COMPLETE. This loader bounds ONLY the
- * per-request memory/payload by reading the LATEST snapshot's PER-BUCKET
- * sharded manifest + per-page range-reads, instead of loading the whole
- * neg-evidence file into the 128MB isolate (the OOM the FDA preserve-all
- * uncap would trigger).
- *
- * Dual-path (INVERTED vs the compound loader): manifest key present + object
- * exists -> SHARDED path, where a THROW is a LOUD 503 (never fall back -- that
- * would re-introduce the OOM / mask a corrupt shard as a false-clean on the
- * SAFETY endpoint); key absent (or stale, FIX M4) -> legacy whole-file read
- * (HEAD.size 503-guarded). negBucketOf(key) loads THAT one bucket manifest;
- * an absent entry = authoritative empty (negative_signals_count: 0).
+ * The STORED neg-evidence stays COMPLETE; this loader bounds per-request
+ * memory by reading the snapshot's PER-BUCKET sharded manifest + per-page
+ * range-reads, not the whole file. INVERTED dual-path: manifest key present +
+ * object exists -> SHARDED (a THROW is a LOUD 503, never fall back); key absent
+ * or stale (FIX M4) -> legacy whole-file read (HEAD.size 503-guarded). An absent
+ * bucket entry = authoritative empty. RK-15: latest.json is read ONCE and the
+ * pinned SnapshotContext is threaded through every manifest / shard / range read.
  */
 
 import { fetchR2GunzippedText, fetchR2JsonText } from './r2-fetch';
 import { type EvidenceType } from './event-type-taxonomy';
 import { negBucketOf } from '../../lib/neg-bucket-hash.js';
-import { negManifestKeyFor } from './neg-shard-router';
+import { negManifestKeyForCtx } from './neg-shard-router';
 import { loadNegBucketManifest, type NegManifestEntry } from './neg-manifest-loader';
+import { type SnapshotContext, loadSnapshotContext } from './snapshot-context';
 import {
     shapePagedResponse, shapeSummaryResponse,
     type NegEvidenceRecord, type NegPagedResponse, type NegSummary, type NegFilteredAgg,
@@ -36,18 +32,30 @@ const LEGACY_MAX_BYTES = 48 * 1024 * 1024;
 export const DEFAULT_PAGE_LIMIT = 50;
 const MAX_PAGE_LIMIT = 200;
 
-interface LatestPointer {
-    latest_snapshot_date?: string;
-    neg_evidence_manifest_key?: string;
+/**
+ * RK-15 PR-A: read latest.json EXACTLY ONCE -> pinned dual-contract ctx + the
+ * sharding flag. SnapshotContractError PROPAGATES (LOUD). v2: sharding is the
+ * declared neg_evidence_manifest_key; legacy_v1: the raw pointer field (the v1
+ * contract). One R2 read total (fetchR2JsonText is etag-deduped).
+ */
+interface NegPointerRaw {
+    neg_evidence_manifest_key?: unknown;
 }
 
-async function readPointer(bucket: R2Bucket): Promise<LatestPointer> {
-    const text = await fetchR2JsonText(bucket, LATEST_POINTER_KEY);
-    const ptr = JSON.parse(text) as LatestPointer;
-    if (!ptr.latest_snapshot_date) {
-        throw new Error('snapshots/latest.json missing latest_snapshot_date');
+async function readNegContext(
+    bucket: R2Bucket,
+): Promise<{ ctx: SnapshotContext; shardingActive: boolean }> {
+    const rawText = await fetchR2JsonText(bucket, LATEST_POINTER_KEY);
+    const ctx = await loadSnapshotContext(async () => rawText);
+    let shardingActive: boolean;
+    if (ctx.layout_version === 'immutable_snapshot_v2') {
+        shardingActive = ctx.neg_evidence_manifest_key != null;
+    } else {
+        const raw = JSON.parse(rawText) as NegPointerRaw;
+        shardingActive = typeof raw.neg_evidence_manifest_key === 'string'
+            && raw.neg_evidence_manifest_key.length > 0;
     }
-    return ptr;
+    return { ctx, shardingActive };
 }
 
 function clampLimit(limit: number | undefined): number {
@@ -56,35 +64,23 @@ function clampLimit(limit: number | undefined): number {
 }
 
 /**
- * Sharded paginated load. THROWS on any sharded failure (caller -> 503).
- * Returns the authoritative empty response when the key is not in its bucket.
- *
- * `eventTypeFilter` (non-null, non-empty) makes count/aggregates/pagination
- * describe the FILTERED set: the total + severity + by-type aggregates come
- * O(1) from the manifest (type_rollup + sev_by_type), and the page is a
- * filtered page-walk over the FILTERED logical sequence (offset is a
- * filtered-offset). When null/absent, the UNFILTERED path runs byte-identically
- * to its prior behavior.
- *
- * NOTE: an EMPTY filter Set means the client passed only unknown event_type
- * tokens (matches nothing) — serve the authoritative filtered-empty response,
- * never the unfiltered set.
+ * Sharded paginated load. THROWS on any sharded failure (caller -> 503); returns
+ * the authoritative empty response when the key is absent from its bucket.
+ * `eventTypeFilter` (non-null) makes count/aggregates/pagination describe the
+ * FILTERED set (totals O(1) from type_rollup + sev_by_type; filtered page-walk).
+ * An EMPTY filter Set serves the filtered-empty response, never the full set.
  */
 export async function loadNegEvidencePage(
-    bucket: R2Bucket, compoundId: string, baseUrl: string,
+    bucket: R2Bucket, ctx: SnapshotContext, compoundId: string, baseUrl: string,
     opts?: { offset?: number; limit?: number },
     eventTypeFilter?: Set<EvidenceType> | null,
 ): Promise<NegPagedResponse> {
-    const ptr = await readPointer(bucket);
-    if (!ptr.neg_evidence_manifest_key) {
-        throw new Error('neg_evidence_manifest_key absent — not a sharded snapshot');
-    }
-    const date = ptr.latest_snapshot_date!;
+    const date = ctx.snapshot_date;
     const offset = Math.max(0, Math.floor(opts?.offset ?? 0));
     const limit = clampLimit(opts?.limit);
     const filtering = eventTypeFilter != null; // null = no filter; empty Set still filters (-> empty)
 
-    const manifest = await loadNegBucketManifest(bucket, negBucketOf(compoundId), date);
+    const manifest = await loadNegBucketManifest(bucket, negBucketOf(compoundId), ctx);
     const entry = manifest.byKey.get(compoundId) ?? null;
     if (!entry) {
         const emptyAgg: NegFilteredAgg | null = filtering
@@ -96,11 +92,11 @@ export async function loadNegEvidencePage(
         const filter = eventTypeFilter!;
         const agg = computeFilteredAgg(entry, filter);
         const pageRecords = agg.total > 0
-            ? await readFilteredPageRecords(bucket, date, entry, offset, limit, filter)
+            ? await readFilteredPageRecords(bucket, ctx, entry, offset, limit, filter)
             : [];
         return shapePagedResponse(compoundId, entry, pageRecords, offset, limit, date, baseUrl, agg);
     }
-    const pageRecords = await readPageRecords(bucket, date, entry, offset, limit);
+    const pageRecords = await readPageRecords(bucket, ctx, entry, offset, limit);
     return shapePagedResponse(compoundId, entry, pageRecords, offset, limit, date, baseUrl);
 }
 
@@ -108,38 +104,33 @@ export async function loadNegEvidencePage(
  * Summary load (aggregator): manifest entry rollups + FIRST page only for a
  * few examples. THROWS on sharded failure (caller -> 503).
  */
-export async function loadNegEvidenceSummary(
-    bucket: R2Bucket, compoundId: string,
-): Promise<NegSummary> {
-    const ptr = await readPointer(bucket);
-    if (!ptr.neg_evidence_manifest_key) {
-        throw new Error('neg_evidence_manifest_key absent — not a sharded snapshot');
-    }
-    const date = ptr.latest_snapshot_date!;
-    const manifest = await loadNegBucketManifest(bucket, negBucketOf(compoundId), date);
-    const entry = manifest.byKey.get(compoundId) ?? null;
-    if (!entry) return shapeSummaryResponse(null, []);
-    const firstPage = await readPageRecords(bucket, date, entry, 0, 5);
-    return shapeSummaryResponse(entry, firstPage);
+/** The canonical empty neg-summary (no entry). Used by callers that cannot pin
+ * a snapshot context (e.g. an absent latest.json on a best-effort aggregator). */
+export function emptyNegSummary(): NegSummary {
+    return shapeSummaryResponse(null, []);
 }
 
-/** Whether the latest snapshot exposes the sharded neg manifest. */
-export async function negShardingActive(bucket: R2Bucket): Promise<boolean> {
-    try {
-        const ptr = await readPointer(bucket);
-        return Boolean(ptr.neg_evidence_manifest_key);
-    } catch { return false; }
+export async function loadNegEvidenceSummary(
+    bucket: R2Bucket, ctx: SnapshotContext, compoundId: string,
+): Promise<NegSummary> {
+    const manifest = await loadNegBucketManifest(bucket, negBucketOf(compoundId), ctx);
+    const entry = manifest.byKey.get(compoundId) ?? null;
+    if (!entry) return shapeSummaryResponse(null, []);
+    const firstPage = await readPageRecords(bucket, ctx, entry, 0, 5);
+    return shapeSummaryResponse(entry, firstPage);
 }
 
 /**
  * FIX M4: does THIS compound's per-bucket neg manifest object exist for the
- * latest date? A head() probe distinguishing a STALE pointer key (object MISSING
- * -> treat as absent -> legacy) from a genuine sharded-read failure (manifest
- * EXISTS, a shard throws -> 503). Does NOT weaken OOM protection.
+ * pinned snapshot? A head() probe distinguishing a STALE pointer key (object
+ * MISSING -> treat as absent -> legacy) from a genuine sharded-read failure
+ * (manifest EXISTS, a shard throws -> 503). Uses the pinned ctx; does NOT
+ * weaken OOM protection.
  */
-export async function negBucketManifestExists(bucket: R2Bucket, compoundId: string): Promise<boolean> {
-    const ptr = await readPointer(bucket);
-    const key = negManifestKeyFor(ptr.latest_snapshot_date!, negBucketOf(compoundId));
+export async function negBucketManifestExists(
+    bucket: R2Bucket, ctx: SnapshotContext, compoundId: string,
+): Promise<boolean> {
+    const key = negManifestKeyForCtx(ctx, negBucketOf(compoundId));
     return (await bucket.head(key)) != null;
 }
 
@@ -149,12 +140,13 @@ export async function negBucketManifestExists(bucket: R2Bucket, compoundId: stri
  * of OOMing the isolate.
  */
 export async function loadNegEvidenceLegacy(
-    bucket: R2Bucket, compoundId: string, baseUrl: string,
+    bucket: R2Bucket, ctx: SnapshotContext, compoundId: string, baseUrl: string,
     eventTypeFilter?: Set<EvidenceType> | null,
 ): Promise<NegPagedResponse> {
-    const ptr = await readPointer(bucket);
-    const date = ptr.latest_snapshot_date!;
-    const key = `snapshots/${date}/neg-evidence.jsonl.gz`;
+    const date = ctx.snapshot_date;
+    // Whole-file legacy read is the legacy_v1 deploy-transition contract: object
+    // key derived from the pinned object_prefix, no re-read of latest.json.
+    const key = `${ctx.object_prefix}neg-evidence.jsonl.gz`;
     const head = await bucket.head(key);
     if (!head) throw new Error(`Legacy neg-evidence not found: ${key}`);
     if (head.size > LEGACY_MAX_BYTES) {
@@ -217,32 +209,41 @@ export async function loadNegEvidenceForCompound(
     eventTypeFilter?: Set<EvidenceType> | null,
     opts?: { offset?: number; limit?: number },
 ): Promise<NegPagedResponse> {
-    // negShardingActive may throw on a failed pointer read -> propagate as-is
-    // (API maps not-found/integrity); it is not a sharded-shard failure.
-    const sharded = await negShardingActive(bucket);
-    // FIX M4: a STALE pointer key (manifest object missing for this date's bucket)
-    // -> key-ABSENT -> legacy. Only an EXISTING manifest engages the inverted
-    // (throw -> 503) path. A throw from the probe itself is a real failure -> 503.
+    // RK-15 PR-A: read latest.json EXACTLY ONCE -> pinned ctx + the v1 raw
+    // sharding flag. A SnapshotContractError (unknown/mixed/corrupt) PROPAGATES
+    // as-is (the API maps it to an integrity error); it is NOT a shard failure.
+    const { ctx, shardingActive } = await readNegContext(bucket);
+
+    // FIX M4: a STALE pointer key (manifest object missing for this snapshot's
+    // bucket) -> key-ABSENT -> legacy. Only an EXISTING manifest engages the
+    // inverted (throw -> 503) path. A throw from the probe itself is a real
+    // failure -> 503.
     let manifestPresent = false;
-    if (sharded) {
+    if (shardingActive) {
         try {
-            manifestPresent = await negBucketManifestExists(bucket, compoundId);
+            manifestPresent = await negBucketManifestExists(bucket, ctx, compoundId);
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             throw new NegShardError(`Sharded neg-evidence read failed: ${msg}`);
         }
     }
-    if (sharded && manifestPresent) {
+    if (shardingActive && manifestPresent) {
         try {
             // event_type filter applied INSIDE the sharded path (filtered total +
             // aggregates O(1) from the manifest + a filtered page-walk).
-            return await loadNegEvidencePage(bucket, compoundId, baseUrl, opts, eventTypeFilter);
+            return await loadNegEvidencePage(bucket, ctx, compoundId, baseUrl, opts, eventTypeFilter);
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             throw new NegShardError(`Sharded neg-evidence read failed: ${msg}`);
         }
     }
-    return loadNegEvidenceLegacy(bucket, compoundId, baseUrl, eventTypeFilter);
+    // Legacy whole-file fallback is v1-only (a v2 snapshot has no whole-file
+    // contract). For v2 with no sharded manifest published, surface LOUD rather
+    // than guess a v1 path.
+    if (ctx.layout_version !== 'legacy_v1') {
+        throw new NegShardError('immutable_snapshot_v2 has no sharded neg manifest and no whole-file fallback');
+    }
+    return loadNegEvidenceLegacy(bucket, ctx, compoundId, baseUrl, eventTypeFilter);
 }
 
 export type { NegPagedResponse, NegSummary };

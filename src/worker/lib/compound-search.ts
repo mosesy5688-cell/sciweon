@@ -20,6 +20,7 @@
  */
 
 import { fetchR2GunzippedText, fetchR2JsonText } from './r2-fetch';
+import { type SnapshotContext, loadSnapshotContext } from './snapshot-context';
 
 const SEARCH_PROJECTION = 'compounds-search.jsonl.gz';
 const FULL_ENRICHED = 'compounds-enriched.jsonl.gz';
@@ -86,12 +87,12 @@ export async function searchCompounds(
     query: string,
     limit: number,
 ): Promise<CompoundSummary[]> {
-    const ptrText = await fetchR2JsonText(bucket, 'snapshots/latest.json');
-    const ptr = JSON.parse(ptrText) as { latest_snapshot_date?: string };
-    const date = ptr.latest_snapshot_date;
-    if (!date) return [];
+    // RK-15 PR-A: read latest.json EXACTLY ONCE -> pinned dual-contract ctx.
+    // SnapshotContractError propagates (LOUD); the corpus key comes from the
+    // pinned object_prefix, never re-derived from a re-read date.
+    const ctx = await loadSnapshotContext(k => fetchR2JsonText(bucket, k));
 
-    const text = await fetchSearchCorpus(bucket, date);
+    const text = await fetchSearchCorpus(bucket, ctx);
     const hits: SearchHit[] = [];
 
     for (const line of text.split('\n')) {
@@ -112,9 +113,12 @@ export async function searchCompounds(
  * A head() probe distinguishes "absent" (fall back) from a genuine read
  * failure (propagate as a thrown error rather than mask a corrupt projection).
  */
-async function fetchSearchCorpus(bucket: R2Bucket, date: string): Promise<string> {
-    const projKey = `snapshots/${date}/${SEARCH_PROJECTION}`;
+async function fetchSearchCorpus(bucket: R2Bucket, ctx: SnapshotContext): Promise<string> {
+    // v2 declares object_prefix; v1's object_prefix is `snapshots/<date>/`. Both
+    // resolve the projection / full-enriched siblings relative to that prefix —
+    // no date string is re-assembled here.
+    const projKey = `${ctx.object_prefix}${SEARCH_PROJECTION}`;
     const head = await bucket.head(projKey);
     if (head) return fetchR2GunzippedText(bucket, projKey);
-    return fetchR2GunzippedText(bucket, `snapshots/${date}/${FULL_ENRICHED}`);
+    return fetchR2GunzippedText(bucket, `${ctx.object_prefix}${FULL_ENRICHED}`);
 }

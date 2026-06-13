@@ -30,3 +30,51 @@ export function shardKeyFor(snapshotDate: string, bucket: number, shard: number)
 export function manifestKeyFor(snapshotDate: string, bucket: number): string {
     return `${bucketKey(snapshotDate, bucket)}/manifest.json`;
 }
+
+/**
+ * RK-15 PR-A — context-aware key derivation.
+ *
+ * legacy_v1: date-derived (the v1 contract, unchanged).
+ * immutable_snapshot_v2: derived RELATIVE to the declared compounds_manifest_key
+ *   prefix — NEVER reassembled from a date/run_id. The v2 producer declares
+ *   `.../compounds/bucket-NNNN/manifest.json`; the bucket prefix is that
+ *   manifest's parent dir, and shards are siblings under it.
+ */
+import type { SnapshotContext } from './snapshot-context';
+
+function padBucket(bucket: number): string {
+    return String(bucket).padStart(4, '0');
+}
+function padShard(shard: number): string {
+    return String(shard).padStart(3, '0');
+}
+
+/** v2 compounds-root: the declared compounds_manifest_key's grandparent
+ * `.../compounds/` (strip `bucket-NNNN/manifest.json`). */
+function v2CompoundsRoot(ctx: SnapshotContext): string {
+    const key = ctx.compounds_manifest_key;
+    if (!key) {
+        throw new Error('immutable_snapshot_v2 context lacks compounds_manifest_key');
+    }
+    // Declared form: <prefix>/compounds/bucket-NNNN/manifest.json
+    const marker = '/compounds/';
+    const i = key.indexOf(marker);
+    if (i < 0) {
+        throw new Error(`v2 compounds_manifest_key has no /compounds/ segment: ${key}`);
+    }
+    return key.slice(0, i + marker.length); // ends with `compounds/`
+}
+
+export function manifestKeyForCtx(ctx: SnapshotContext, bucket: number): string {
+    if (ctx.layout_version === 'immutable_snapshot_v2') {
+        return `${v2CompoundsRoot(ctx)}bucket-${padBucket(bucket)}/manifest.json`;
+    }
+    return manifestKeyFor(ctx.snapshot_date, bucket);
+}
+
+export function shardKeyForCtx(ctx: SnapshotContext, bucket: number, shard: number): string {
+    if (ctx.layout_version === 'immutable_snapshot_v2') {
+        return `${v2CompoundsRoot(ctx)}bucket-${padBucket(bucket)}/shard-${padShard(shard)}.bin`;
+    }
+    return shardKeyFor(ctx.snapshot_date, bucket, shard);
+}
