@@ -1,0 +1,69 @@
+name: RK-15 V2 Verify
+
+# RK-15 V2 — isolated real same-day A/B immutable-publish verification harness.
+#
+# Proves on REAL R2, via the REAL producer code paths, that two same-day
+# publishes A and B (TWO real workflow runs, same session_id + UTC date,
+# DIFFERENT GITHUB_RUN_ID) get distinct immutable prefixes, B never touches A,
+# candidate validation + CAS isolated-latest activation + ACTIVE confirmation
+# work, and BOTH are independently readable.
+#
+# FOUNDER-TRIGGERED ONLY: workflow_dispatch (no push / no schedule /
+# no workflow_run). Run phase=A first, then phase=B (same session_id) as a
+# SEPARATE run so GITHUB_RUN_ID differs (the real two-run A/B design).
+#
+# ISOLATED CONTRACT: every write lands under rk15-verification/v2/<session_id>/
+# (the harness GUARD hard-fails any write outside it). Production
+# snapshots/latest.json is GET-only (the before/after invariance check). The job
+# goes RED if the harness exits non-zero.
+
+on:
+  workflow_dispatch:
+    inputs:
+      session_id:
+        description: 'Isolation session id (use the SAME id for phase A and phase B)'
+        required: true
+        type: string
+      phase:
+        description: 'A = first publish, B = second same-day publish (run A first, then B)'
+        required: true
+        type: choice
+        options:
+          - A
+          - B
+
+permissions:
+  contents: read
+
+jobs:
+  rk15-v2-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+      - name: Run RK-15 V2 verification harness (phase ${{ inputs.phase }})
+        run: node scripts/verify/rk15-v2-publish.js --phase=${{ inputs.phase }} --session=${{ inputs.session_id }}
+      - name: Upload evidence artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rk15-v2-evidence-${{ inputs.phase }}-${{ inputs.session_id }}
+          path: rk15-v2-evidence-*.json
+          retention-days: 90
+          if-no-files-found: warn
