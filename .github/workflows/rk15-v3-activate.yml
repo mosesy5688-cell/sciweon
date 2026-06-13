@@ -1,0 +1,82 @@
+name: RK-15 V3-B Activate
+
+# RK-15 V3-B — PRODUCTION activation of the EXACT audited V3-A candidate.
+#
+# Accepts ONLY the exact audited candidate (the V3-A descriptor: object_prefix +
+# snapshot_id + manifest_hash + candidate_payload_hash + v3a_run_id),
+# re-validates it by its OWN keys, warms the legacy serving paths (no
+# purge-first), then activates it with a SINGLE CAS of production
+# snapshots/latest.json (If-Match) to the EXACT candidate payload. NO rebuild /
+# NO backfill — the V3-B WRITE-GUARD enforces exactly ONE PutObject,
+# key==snapshots/latest.json, carrying If-Match.
+#
+# FOUNDER-TRIGGERED ONLY: workflow_dispatch (no push / no schedule /
+# no workflow_run — F3/F1 are unreachable from here). Run this ONLY after a
+# successful V3-A run, passing that run's exact descriptor. The job goes RED if
+# the harness exits non-zero (incl. a CAS conflict: old latest left unchanged).
+
+on:
+  workflow_dispatch:
+    inputs:
+      object_prefix:
+        description: 'V3-A candidate object_prefix (snapshots/<date>/<runId>-<attempt>/)'
+        required: true
+        type: string
+      snapshot_id:
+        description: 'V3-A candidate snapshot_id (<date>/<runId>-<attempt>)'
+        required: true
+        type: string
+      manifest_hash:
+        description: 'V3-A candidate manifest_hash'
+        required: true
+        type: string
+      candidate_payload_hash:
+        description: 'V3-A candidate _candidate_latest.json payload sha256'
+        required: true
+        type: string
+      v3a_run_id:
+        description: 'The V3-A GITHUB_RUN_ID that produced the candidate'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  rk15-v3-activate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+      - name: Run RK-15 V3-B activation (ONE CAS of production latest)
+        run: >-
+          node scripts/verify/rk15-v3-activate.js
+          --object-prefix=${{ inputs.object_prefix }}
+          --snapshot-id=${{ inputs.snapshot_id }}
+          --manifest-hash=${{ inputs.manifest_hash }}
+          --candidate-payload-hash=${{ inputs.candidate_payload_hash }}
+          --v3a-run-id=${{ inputs.v3a_run_id }}
+      - name: Upload V3-B evidence artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rk15-v3b-evidence
+          path: rk15-v3b-evidence.json
+          retention-days: 90
+          if-no-files-found: warn
