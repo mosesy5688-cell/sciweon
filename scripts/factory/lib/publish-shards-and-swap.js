@@ -20,9 +20,26 @@
  */
 
 import { PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { isConditionalUnsupported } from './snapshot-identity.js';
 
 const SWAP_MAX_RETRIES = 6;
 const LATEST_KEY = 'snapshots/latest.json';
+
+/**
+ * Typed fatal: the store rejected the conditional header itself (400/501/the
+ * NotImplemented markers). latest.json is the ONE mutable pointer — RK-15's
+ * immutable-publish contract FORBIDS an unconditional overwrite path. When CAS
+ * semantics are unsupported we REFUSE to swap (fail-loud) and leave latest.json
+ * UNCHANGED; the caller's candidate stays ACTIVATABLE / NOT ACTIVE and the run
+ * exits non-zero.
+ */
+export class ConditionalUnsupportedError extends Error {
+    constructor(cause) {
+        super('[SWAP] conditional writes unsupported by the store -> refusing to swap latest.json unconditionally (RK-15 immutable-publish contract); latest.json left UNCHANGED');
+        this.name = 'ConditionalUnsupportedError';
+        if (cause) this.cause = cause;
+    }
+}
 
 async function streamToString(body) {
     const chunks = [];
@@ -85,18 +102,24 @@ export async function swapLatestPointer(client, bucket, updates, expectKeys = []
         } catch (err) {
             lastErr = err;
             if (isPreconditionFailed(err)) {
-                // Concurrent writer won the race — re-GET, re-merge, retry.
+                // A 412 / real CAS conflict: a concurrent writer won the race.
+                // Re-GET latest at the top of the loop, re-merge, and retry — the
+                // retry STILL carries the conditional header (If-Match, or
+                // IfNoneMatch:'*' on first-create). Bounded by SWAP_MAX_RETRIES.
                 continue;
             }
-            // R2 may reject the conditional header itself (NotImplemented/400).
-            // Fall back to an unconditional read-merge-write for this attempt.
-            if (/not implemented|invalidargument|badrequest|conditional/i.test(err.message ?? '')
-                || err.$metadata?.httpStatusCode === 400 || err.$metadata?.httpStatusCode === 501) {
-                delete put.IfMatch; delete put.IfNoneMatch;
-                await client.send(new PutObjectCommand(put));
-            } else {
-                throw err;
+            // The store rejected the conditional header itself (400/501/the
+            // NotImplemented markers). There is NO unconditional fallback —
+            // latest.json is the ONE mutable pointer; an unconditional overwrite
+            // is forbidden by RK-15. Fail LOUD with a TYPED fatal so the caller's
+            // candidate stays ACTIVATABLE / NOT ACTIVE and the run exits non-zero.
+            // (isConditionalUnsupported only LABELS the fatal — it does NOT select
+            // an alternate write path; there is no longer any such path.)
+            if (isConditionalUnsupported(err)) {
+                throw new ConditionalUnsupportedError(err);
             }
+            // Any other error is genuinely unexpected — re-throw as-is.
+            throw err;
         }
         // Post-swap re-read assertion: ALL expected keys must be present.
         const { json: after } = await getLatest(client, bucket);
