@@ -25,7 +25,9 @@ function envReady() {
     return REQUIRED_ENV.every(k => process.env[k]);
 }
 
-function makeClient() {
+// Build the R2 S3Client from env. Exported (makeR2Client) so verification
+// harnesses exercise the SAME client construction the producer uses.
+export function makeR2Client() {
     if (!envReady()) {
         const missing = REQUIRED_ENV.filter(k => !process.env[k]);
         throw new Error(`R2 env not configured (missing: ${missing.join(', ')})`);
@@ -64,7 +66,7 @@ async function putObjectBuf(client, key, body, contentType = 'application/octet-
 }
 
 export async function readStagePointer(stage) {
-    const client = makeClient();
+    const client = makeR2Client();
     const key = `processed/${stage}/latest.json`;
     try {
         const buf = await getObjectBuf(client, key);
@@ -82,7 +84,7 @@ export async function downloadStage(stage, files) {
     if (!pointer || !pointer.run_id) {
         throw new Error(`No previous run found at processed/${stage}/latest.json`);
     }
-    const client = makeClient();
+    const client = makeR2Client();
     await fs.mkdir(LINKED_DIR, { recursive: true });
     let count = 0;
     let bytes = 0;
@@ -116,7 +118,7 @@ export async function downloadStage(stage, files) {
 }
 
 export async function uploadStage(stage, runId, files) {
-    const client = makeClient();
+    const client = makeR2Client();
     let count = 0;
     let bytes = 0;
     // V0.5.x policy (2026-05-15): every declared output must exist locally
@@ -166,7 +168,7 @@ export async function uploadStage(stage, runId, files) {
 }
 
 export async function uploadRaw(prefix, runId, localFiles) {
-    const client = makeClient();
+    const client = makeR2Client();
     let count = 0;
     let bytes = 0;
     // V0.5.x policy (2026-05-15): every declared local file must exist.
@@ -207,7 +209,7 @@ export async function uploadRaw(prefix, runId, localFiles) {
  * comparison or cumulative merge (V0.5.2.1 cumulative aggregation).
  */
 export async function downloadStageByRunId(stage, runId, files) {
-    const client = makeClient();
+    const client = makeR2Client();
     const result = {};
     for (const fname of files) {
         const key = `processed/${stage}/${runId}/${fname}`;

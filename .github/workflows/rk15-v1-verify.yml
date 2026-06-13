@@ -1,0 +1,51 @@
+name: RK-15 V1 Verify
+
+# RK-15 V1 — real-R2 conditional-write + failure-isolation verification harness.
+#
+# Proves on REAL R2 that create-only (IfNoneMatch:'*') and CAS (If-Match:<etag>)
+# are actually ENFORCED, that a 412 propagates with no degrade to an unconditional
+# PUT, and that production snapshots/latest.json is left byte-identical.
+#
+# FOUNDER-TRIGGERED ONLY: workflow_dispatch (no push / no schedule / no
+# workflow_run). All writes land in the ISOLATED namespace
+# rk15-verification/<run_id>/...; production latest.json is read-only.
+# The job goes RED if the harness exits non-zero (v1_pass=false).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rk15-v1-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+      - name: Run RK-15 V1 verification harness
+        run: node scripts/verify/rk15-v1-verify.js
+      - name: Upload evidence artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rk15-v1-evidence
+          path: rk15-v1-evidence.json
+          retention-days: 90
+          if-no-files-found: warn
