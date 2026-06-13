@@ -1,0 +1,59 @@
+name: RK-15 V3-C Serving Acceptance
+
+# RK-15 V3-C — STRICT READ-ONLY serving acceptance.
+#
+# Proves full serving acceptance + a source->candidate->live three-layer parity
+# against the EXACT immutable candidate V3-B already CAS-activated to production
+# latest (snapshots/2026-06-13/27467183738-1/). It does NOT re-activate
+# anything, NOT write R2, NOT change latest, NOT purge cache — the harness routes
+# every R2 call through a read-only guard (a PutObject -> HARD FAIL; the evidence
+# pack's put_count MUST be 0). The live worker is probed by HTTP GET only.
+#
+# FOUNDER-TRIGGERED ONLY: workflow_dispatch (no push / no schedule /
+# no workflow_run — F3/F1 are unreachable from here). worker_base_url is
+# REQUIRED; a missing URL is a FAILURE, never a silent skip.
+
+on:
+  workflow_dispatch:
+    inputs:
+      worker_base_url:
+        description: 'Live worker base URL (e.g. https://sciweon.com) — REQUIRED'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  rk15-v3c-serving-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      WORKER_BASE_URL: ${{ inputs.worker_base_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+      - name: Run RK-15 V3-C serving acceptance (STRICT READ-ONLY)
+        run: node scripts/verify/rk15-v3c-serving-acceptance.js
+      - name: Upload V3-C evidence artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rk15-v3c-evidence
+          path: rk15-v3c-evidence.json
+          retention-days: 90
+          if-no-files-found: warn
