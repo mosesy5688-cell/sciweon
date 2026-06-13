@@ -16,9 +16,12 @@
  */
 
 import { fetchR2GunzippedText, fetchR2JsonText, fetchR2RangeBytes } from './r2-fetch';
-import { getBucket, shardKeyFor } from './compound-bucket-router';
+import { getBucket, shardKeyForCtx } from './compound-bucket-router';
 import { loadManifest } from './compound-manifest-loader';
 import { decryptPayload, decompressPayload } from './shard-codec';
+import {
+    type SnapshotContext, loadSnapshotContext, snapshotIdentityToken,
+} from './snapshot-context';
 import type { Env } from '../../worker';
 
 /**
@@ -63,12 +66,6 @@ interface BulkIndex {
     shards: ShardEntry[];
 }
 
-interface LatestPointer {
-    latest_snapshot_date?: string;
-    manifest_key?: string;
-    compounds_manifest_key?: string;
-}
-
 function cidRunMonths(): string[] {
     const d = new Date();
     const cur = d.toISOString().slice(0, 7);
@@ -100,6 +97,15 @@ export type CompoundRecord = Record<string, unknown>;
  */
 export async function loadTier1(env: Env, cid: number): Promise<CompoundRecord | null> {
     if (!env.SCIWEON_R2) return null;
+    const r2 = env.SCIWEON_R2;
+
+    // RK-15 PR-A — read latest.json EXACTLY ONCE per request and pin it. The
+    // dual-contract parser throws SnapshotContractError on unknown/mixed/corrupt
+    // (LOUD; propagates to the API as a 500/integrity error). The SAME ctx is
+    // threaded into BOTH the sharded path and the deploy-transition legacy path
+    // below — neither re-reads latest.json.
+    const ctx = await loadSnapshotContext(k => fetchR2JsonText(r2, k));
+
     try {
         // Sharded path ran to completion. Null means CID not in manifest —
         // authoritative absence, return null directly (caller will 404).
@@ -107,30 +113,36 @@ export async function loadTier1(env: Env, cid: number): Promise<CompoundRecord |
         // CID-absent case. Legacy at 45K+ cumulative crashes Worker (the 503
         // cliff that triggered this whole work). Only fall back when sharded
         // path itself THROWS (manifest missing during deploy transition).
-        return await loadTier1Sharded(env, cid);
+        return await loadTier1Sharded(env, ctx, cid);
     } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.warn(`[compound-loader] Shard path failed (${msg}), falling back to legacy gunzip`);
-        return loadTier1Legacy(env, cid);
+        return loadTier1Legacy(env, ctx, cid);
     }
 }
 
-async function loadTier1Sharded(env: Env, cid: number): Promise<CompoundRecord | null> {
+async function loadTier1Sharded(env: Env, ctx: SnapshotContext, cid: number): Promise<CompoundRecord | null> {
     const r2 = env.SCIWEON_R2!;
-    const ptrText = await fetchR2JsonText(r2, 'snapshots/latest.json');
-    const ptr = JSON.parse(ptrText) as LatestPointer;
-    const snapshotDate = ptr.latest_snapshot_date;
-    if (!snapshotDate || !ptr.compounds_manifest_key) {
-        // No sharded manifest published yet → caller will fall back to legacy
-        throw new Error('No compounds_manifest_key in latest.json — sharded path not yet active');
+    // v2 declares compounds_manifest_key; v1 derives it per-bucket from the date.
+    // A v1 snapshot with no sharded compounds layout published yet is detected by
+    // a missing bucket manifest (loadManifest throws -> legacy fallback). We no
+    // longer key off a compounds_manifest_key STRING in latest.json: in v2 the
+    // declared key IS the contract, in v1 the date-derived key is the contract.
+    if (ctx.layout_version === 'immutable_snapshot_v2' && !ctx.compounds_manifest_key) {
+        // A precise v2 always carries compounds_manifest_key (parser enforces);
+        // defensive guard keeps the invariant explicit.
+        throw new Error('immutable_snapshot_v2 context lacks compounds_manifest_key');
     }
     const bucket = getBucket(cid);
-    const manifest = await loadManifest(r2, bucket, snapshotDate);
+    const manifest = await loadManifest(r2, bucket, ctx);
     const entry = manifest.byCid.get(cid);
     if (!entry) return null; // not present in current snapshot; do NOT fall back, this is authoritative
 
-    const key = shardKeyFor(snapshotDate, bucket, entry.shard);
-    const bytes = await fetchR2RangeBytes(r2, key, entry.offset, entry.size);
+    const key = shardKeyForCtx(ctx, bucket, entry.shard);
+    // Identity-bound range cache: the range cache key embeds the snapshot
+    // identity so a stale entry can NEVER index a different snapshot's shard
+    // bytes at the same (key, offset, length).
+    const bytes = await fetchR2RangeBytes(r2, key, entry.offset, entry.size, snapshotIdentityToken(ctx));
     const decrypted = decryptPayload(bytes, key, entry.offset, env);
     const text = decompressPayload(decrypted);
     return JSON.parse(text);
@@ -146,19 +158,18 @@ async function loadTier1Sharded(env: Env, cid: number): Promise<CompoundRecord |
  * error PROPAGATES (it is not caught by the surrounding try) so the OOM signal
  * is never silently swallowed into a false 404.
  */
-async function loadTier1Legacy(env: Env, cid: number): Promise<CompoundRecord | null> {
+async function loadTier1Legacy(env: Env, ctx: SnapshotContext, cid: number): Promise<CompoundRecord | null> {
     const bucket = env.SCIWEON_R2!;
-    let date: string | undefined;
-    let key: string;
-    try {
-        const ptrText = await fetchR2JsonText(bucket, 'snapshots/latest.json');
-        const ptr = JSON.parse(ptrText) as LatestPointer;
-        date = ptr.latest_snapshot_date;
-        if (!date) return null;
-        key = `snapshots/${date}/compounds-enriched.jsonl.gz`;
-    } catch {
+    // RK-15 PR-A: the legacy whole-file path is the legacy_v1 deploy-transition
+    // fallback only. It NEVER re-reads latest.json — it uses the SAME pinned ctx
+    // and derives the whole-file key from the pinned object_prefix. A v2 snapshot
+    // has no legacy whole-file contract, so the fallback is v1-only.
+    if (ctx.layout_version !== 'legacy_v1') {
+        // v2 sharded read failed and there is no v2 whole-file fallback ->
+        // surface the failure (do not silently 404).
         return null;
     }
+    const key = `${ctx.object_prefix}compounds-enriched.jsonl.gz`;
     // head().size OOM guard — OUTSIDE the catch so it surfaces (503), not null.
     const head = await bucket.head(key);
     if (!head) return null; // absent file -> authoritative null (caller 404s)

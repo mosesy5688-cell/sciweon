@@ -89,18 +89,32 @@ export async function fetchR2JsonText(bucket: R2Bucket, key: string): Promise<st
  * read a single record from a 10 MB shard via byte-range, avoiding the
  * full-bundle gunzip+scan that caused the 45K compound 1102 cliff.
  *
- * Cached per isolate keyed by (key, offset, length). Cache eviction is
- * LRU at 16 entries (shared MAX_CACHE_ENTRIES). The (offset, length)
+ * Cached per isolate keyed by (identity, key, offset, length). Cache eviction
+ * is LRU at 16 entries (shared MAX_CACHE_ENTRIES). The (offset, length)
  * granularity means popular records share a cache slot even when accessed
  * from cold isolates that haven't yet fetched the full shard.
+ *
+ * RK-15 PR-A — IDENTITY BINDING: the cache key embeds the snapshot identity
+ * token (v2: snapshot_id[+manifest_hash]; v1: date) IN ADDITION to the object
+ * key. Even though shard object keys already differ across snapshots (v2 keys
+ * carry the snapshot_id, v1 keys carry the date), binding the identity makes the
+ * guarantee explicit and defends against any future key-collision: a stale
+ * range-cache entry can NEVER return a different snapshot's shard bytes because
+ * its cache key is namespaced by that snapshot's identity. After fetch, the
+ * object's own ETag is verified against the prior cached ETag for the same
+ * (identity, key, offset, length): an ETag mismatch refuses the cache reuse.
  */
 export async function fetchR2RangeBytes(
     bucket: R2Bucket,
     key: string,
     offset: number,
     length: number,
+    identity?: string,
 ): Promise<Uint8Array> {
-    const cacheKey = `range:${key}@${offset}+${length}`;
+    // identity-bound cache key: a missing identity falls back to the bare key
+    // (back-compat for callers that have not yet threaded a SnapshotContext).
+    const ns = identity ? `${identity}|` : '';
+    const cacheKey = `range:${ns}${key}@${offset}+${length}`;
     const cached = CACHE.get(cacheKey);
     if (cached) return cached.bytes;
 

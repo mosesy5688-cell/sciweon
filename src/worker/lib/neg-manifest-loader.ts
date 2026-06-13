@@ -12,7 +12,8 @@
  */
 
 import { fetchR2JsonText } from './r2-fetch';
-import { negManifestKeyFor } from './neg-shard-router';
+import { negManifestKeyForCtx } from './neg-shard-router';
+import { type SnapshotContext, snapshotIdentityToken } from './snapshot-context';
 
 // Mirror of the compound loader's cap idea. Per-bucket manifests are tiny
 // (~36 entries at 37k keys / 1024 buckets), but the cap is a tripwire: if a
@@ -83,24 +84,31 @@ function pruneCache(): void {
     }
 }
 
+/**
+ * RK-15 PR-A: cache keys bound to the snapshot IDENTITY (v2: snapshot_id
+ * [+manifest_hash]; v1: date) + the object key. Object key derived from the
+ * pinned ctx (v2: declared neg root; v1: date-derived).
+ */
 export async function loadNegBucketManifest(
     bucket: R2Bucket,
     bucketIndex: number,
-    snapshotDate: string,
+    ctx: SnapshotContext,
 ): Promise<NegManifestIndexes> {
-    const cacheKey = `neg-manifest:${snapshotDate}:${bucketIndex}`;
+    const identity = snapshotIdentityToken(ctx);
+    const key = negManifestKeyForCtx(ctx, bucketIndex);
+    const cacheKey = `neg-manifest:${identity}:${bucketIndex}`;
 
     const cached = ISOLATE_CACHE.get(cacheKey);
     if (cached) return cached;
 
-    const cacheApiUrl = `https://neg-manifest-cache.sciweon.internal/${snapshotDate}/${bucketIndex}`;
+    const cacheApiUrl =
+        `https://neg-manifest-cache.sciweon.internal/${encodeURIComponent(identity)}/${encodeURIComponent(key)}`;
     const cacheApiReq = new Request(cacheApiUrl);
     const cacheApiHit = await caches.default.match(cacheApiReq);
     let text: string;
     if (cacheApiHit) {
         text = await cacheApiHit.text();
     } else {
-        const key = negManifestKeyFor(snapshotDate, bucketIndex);
         text = await fetchR2JsonText(bucket, key);
         const cacheResp = new Response(text, {
             headers: {

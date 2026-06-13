@@ -10,6 +10,13 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
+import { parseSnapshotContext } from '../../src/worker/lib/snapshot-context';
+
+// RK-15 PR-A: loadXrefKind now takes a pinned SnapshotContext. Build a
+// legacy_v1 ctx for a given date (object key derivation = the v1 contract).
+function v1Ctx(date: string) {
+    return parseSnapshotContext(JSON.stringify({ latest_snapshot_date: date }));
+}
 
 function gzipSync(text: string): Uint8Array {
     const { gzipSync: nodeGzip } = require('zlib');
@@ -48,7 +55,7 @@ describe('xref-index-loader OOM guards', () => {
             async head() { return { size: XREF_MAX_BYTES + 1, etag: 'big' }; },
             async get() { throw new Error('should not be reached'); },
         } as unknown as R2Bucket;
-        await expect(loadXrefKind(bucket, '2099-01-01', 'chembl_id')).rejects.toThrow(/OOM guard/);
+        await expect(loadXrefKind(bucket, v1Ctx('2099-01-01'), 'chembl_id')).rejects.toThrow(/OOM guard/);
     });
 
     it('MAX_XREF_ENTRIES per-kind cap throws', async () => {
@@ -59,7 +66,7 @@ describe('xref-index-loader OOM guards', () => {
         const bucket = makeMockBucket({
             'snapshots/2099-01-02/xref-index.json.gz': { bytes: gzipSync(payload), etag: 'huge' },
         });
-        await expect(loadXrefKind(bucket, '2099-01-02', 'chembl_id')).rejects.toThrow(/migration required/);
+        await expect(loadXrefKind(bucket, v1Ctx('2099-01-02'), 'chembl_id')).rejects.toThrow(/migration required/);
     });
 
     it('returns an empty Map when the queried kind is absent from the index', async () => {
@@ -68,7 +75,7 @@ describe('xref-index-loader OOM guards', () => {
         const bucket = makeMockBucket({
             'snapshots/2099-01-03/xref-index.json.gz': { bytes: gzipSync(payload), etag: 'x' },
         });
-        const map = await loadXrefKind(bucket, '2099-01-03', 'rxcui');
+        const map = await loadXrefKind(bucket, v1Ctx('2099-01-03'), 'rxcui');
         expect(map.size).toBe(0);
     });
 });

@@ -13,7 +13,8 @@
  */
 
 import { fetchR2JsonText } from './r2-fetch';
-import { manifestKeyFor } from './compound-bucket-router';
+import { manifestKeyForCtx } from './compound-bucket-router';
+import { type SnapshotContext, snapshotIdentityToken } from './snapshot-context';
 
 export const MAX_MANIFEST_ENTRIES = 500_000;
 
@@ -72,20 +73,31 @@ function pruneCache() {
     }
 }
 
+/**
+ * RK-15 PR-A: cache keys are bound to the snapshot IDENTITY (v2: snapshot_id
+ * [+manifest_hash]; v1: date), not the date alone, so a stale latest can never
+ * cross-index a different snapshot's manifest. The object key is derived from
+ * the pinned SnapshotContext (v2: declared key; v1: date-derived).
+ */
 export async function loadManifest(
     bucket: R2Bucket,
     bucketIndex: number,
-    snapshotDate: string,
+    ctx: SnapshotContext,
 ): Promise<ManifestIndexes> {
-    const cacheKey = `manifest:${snapshotDate}:${bucketIndex}`;
+    const identity = snapshotIdentityToken(ctx);
+    const key = manifestKeyForCtx(ctx, bucketIndex);
+    const cacheKey = `manifest:${identity}:${bucketIndex}`;
 
     // Tier 1: per-isolate Map cache (fastest, ~ns lookup)
     const cached = ISOLATE_CACHE.get(cacheKey);
     if (cached) return cached;
 
     // Tier 2: Cloudflare Cache API (shared across isolates on same colo,
-    // 24h TTL since manifest is immutable per snapshot date)
-    const cacheApiUrl = `https://manifest-cache.sciweon.internal/${snapshotDate}/${bucketIndex}`;
+    // 24h TTL since manifest is immutable per snapshot identity). Key embeds the
+    // full identity token AND the object key so a stale colo entry from a
+    // different snapshot can never be returned here.
+    const cacheApiUrl =
+        `https://manifest-cache.sciweon.internal/${encodeURIComponent(identity)}/${encodeURIComponent(key)}`;
     const cacheApiReq = new Request(cacheApiUrl);
     const cacheApiHit = await caches.default.match(cacheApiReq);
     let text: string;
@@ -93,7 +105,6 @@ export async function loadManifest(
         text = await cacheApiHit.text();
     } else {
         // Tier 3: R2 GET (slowest, ~50-500ms for 50K-entry manifest)
-        const key = manifestKeyFor(snapshotDate, bucketIndex);
         text = await fetchR2JsonText(bucket, key);
         // Populate Cache API for next request from any isolate
         const cacheResp = new Response(text, {

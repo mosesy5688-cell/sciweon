@@ -18,7 +18,8 @@ import { fetchR2JsonText } from './r2-fetch';
 import { loadTrialsForCompound } from './trial-loader';
 import { loadBioactivitiesForCompound } from './bioactivity-loader';
 import { loadPapersForCompound } from './paper-loader';
-import { loadNegEvidenceSummary, type NegSummary } from './neg-evidence-loader';
+import { loadNegEvidenceSummary, emptyNegSummary, type NegSummary } from './neg-evidence-loader';
+import { type SnapshotContext, loadSnapshotContext } from './snapshot-context';
 
 const POSITIVE_TRIAL_STATUSES = new Set([
     'RECRUITING', 'ACTIVE_NOT_RECRUITING', 'ENROLLING_BY_INVITATION', 'COMPLETED', 'AVAILABLE',
@@ -178,20 +179,27 @@ export async function aggregateRepurposingEvidence(
     compoundId: string,
     baseUrl: string,
 ): Promise<RepurposingResponse> {
-    let snapshotDate: string | null = null;
+    // RK-15 PR-A: read latest.json ONCE -> pinned dual-contract ctx, threaded
+    // into loadNegEvidenceSummary. A SnapshotContractError propagates (LOUD); a
+    // plain absent-pointer leaves snapshotDate null + skips the (sharded) neg
+    // summary, preserving the aggregator's prior best-effort behavior.
+    let ctx: SnapshotContext | null = null;
     try {
-        const ptrText = await fetchR2JsonText(bucket, 'snapshots/latest.json');
-        const ptr = JSON.parse(ptrText) as { latest_snapshot_date?: string };
-        snapshotDate = ptr.latest_snapshot_date ?? null;
-    } catch { /* leave null */ }
+        ctx = await loadSnapshotContext(k => fetchR2JsonText(bucket, k));
+    } catch (err) {
+        if (err instanceof Error && err.name === 'SnapshotContractError') throw err;
+        /* absent/unreadable pointer -> leave ctx null (best-effort) */
+    }
+    const snapshotDate: string | null = ctx ? ctx.snapshot_date : null;
 
     const [trials, bios, papers, neg] = await Promise.all([
         loadTrialsForCompound(bucket, compoundId),
         loadBioactivitiesForCompound(bucket, compoundId),
         loadPapersForCompound(bucket, compoundId),
         // PR-T1.1-LEVER: summary path only (manifest entry + first page), NOT
-        // the full neg load — bounds the aggregator's heap too.
-        loadNegEvidenceSummary(bucket, compoundId),
+        // the full neg load — bounds the aggregator's heap too. Skipped when the
+        // pointer is unreadable (ctx null) -> empty neg summary.
+        ctx ? loadNegEvidenceSummary(bucket, ctx, compoundId) : Promise.resolve(emptyNegSummary()),
     ]);
 
     const summary: RepurposingSummary = {

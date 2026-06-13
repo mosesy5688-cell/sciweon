@@ -19,6 +19,7 @@
  */
 
 import { fetchR2GunzippedText } from './r2-fetch';
+import { type SnapshotContext, snapshotIdentityToken } from './snapshot-context';
 
 export type XrefKind =
     | 'chembl_id'
@@ -68,12 +69,30 @@ export function xrefIndexKey(snapshotDate: string): string {
 }
 
 /**
- * Does the xref-index projection exist for this snapshot date? A head() probe
- * the resolver uses to choose the index path vs the deploy-transition fallback
- * (whole-file scan) when the projection is absent (404).
+ * RK-15 PR-A — context-aware xref-index key. v2 reads the DECLARED xref_index_key;
+ * v1 derives it from the pinned date. NEVER reconstructs a v2 path from a date.
  */
-export async function xrefIndexExists(bucket: R2Bucket, snapshotDate: string): Promise<boolean> {
-    const head = await bucket.head(xrefIndexKey(snapshotDate));
+export function xrefIndexKeyForCtx(ctx: SnapshotContext): string {
+    if (ctx.layout_version === 'immutable_snapshot_v2') {
+        if (!ctx.xref_index_key) {
+            throw new Error('immutable_snapshot_v2 context lacks xref_index_key');
+        }
+        return ctx.xref_index_key;
+    }
+    return xrefIndexKey(ctx.snapshot_date);
+}
+
+/**
+ * Does the xref-index projection exist for this snapshot? A head() probe the
+ * resolver uses to choose the index path vs the deploy-transition fallback
+ * (whole-file scan) when the projection is absent (404). Uses the pinned ctx.
+ */
+export async function xrefIndexExists(bucket: R2Bucket, ctx: SnapshotContext): Promise<boolean> {
+    // v2 with no declared xref_index_key -> there is no projection to probe.
+    if (ctx.layout_version === 'immutable_snapshot_v2' && !ctx.xref_index_key) {
+        return false;
+    }
+    const head = await bucket.head(xrefIndexKeyForCtx(ctx));
     return head != null;
 }
 
@@ -86,14 +105,14 @@ export async function xrefIndexExists(bucket: R2Bucket, snapshotDate: string): P
  */
 export async function loadXrefKind(
     bucket: R2Bucket,
-    snapshotDate: string,
+    ctx: SnapshotContext,
     kind: XrefKind,
 ): Promise<Map<string, number>> {
-    const cacheKey = `xref:${snapshotDate}:${kind}`;
+    const identity = snapshotIdentityToken(ctx);
+    const key = xrefIndexKeyForCtx(ctx);
+    const cacheKey = `xref:${identity}:${kind}`;
     const cached = ISOLATE_CACHE.get(cacheKey);
     if (cached) return cached;
-
-    const key = xrefIndexKey(snapshotDate);
 
     // head().size OOM guard BEFORE the gunzip (mirror neg-evidence-loader
     // LEGACY_MAX_BYTES). A missing object surfaces as a thrown error -> the
@@ -105,8 +124,10 @@ export async function loadXrefKind(
     }
 
     // Fetch the whole gzip ONCE (it carries all 7 kinds). Cache API stores the
-    // decompressed JSON text per snapshot date so any isolate reuses it.
-    const cacheApiUrl = `https://xref-cache.sciweon.internal/${snapshotDate}`;
+    // decompressed JSON text keyed by the snapshot IDENTITY (+ the object key) so
+    // a stale colo entry can never be served for a different snapshot.
+    const cacheApiUrl =
+        `https://xref-cache.sciweon.internal/${encodeURIComponent(identity)}/${encodeURIComponent(key)}`;
     const cacheApiReq = new Request(cacheApiUrl);
     const cacheApiHit = await caches.default.match(cacheApiReq);
     let text: string;

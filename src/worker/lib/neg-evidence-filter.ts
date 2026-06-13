@@ -16,19 +16,24 @@ import { type EvidenceType } from './event-type-taxonomy';
 import { negBucketOf } from '../../lib/neg-bucket-hash.js';
 import type { NegManifestEntry, NegPageRef } from './neg-manifest-loader';
 import { decompressPayload } from './shard-codec';
-import { negShardKeyFor } from './neg-shard-router';
+import { negShardKeyForCtx } from './neg-shard-router';
+import { type SnapshotContext, snapshotIdentityToken } from './snapshot-context';
 import type { NegEvidenceRecord, NegFilteredAgg } from './neg-evidence-response';
 
 /**
  * Read one page entity's records (range-read + strict zstd decode + jsonl parse).
  * Shared by the unfiltered window read AND the filtered page-walk. A decode
  * failure THROWS (strict) -> the caller maps it to a LOUD 503.
+ *
+ * RK-15 PR-A: shard key derived from the pinned ctx (v2 declared root / v1 date)
+ * and the range cache is bound to the snapshot identity so a stale entry can
+ * never index a different snapshot's neg shard bytes.
  */
 async function readPageEntities(
-    bucket: R2Bucket, date: string, entryKey: string, page: NegPageRef,
+    bucket: R2Bucket, ctx: SnapshotContext, entryKey: string, page: NegPageRef,
 ): Promise<NegEvidenceRecord[]> {
-    const key = negShardKeyFor(date, negBucketOf(entryKey), page.shard);
-    const bytes = await fetchR2RangeBytes(bucket, key, page.offset, page.size);
+    const key = negShardKeyForCtx(ctx, negBucketOf(entryKey), page.shard);
+    const bytes = await fetchR2RangeBytes(bucket, key, page.offset, page.size, snapshotIdentityToken(ctx));
     const text = decompressPayload(bytes, true); // strict: decode failure -> throw -> 503
     const recs: NegEvidenceRecord[] = [];
     for (const line of text.split('\n')) {
@@ -45,7 +50,7 @@ async function readPageEntities(
  * this range-reads <=2 page-entities.
  */
 export async function readPageRecords(
-    bucket: R2Bucket, date: string, entry: NegManifestEntry, offset: number, limit: number,
+    bucket: R2Bucket, ctx: SnapshotContext, entry: NegManifestEntry, offset: number, limit: number,
 ): Promise<NegEvidenceRecord[]> {
     const records: NegEvidenceRecord[] = [];
     const wantEnd = offset + limit;
@@ -58,7 +63,7 @@ export async function readPageRecords(
         if (pageEnd <= offset) continue;     // entirely before the window
         if (pageStart >= wantEnd) break;      // entirely after the window
         if (decodedStart === -1) decodedStart = pageStart;
-        for (const rec of await readPageEntities(bucket, date, entry.key, page)) {
+        for (const rec of await readPageEntities(bucket, ctx, entry.key, page)) {
             records.push(rec);
         }
     }
@@ -111,14 +116,14 @@ function matchesFilter(rec: NegEvidenceRecord, filter: Set<EvidenceType>): boole
  * records are collected — bounding reads to only the pages the window touches.
  */
 export async function readFilteredPageRecords(
-    bucket: R2Bucket, date: string, entry: NegManifestEntry,
+    bucket: R2Bucket, ctx: SnapshotContext, entry: NegManifestEntry,
     offset: number, limit: number, filter: Set<EvidenceType>,
 ): Promise<NegEvidenceRecord[]> {
     const out: NegEvidenceRecord[] = [];
     let skipped = 0;
     for (const page of entry.pages) {
         if (out.length >= limit) break;
-        const recs = await readPageEntities(bucket, date, entry.key, page);
+        const recs = await readPageEntities(bucket, ctx, entry.key, page);
         for (const rec of recs) {
             if (!matchesFilter(rec, filter)) continue;
             if (skipped < offset) { skipped++; continue; }
