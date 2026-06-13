@@ -16,16 +16,21 @@
 import { createHash } from 'crypto';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { swapLatestPointer } from './publish-shards-and-swap.js';
+import { objectPrefixFor, compoundsShardKey } from './snapshot-identity.js';
 
 function sha256(buf) {
     return createHash('sha256').update(buf).digest('hex');
 }
 
-function pad4(n) { return String(n).padStart(4, '0'); }
-function pad3(n) { return String(n).padStart(3, '0'); }
-
-function shardKeyFor(snapshotDate, bucket, shardId) {
-    return `snapshots/${snapshotDate}/compounds/bucket-${pad4(bucket)}/shard-${pad3(shardId)}.bin`;
+/**
+ * RK-15 PR-B: candidate integrity reads the shard keys RELATIVE to the
+ * candidate's own object_prefix (the manifest declares it), NEVER a date-derived
+ * path — so the re-read verifies THIS candidate, never the active snapshot. A
+ * caller passing only a date (legacy) falls back to the date-derived prefix.
+ */
+function shardKeyFor(manifest, snapshotDate, bucket, shardId) {
+    const prefix = manifest.object_prefix || objectPrefixFor(snapshotDate);
+    return compoundsShardKey(prefix, bucket, shardId);
 }
 
 export async function verifyShardIntegrity(client, bucket, snapshotDate, manifest, sampleCount = 3) {
@@ -43,7 +48,7 @@ export async function verifyShardIntegrity(client, bucket, snapshotDate, manifes
         targets.push(shards[idx]);
     }
     for (const t of targets) {
-        const key = shardKeyFor(snapshotDate, manifest.bucket, t.shard);
+        const key = shardKeyFor(manifest, snapshotDate, manifest.bucket, t.shard);
         const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
         const chunks = [];
         for await (const c of res.Body) chunks.push(c);

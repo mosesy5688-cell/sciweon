@@ -23,10 +23,12 @@ import { createReadStream } from 'fs';
 import readline from 'readline';
 import path from 'path';
 import { createHash } from 'crypto';
-import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { ShardWriter } from './shard-writer.js';
 import { NEG_BUCKET_COUNT, negKeyOf, negBucketOf } from '../../../src/lib/neg-bucket-hash.js';
 import { NEG_EVIDENCE_TYPES } from '../../../src/lib/schemas/neg-evidence-types.js';
+import {
+    objectPrefixFor, negShardKey, negManifestKey, putCreateOnly,
+} from './snapshot-identity.js';
 
 export const NEG_PAGE_SIZE = 64;
 const MAX_SHARD_BYTES = 10 * 1024 * 1024;
@@ -35,16 +37,6 @@ const SEVERITY_ORDER = ['critical', 'major', 'minor', 'unknown'];
 function pad4(n) { return String(n).padStart(4, '0'); }
 function pad3(n) { return String(n).padStart(3, '0'); }
 function sha256(buf) { return createHash('sha256').update(buf).digest('hex'); }
-
-function bucketPrefix(date, bucket) {
-    return `snapshots/${date}/neg-evidence/bucket-${pad4(bucket)}`;
-}
-function shardKey(date, bucket, shardId) {
-    return `${bucketPrefix(date, bucket)}/shard-${pad3(shardId)}.bin`;
-}
-function manifestKey(date, bucket) {
-    return `${bucketPrefix(date, bucket)}/manifest.json`;
-}
 
 /**
  * Read the validated jsonl line-by-line. Returns a Map<bucket, Map<key,
@@ -172,11 +164,12 @@ async function packBucket(keyMap, outputDir) {
     return { entries, shardFiles };
 }
 
-function buildManifest(date, bucket, entries, shardFiles) {
+function buildManifest(date, bucket, entries, shardFiles, objectPrefix) {
     return {
         version: '1.0',
         bucket,
         snapshot_date: date,
+        object_prefix: objectPrefix,
         generated_at: new Date().toISOString(),
         total_records: entries.reduce((s, e) => s + e.total, 0),
         shard_count: shardFiles.length,
@@ -192,8 +185,9 @@ function buildManifest(date, bucket, entries, shardFiles) {
  * manifests. Returns { totalRecords, bucketCount, manifestKeys, sumOfTotals }.
  * sumOfTotals is the PRESERVE-ALL gate input (must === wc-l of the jsonl).
  */
-export async function publishNegShards({ client, bucket: r2Bucket, jsonlPath, snapshotDate, outputRoot }) {
+export async function publishNegShards({ client, bucket: r2Bucket, jsonlPath, snapshotDate, outputRoot, objectPrefix }) {
     const startTime = Date.now();
+    const prefix = objectPrefix || objectPrefixFor(snapshotDate);
     console.log(`[NEG-PUBLISHER] Reading ${jsonlPath} (NEG_BUCKET_COUNT=${NEG_BUCKET_COUNT}, page=${NEG_PAGE_SIZE})`);
     const { byBucket, total, skippedMalformed } = await groupNegByBucket(jsonlPath);
     if (skippedMalformed > 0) {
@@ -209,20 +203,16 @@ export async function publishNegShards({ client, bucket: r2Bucket, jsonlPath, sn
         const outDir = path.join(outputRoot, snapshotDate, 'neg-evidence', `bucket-${pad4(bucket)}`);
         const { entries, shardFiles } = await packBucket(keyMap, outDir);
         for (const sf of shardFiles) {
-            await client.send(new PutObjectCommand({
-                Bucket: r2Bucket, Key: shardKey(snapshotDate, bucket, sf.shardId),
-                Body: sf.bytes, ContentType: 'application/octet-stream',
-            }));
+            await putCreateOnly(client, r2Bucket, negShardKey(prefix, bucket, sf.shardId),
+                sf.bytes, 'application/octet-stream');
         }
-        const manifest = buildManifest(snapshotDate, bucket, entries, shardFiles);
-        const mfKey = manifestKey(snapshotDate, bucket);
-        await client.send(new PutObjectCommand({
-            Bucket: r2Bucket, Key: mfKey, Body: JSON.stringify(manifest), ContentType: 'application/json',
-        }));
+        const manifest = buildManifest(snapshotDate, bucket, entries, shardFiles, prefix);
+        const mfKey = negManifestKey(prefix, bucket);
+        await putCreateOnly(client, r2Bucket, mfKey, JSON.stringify(manifest), 'application/json');
         manifestKeys.push(mfKey);
-        // Keep only the integrity metadata (not the full entries) so the
-        // returned object stays small for the verifier.
-        manifests.push({ bucket: manifest.bucket, shard_hashes: manifest.shard_hashes });
+        // Keep only the integrity metadata (+ object_prefix so the verifier reads
+        // candidate keys) so the returned object stays small for the verifier.
+        manifests.push({ bucket: manifest.bucket, object_prefix: prefix, shard_hashes: manifest.shard_hashes });
         sumOfTotals += manifest.total_records;
         shardCount += shardFiles.length;
     }

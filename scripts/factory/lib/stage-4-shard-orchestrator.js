@@ -20,19 +20,19 @@ import path from 'path';
 import { HeadObjectCommand } from '@aws-sdk/client-s3';
 import { publishCompoundShards } from './compound-shard-publisher.js';
 import { verifyShardIntegrity } from './compound-shard-pointer.js';
-import { swapLatestPointer } from './publish-shards-and-swap.js';
 import { publishNegAndGate } from './stage-4-neg-publish.js';
 import { pruneOldNegShards } from './neg-shard-prune.js';
+import {
+    objectPrefixFor, deriveSnapshotId, searchProjectionKey, xrefIndexKey, PUBLISH_STATES,
+} from './snapshot-identity.js';
+import { activateValidatedCandidate } from './stage-4-activate.js';
 
-// PR-COMPOUND-GUARD: the two serving projection R2 keys snapshot-uploader writes
-// under snapshots/<date>/ (xref-index.json gzips to xref-index.json.gz). The
-// worker resolve/search paths depend on them, so refuse to swap latest.json if
-// either is absent (a stale-pointer-over-missing-projection availability bug).
-function projectionKeys(snapshotDate) {
-    return [
-        `snapshots/${snapshotDate}/compounds-search.jsonl.gz`,
-        `snapshots/${snapshotDate}/xref-index.json.gz`,
-    ];
+// PR-COMPOUND-GUARD / RK-15 PR-B: the two serving projection keys live under the
+// candidate object_prefix (xref-index.json gzips to xref-index.json.gz). The
+// worker resolve/search paths depend on them, so refuse to activate if either is
+// absent (a stale-pointer-over-missing-projection availability bug).
+function projectionKeys(objectPrefix) {
+    return [searchProjectionKey(objectPrefix), xrefIndexKey(objectPrefix)];
 }
 
 async function objectExists(client, bucket, key) {
@@ -52,22 +52,36 @@ async function objectExists(client, bucket, key) {
  * head() error propagates (the caller treats a probe error as a refusal too).
  * Exported so the guard's presence logic is unit-testable without the 90s drain.
  */
-export async function compoundProjectionsPresent(client, bucket, snapshotDate) {
+export async function compoundProjectionsPresent(client, bucket, objectPrefix) {
     const missing = [];
-    for (const key of projectionKeys(snapshotDate)) {
+    for (const key of projectionKeys(objectPrefix)) {
         if (!(await objectExists(client, bucket, key))) missing.push(key);
     }
     return { ok: missing.length === 0, missing };
 }
 
-export async function runShardPublishAndSwap({ client, bucketName, snapshotDate }) {
-    // 1. Compound shards.
+export async function runShardPublishAndSwap({
+    client, bucketName, snapshotDate, snapshotId, runId, runAttempt, objectPrefix, commitSha,
+}) {
+    // RK-15 PR-B: the immutable identity is the SINGLE coordinate. A caller that
+    // passes only a date (legacy backfill/test) gets a derived identity so old
+    // behavior is preserved; the live F4 path passes the orchestration identity.
+    const id = snapshotId || deriveSnapshotId(snapshotDate);
+    const prefix = objectPrefix || objectPrefixFor(id);
+    const identity = {
+        snapshotId: id, objectPrefix: prefix, snapshotDate,
+        runId: runId ?? null, runAttempt: runAttempt ?? null,
+        commitSha: commitSha ?? process.env.GITHUB_SHA ?? null,
+    };
+    console.log(`[STAGE-4] === Publish state: ${PUBLISH_STATES.BUILDING} (id ${id}, prefix ${prefix}) ===`);
+
+    // 1. Compound shards (create-only, under the candidate object_prefix).
     console.log('\n[STAGE-4] === Compound shard publish (I-7a Phase 1) ===');
     const jsonlPath = './output/linked/compounds-enriched.jsonl';
     const shardOutDir = path.join('./snapshots', snapshotDate, 'compounds', 'bucket-0000');
     let publishResult;
     try {
-        publishResult = await publishCompoundShards({ client, bucket: bucketName, jsonlPath, snapshotDate, outputDir: shardOutDir });
+        publishResult = await publishCompoundShards({ client, bucket: bucketName, jsonlPath, snapshotDate, outputDir: shardOutDir, objectPrefix: prefix });
         console.log(`[STAGE-4] Published ${publishResult.stats.shardCount} compound shards `
             + `(${publishResult.stats.totalMB} MB, ${publishResult.stats.recordCount} records) — manifest ${publishResult.manifestKey}`);
     } catch (err) {
@@ -91,7 +105,7 @@ export async function runShardPublishAndSwap({ client, bucketName, snapshotDate 
     console.log('\n[STAGE-4] === NegEvidence shard publish (PR-T1.1-LEVER) ===');
     let negResult;
     try {
-        negResult = await publishNegAndGate({ client, bucket: bucketName, snapshotDate });
+        negResult = await publishNegAndGate({ client, bucket: bucketName, snapshotDate, objectPrefix: prefix });
         if (negResult.skipped) console.log(`[STAGE-4] Neg shard publish skipped: ${negResult.reason}`);
         else console.log(`[STAGE-4] Neg shards published + verified: ${negResult.stats.records} records, `
             + `${negResult.stats.buckets} buckets, ${negResult.stats.shards} shards`);
@@ -101,55 +115,43 @@ export async function runShardPublishAndSwap({ client, bucketName, snapshotDate 
         process.exit(11);
     }
 
-    // 3b. PR-COMPOUND-GUARD pre-swap PRESENCE PROBE: both serving projection .gz
-    // keys must exist under snapshots/<date>/ before the terminal swap (mirror
-    // the compound-shard exit 7 guard). snapshot-uploader uploads every
-    // snapshots/<date>/ file BEFORE this orchestrator runs the swap, so an absent
-    // key means the projection was never produced -> refuse to advance latest.json.
-    console.log('\n[STAGE-4] === Compound projection presence probe (pre-swap) ===');
+    // 3b. PR-COMPOUND-GUARD presence probe: both serving projection .gz keys must
+    // exist UNDER THE CANDIDATE object_prefix before activation (mirror the
+    // compound-shard exit 7 guard). snapshot-uploader writes them under the
+    // object_prefix BEFORE this orchestrator runs; an absent key means the
+    // projection was never produced -> refuse to activate latest.json.
+    console.log('\n[STAGE-4] === Compound projection presence probe (pre-activate) ===');
     let probe;
     try {
-        probe = await compoundProjectionsPresent(client, bucketName, snapshotDate);
+        probe = await compoundProjectionsPresent(client, bucketName, prefix);
     } catch (err) {
         console.error(`[STAGE-4] Compound projection head() errored: ${err.message}`);
-        console.error('[STAGE-4] Refusing to swap latest.json -- compound projection probe errored.');
+        console.error('[STAGE-4] Refusing to activate -- compound projection probe errored.');
         process.exit(12);
     }
     if (!probe.ok) {
         console.error(`[STAGE-4] Compound projection missing: ${probe.missing.join(', ')}`);
-        console.error('[STAGE-4] Refusing to swap latest.json -- compound projection missing');
+        console.error('[STAGE-4] Refusing to activate -- compound projection missing');
         process.exit(12);
     }
-    console.log('[STAGE-4] Both compound projections present (pre-swap probe PASS)');
+    console.log('[STAGE-4] Both compound projections present (probe PASS)');
 
-    // 4. ONE terminal swap (compound + neg keys).
-    console.log('\n[STAGE-4] === ONE terminal latest.json swap (compound + neg keys) ===');
-    const swapUpdates = {
-        latest_snapshot_date: snapshotDate,
-        manifest_key: `snapshots/${snapshotDate}/manifest.json`,
-        compounds_manifest_key: publishResult.manifestKey,
-    };
-    const expectKeys = ['latest_snapshot_date', 'compounds_manifest_key'];
-    if (!negResult.skipped) {
-        swapUpdates.neg_evidence_manifest_key = negResult.negManifestKey;
-        expectKeys.push('neg_evidence_manifest_key');
-    } else {
-        // FIX M4 ([[cross_cycle_silent_data_loss]] availability facet): on a
-        // SKIPPED-neg run, latest_snapshot_date still advances. Without this, the
-        // prior-day neg_evidence_manifest_key SURVIVES the {...current,...updates}
-        // merge while pointing at a date with NO neg shards -> the worker computes
-        // a per-bucket manifest path that 404s -> /negative-evidence 503s ALL DAY.
-        // Explicitly CLEAR the stale key so the worker's dual-path sees it absent
-        // (negShardingActive does Boolean(key) -> null is falsy -> legacy whole-file
-        // path, HEAD.size-guarded, safe). swapLatestPointer must drop a null value
-        // from the merged latest.json (see publish-shards-and-swap.js).
-        swapUpdates.neg_evidence_manifest_key = null;
-    }
+    // 4. VALIDATED ACTIVATION: seal LAST -> validate candidate by ITS OWN keys
+    // (never latest.json) -> CAS the v2 latest.json -> post-swap active probe.
+    // Any failure here leaves the OLD latest untouched (the candidate is retained
+    // under its own run-id prefix, undiscoverable by an active reader).
     try {
-        const updated = await swapLatestPointer(client, bucketName, swapUpdates, expectKeys);
-        console.log(`[STAGE-4] latest.json updated: ${JSON.stringify(updated)}`);
+        const activation = await activateValidatedCandidate({
+            client, bucket: bucketName, identity,
+            compoundManifest: publishResult.manifest,
+            negManifestKey: negResult.skipped ? null : negResult.negManifestKey,
+            hasXref: true, hasSearch: true,
+        });
+        console.log(`[STAGE-4] Candidate ACTIVE: manifest_hash=${activation.manifestHash.slice(0, 16)}... `
+            + `latest -> snapshot_id ${id}`);
     } catch (err) {
-        console.error(`[STAGE-4] latest.json pointer swap FAILED: ${err.message}`);
+        console.error(`[STAGE-4] Validated activation FAILED: ${err.message}`);
+        console.error('[STAGE-4] latest.json left UNCHANGED — candidate retained but NOT active.');
         process.exit(9);
     }
 
