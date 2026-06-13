@@ -11,6 +11,11 @@
 import { describe, it, expect } from 'vitest';
 import { loadPapersForCompound } from '../../src/worker/lib/paper-loader';
 import { SourceLoadError } from '../../src/worker/lib/source-load-error';
+import { parseSnapshotContext } from '../../src/worker/lib/snapshot-context';
+
+// RK-15 PR-A2: the loader no longer reads latest.json; the caller threads a
+// pinned SnapshotContext in. Build the v1 ctx the caller would pin here.
+const CTX = parseSnapshotContext(JSON.stringify({ latest_snapshot_date: '2026-06-12' }));
 
 function makeMockBucket(store: Record<string, { size: number; bytes?: Uint8Array; etag: string }>) {
     return {
@@ -37,15 +42,14 @@ function gz(text: string): Uint8Array {
 }
 
 const DATE = '2026-06-12';
-const PTR = new TextEncoder().encode(JSON.stringify({ latest_snapshot_date: DATE }));
 const CID = 'CID:2244';
 const PAPERS_KEY = `snapshots/${DATE}/papers.jsonl.gz`;
 
 describe('paper-loader RK-13 source-failure', () => {
-    it('fetch-failure (pointer missing) -> throws SourceLoadError(source_unavailable)', async () => {
-        const bucket = makeMockBucket({}); // even latest.json absent -> head null -> not found
-        await expect(loadPapersForCompound(bucket, CID)).rejects.toBeInstanceOf(SourceLoadError);
-        await expect(loadPapersForCompound(bucket, CID)).rejects.toMatchObject({
+    it('object-missing (papers.gz absent) -> throws SourceLoadError(source_unavailable)', async () => {
+        const bucket = makeMockBucket({}); // papers.jsonl.gz absent -> head null -> not found
+        await expect(loadPapersForCompound(bucket, CTX, CID)).rejects.toBeInstanceOf(SourceLoadError);
+        await expect(loadPapersForCompound(bucket, CTX, CID)).rejects.toMatchObject({
             source: 'papers', failure_class: 'source_unavailable', retryable: true,
         });
     });
@@ -53,24 +57,12 @@ describe('paper-loader RK-13 source-failure', () => {
     it('parse-failure (corrupt .gz) -> throws SourceLoadError(parse_failed, non-retryable)', async () => {
         const corrupt = new Uint8Array([1, 2, 3, 4, 5]); // not a valid gzip stream
         const bucket = makeMockBucket({
-            'snapshots/latest.json': { size: PTR.length, bytes: PTR, etag: 'p' },
             [PAPERS_KEY]: { size: corrupt.length, bytes: corrupt, etag: 'bad' },
         });
-        const err = await loadPapersForCompound(bucket, CID).catch(e => e);
+        const err = await loadPapersForCompound(bucket, CTX, CID).catch(e => e);
         expect(err).toBeInstanceOf(SourceLoadError);
         expect(err.failure_class).toBe('parse_failed');
         expect(err.retryable).toBe(false);
-    });
-
-    it('object-missing (papers.gz absent) -> throws SourceLoadError(source_unavailable)', async () => {
-        const bucket = makeMockBucket({
-            'snapshots/latest.json': { size: PTR.length, bytes: PTR, etag: 'p' },
-            // papers.jsonl.gz intentionally absent
-        });
-        const err = await loadPapersForCompound(bucket, CID).catch(e => e);
-        expect(err).toBeInstanceOf(SourceLoadError);
-        expect(err.failure_class).toBe('source_unavailable');
-        expect(err.retryable).toBe(true);
     });
 
     it('CRITICAL: true-empty (queried_clean) -> resolves [] (NOT throw)', async () => {
@@ -80,25 +72,23 @@ describe('paper-loader RK-13 source-failure', () => {
         const lines = JSON.stringify({ id: 'P1', mentioned_compounds: [{ compound_id: 'CID:9999' }] });
         const bytes = gz(lines + '\n');
         const bucket = makeMockBucket({
-            'snapshots/latest.json': { size: PTR.length, bytes: PTR, etag: 'p' },
             [PAPERS_KEY]: { size: bytes.length, bytes, etag: 'clean' },
         });
-        const recs = await loadPapersForCompound(bucket, CID);
+        const recs = await loadPapersForCompound(bucket, CTX, CID);
         expect(Array.isArray(recs)).toBe(true);
         expect(recs).toHaveLength(0);
     });
 
-    it('success -> returns the matching record', async () => {
+    it('success -> returns the matching record (key derived from ctx.object_prefix)', async () => {
         const lines = [
             JSON.stringify({ id: 'P1', mentioned_compounds: [{ compound_id: CID }] }),
             JSON.stringify({ id: 'P2', mentioned_compounds: [{ compound_id: 'CID:9999' }] }),
         ].join('\n');
         const bytes = gz(lines + '\n');
         const bucket = makeMockBucket({
-            'snapshots/latest.json': { size: PTR.length, bytes: PTR, etag: 'p' },
             [PAPERS_KEY]: { size: bytes.length, bytes, etag: 'success' },
         });
-        const recs = await loadPapersForCompound(bucket, CID);
+        const recs = await loadPapersForCompound(bucket, CTX, CID);
         expect(recs).toHaveLength(1);
         expect(recs[0].id).toBe('P1');
     });

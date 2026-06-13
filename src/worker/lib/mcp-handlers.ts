@@ -20,6 +20,8 @@ import { resolveEntity } from './entity-resolver';
 import { aggregateRepurposingEvidence } from './repurposing-aggregator';
 import { parseUniprotId, loadTargetIndex, getTargetEntry } from './target-loader';
 import { pickTargetView, type TargetSection } from '../api/target';
+import { loadSnapshotContext, SnapshotContractError } from './snapshot-context';
+import { fetchR2JsonText } from './r2-fetch';
 
 export class ToolError extends Error {
     constructor(public code: number, message: string, public data?: unknown) { super(message); }
@@ -151,8 +153,15 @@ export async function handleToolGetTargetDrugs(args: Record<string, unknown>, en
     const bucket = requireR2(env);
     let index;
     try {
-        index = await loadTargetIndex(bucket);
+        // RK-15 PR-A2: read snapshots/latest.json EXACTLY ONCE per request ->
+        // ONE pinned SnapshotContext threaded into loadTargetIndex (which no
+        // longer reads the pointer).
+        const ctx = await loadSnapshotContext(k => fetchR2JsonText(bucket, k));
+        index = await loadTargetIndex(bucket, ctx);
     } catch (err) {
+        // RK-15 PR-A2: a latest.json contract violation is an integrity failure
+        // (LOUD) — it must propagate, never the genuine-absence soft path below.
+        if (err instanceof SnapshotContractError) throw err;
         const m = err instanceof Error ? err.message : String(err);
         if (/not found|disappeared|missing/i.test(m)) {
             return textContent({ resolved: false, target_id: parsed.canonical, reason: 'Target index not yet built — next factory-1 cron will produce it.' });

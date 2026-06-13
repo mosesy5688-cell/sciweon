@@ -7,6 +7,8 @@ import type { Env } from '../../worker';
 import { parseCompoundId } from '../lib/id-parse';
 import { loadTrialsForCompound } from '../lib/trial-loader';
 import { SourceLoadError } from '../lib/source-load-error';
+import { loadSnapshotContext, SnapshotContractError } from '../lib/snapshot-context';
+import { fetchR2JsonText } from '../lib/r2-fetch';
 
 const PATH_RE = /^\/api\/v1\/compound\/([^/]+)\/trials$/;
 
@@ -44,7 +46,12 @@ export async function handleTrials(
     }
 
     try {
-        const records = await loadTrialsForCompound(env.SCIWEON_R2, parsed.canonical);
+        // RK-15 PR-A2: read snapshots/latest.json EXACTLY ONCE per request ->
+        // ONE pinned SnapshotContext threaded into the loader (which no longer
+        // reads the pointer). A SnapshotContractError fails LOUD (integrity 502),
+        // never a degraded 404/empty.
+        const ctx = await loadSnapshotContext(k => fetchR2JsonText(env.SCIWEON_R2!, k));
+        const records = await loadTrialsForCompound(env.SCIWEON_R2, ctx, parsed.canonical);
         return Response.json(
             { id: parsed.canonical, count: records.length, trials: records },
             {
@@ -53,6 +60,14 @@ export async function handleTrials(
             },
         );
     } catch (err) {
+        // RK-15 PR-A2: a latest.json contract violation is an integrity failure
+        // (LOUD), never a no-evidence 404/200. Map it to a retryable 502.
+        if (err instanceof SnapshotContractError) {
+            return Response.json(
+                { error: 'Data integrity error', detail: 'snapshots/latest.json failed contract validation. Retry shortly.' },
+                { status: 502 },
+            );
+        }
         // RK-13: a source READ failure is NOT a no-evidence result. Map the typed
         // SourceLoadError to a retryable status (parse_failed -> 502, else 503)
         // carrying the contract carriers, never a 200/count:0.

@@ -5,6 +5,11 @@
  *   snapshots/latest.json         → { latest_snapshot_date: "YYYY-MM-DD" }
  *   snapshots/<date>/target-index.json
  *
+ * RK-15 PR-A2: the caller reads snapshots/latest.json EXACTLY ONCE (via
+ * loadSnapshotContext) and threads the pinned SnapshotContext in; this loader
+ * NO LONGER reads latest.json. The object key is derived UNIFORMLY from
+ * ctx.object_prefix (v1: snapshots/<date>/; v2: the declared prefix).
+ *
  * Caching: snapshots are immutable once published. `fetchR2Object` caches by
  * (key, etag) per isolate; first call per day downloads + parses, subsequent
  * calls within the same isolate are a Map lookup.
@@ -14,9 +19,9 @@
  * exact same acceptance pattern.
  */
 
-import { fetchR2JsonText, fetchR2GunzippedText } from './r2-fetch';
+import { fetchR2GunzippedText } from './r2-fetch';
+import { type SnapshotContext } from './snapshot-context';
 
-const LATEST_POINTER_KEY = 'snapshots/latest.json';
 // snapshot-builder.js gzips every published file; uploader stores the .gz
 // blob at the .gz key. Pre-#100 the loader fetched the un-gzipped name,
 // which always 404'd in production even when stage-3 produced the file.
@@ -74,23 +79,13 @@ export interface TargetIndex {
     targets: Record<string, TargetEntry>;
 }
 
-async function readLatestPointer(bucket: R2Bucket): Promise<string> {
-    const text = await fetchR2JsonText(bucket, LATEST_POINTER_KEY);
-    const parsed = JSON.parse(text) as { latest_snapshot_date?: string };
-    if (!parsed.latest_snapshot_date) {
-        throw new Error('snapshots/latest.json missing latest_snapshot_date');
-    }
-    return parsed.latest_snapshot_date;
-}
-
-export async function loadTargetIndex(bucket: R2Bucket): Promise<TargetIndex> {
-    const date = await readLatestPointer(bucket);
-    const text = await fetchR2GunzippedText(bucket, `snapshots/${date}/${TARGET_INDEX_FILENAME}`);
+export async function loadTargetIndex(bucket: R2Bucket, ctx: SnapshotContext): Promise<TargetIndex> {
+    const text = await fetchR2GunzippedText(bucket, `${ctx.object_prefix}${TARGET_INDEX_FILENAME}`);
     const raw = JSON.parse(text) as RawIndex;
     return {
         version: raw.version ?? 'unknown',
         built_at: raw.built_at ?? '',
-        snapshotDate: date,
+        snapshotDate: ctx.snapshot_date,
         targets: raw.targets ?? {},
     };
 }

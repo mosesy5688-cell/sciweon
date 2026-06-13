@@ -2,13 +2,19 @@
  * Trial loader — resolves trials for a compound via trial-links.jsonl.gz.
  * Step 1: scan links file → collect NCT IDs for compound.
  * Step 2: scan trials file → return matching trial entities.
+ *
+ * RK-15 PR-A2: the caller reads snapshots/latest.json EXACTLY ONCE and threads
+ * the pinned SnapshotContext in; this loader NO LONGER reads latest.json. Both
+ * object keys are derived UNIFORMLY from ctx.object_prefix (v1/v2), so a composed
+ * request (repurposing) cannot read latest more than once or cross snapshots.
  */
 
-import { fetchR2GunzippedText, fetchR2JsonText } from './r2-fetch';
+import { fetchR2GunzippedText } from './r2-fetch';
 import { toSourceLoadError } from './source-load-error';
+import { type SnapshotContext } from './snapshot-context';
 
-async function collectNctIds(bucket: R2Bucket, date: string, compoundId: string): Promise<Set<string>> {
-    const text = await fetchR2GunzippedText(bucket, `snapshots/${date}/trial-links.jsonl.gz`);
+async function collectNctIds(bucket: R2Bucket, ctx: SnapshotContext, compoundId: string): Promise<Set<string>> {
+    const text = await fetchR2GunzippedText(bucket, `${ctx.object_prefix}trial-links.jsonl.gz`);
     const ids = new Set<string>();
     for (const line of text.split('\n')) {
         if (!line.trim()) continue;
@@ -22,17 +28,14 @@ async function collectNctIds(bucket: R2Bucket, date: string, compoundId: string)
 
 export async function loadTrialsForCompound(
     bucket: R2Bucket,
+    ctx: SnapshotContext,
     compoundId: string,
 ): Promise<Record<string, unknown>[]> {
     try {
-        const ptrText = await fetchR2JsonText(bucket, 'snapshots/latest.json');
-        const { latest_snapshot_date: date } = JSON.parse(ptrText) as { latest_snapshot_date?: string };
-        if (!date) return [];
-
-        const nctIds = await collectNctIds(bucket, date, compoundId);
+        const nctIds = await collectNctIds(bucket, ctx, compoundId);
         if (nctIds.size === 0) return [];
 
-        const text = await fetchR2GunzippedText(bucket, `snapshots/${date}/trials.jsonl.gz`);
+        const text = await fetchR2GunzippedText(bucket, `${ctx.object_prefix}trials.jsonl.gz`);
         const records: Record<string, unknown>[] = [];
 
         for (const line of text.split('\n')) {

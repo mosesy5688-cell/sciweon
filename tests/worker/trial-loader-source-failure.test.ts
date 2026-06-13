@@ -12,6 +12,11 @@
 import { describe, it, expect } from 'vitest';
 import { loadTrialsForCompound } from '../../src/worker/lib/trial-loader';
 import { SourceLoadError } from '../../src/worker/lib/source-load-error';
+import { parseSnapshotContext } from '../../src/worker/lib/snapshot-context';
+
+// RK-15 PR-A2: the loader no longer reads latest.json; the caller threads a
+// pinned SnapshotContext in. Build the v1 ctx the caller would pin here.
+const CTX = parseSnapshotContext(JSON.stringify({ latest_snapshot_date: '2026-06-12' }));
 
 function makeMockBucket(store: Record<string, { size: number; bytes?: Uint8Array; etag: string }>) {
     return {
@@ -38,7 +43,6 @@ function gz(text: string): Uint8Array {
 }
 
 const DATE = '2026-06-12';
-const PTR = new TextEncoder().encode(JSON.stringify({ latest_snapshot_date: DATE }));
 const CID = 'CID:2244';
 const LINKS_KEY = `snapshots/${DATE}/trial-links.jsonl.gz`;
 const TRIALS_KEY = `snapshots/${DATE}/trials.jsonl.gz`;
@@ -49,11 +53,9 @@ const linkGz = (nct: string) => gz(JSON.stringify({ compound_id: CID, nct_id: nc
 // so a later test never reads an earlier test's cached bytes.
 describe('trial-loader RK-13 source-failure', () => {
     it('fetch-failure (links object missing) -> throws SourceLoadError(source_unavailable)', async () => {
-        // pointer present but trial-links.gz absent -> first read fails.
-        const bucket = makeMockBucket({
-            'snapshots/latest.json': { size: PTR.length, bytes: PTR, etag: 'p' },
-        });
-        const err = await loadTrialsForCompound(bucket, CID).catch(e => e);
+        // trial-links.gz absent -> first read fails.
+        const bucket = makeMockBucket({});
+        const err = await loadTrialsForCompound(bucket, CTX, CID).catch(e => e);
         expect(err).toBeInstanceOf(SourceLoadError);
         expect(err.source).toBe('trials');
         expect(err.failure_class).toBe('source_unavailable');
@@ -63,10 +65,9 @@ describe('trial-loader RK-13 source-failure', () => {
     it('parse-failure (corrupt links .gz) -> throws SourceLoadError(parse_failed)', async () => {
         const corrupt = new Uint8Array([0, 1, 2, 3]);
         const bucket = makeMockBucket({
-            'snapshots/latest.json': { size: PTR.length, bytes: PTR, etag: 'p' },
             [LINKS_KEY]: { size: corrupt.length, bytes: corrupt, etag: 'bad' },
         });
-        const err = await loadTrialsForCompound(bucket, CID).catch(e => e);
+        const err = await loadTrialsForCompound(bucket, CTX, CID).catch(e => e);
         expect(err).toBeInstanceOf(SourceLoadError);
         expect(err.failure_class).toBe('parse_failed');
         expect(err.retryable).toBe(false);
@@ -75,11 +76,10 @@ describe('trial-loader RK-13 source-failure', () => {
     it('object-missing (links yield NCT but trials.gz absent) -> SourceLoadError(source_unavailable)', async () => {
         const links = linkGz('NCT001');
         const bucket = makeMockBucket({
-            'snapshots/latest.json': { size: PTR.length, bytes: PTR, etag: 'p' },
             [LINKS_KEY]: { size: links.length, bytes: links, etag: 'l-miss' },
             // trials.jsonl.gz intentionally absent
         });
-        const err = await loadTrialsForCompound(bucket, CID).catch(e => e);
+        const err = await loadTrialsForCompound(bucket, CTX, CID).catch(e => e);
         expect(err).toBeInstanceOf(SourceLoadError);
         expect(err.failure_class).toBe('source_unavailable');
     });
@@ -87,11 +87,10 @@ describe('trial-loader RK-13 source-failure', () => {
     it('CRITICAL: true-empty, no matching NCT link (queried_clean) -> resolves [] (NOT throw)', async () => {
         const links = gz(JSON.stringify({ compound_id: 'CID:9999', nct_id: 'NCT777' }) + '\n');
         const bucket = makeMockBucket({
-            'snapshots/latest.json': { size: PTR.length, bytes: PTR, etag: 'p' },
             [LINKS_KEY]: { size: links.length, bytes: links, etag: 'l-clean1' },
             // trials.gz never read (nctIds empty) -> [] without touching it.
         });
-        const recs = await loadTrialsForCompound(bucket, CID);
+        const recs = await loadTrialsForCompound(bucket, CTX, CID);
         expect(Array.isArray(recs)).toBe(true);
         expect(recs).toHaveLength(0);
     });
@@ -100,15 +99,14 @@ describe('trial-loader RK-13 source-failure', () => {
         const links = linkGz('NCT001');
         const trials = gz(JSON.stringify({ nct_id: 'NCT999', status: 'COMPLETED' }) + '\n');
         const bucket = makeMockBucket({
-            'snapshots/latest.json': { size: PTR.length, bytes: PTR, etag: 'p' },
             [LINKS_KEY]: { size: links.length, bytes: links, etag: 'l-clean2' },
             [TRIALS_KEY]: { size: trials.length, bytes: trials, etag: 't-clean2' },
         });
-        const recs = await loadTrialsForCompound(bucket, CID);
+        const recs = await loadTrialsForCompound(bucket, CTX, CID);
         expect(recs).toHaveLength(0);
     });
 
-    it('success -> returns the matching trial record', async () => {
+    it('success -> returns the matching trial record (keys derived from ctx.object_prefix)', async () => {
         const links = linkGz('NCT001');
         const trials = [
             JSON.stringify({ nct_id: 'NCT001', status: 'RECRUITING', phase: 2 }),
@@ -116,11 +114,10 @@ describe('trial-loader RK-13 source-failure', () => {
         ].join('\n');
         const trialsGz = gz(trials + '\n');
         const bucket = makeMockBucket({
-            'snapshots/latest.json': { size: PTR.length, bytes: PTR, etag: 'p' },
             [LINKS_KEY]: { size: links.length, bytes: links, etag: 'l-ok' },
             [TRIALS_KEY]: { size: trialsGz.length, bytes: trialsGz, etag: 't-ok' },
         });
-        const recs = await loadTrialsForCompound(bucket, CID);
+        const recs = await loadTrialsForCompound(bucket, CTX, CID);
         expect(recs).toHaveLength(1);
         expect(recs[0].nct_id).toBe('NCT001');
     });
