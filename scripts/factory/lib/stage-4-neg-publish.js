@@ -21,6 +21,7 @@ import readline from 'readline';
 import path from 'path';
 import { publishNegShards } from './neg-shard-publisher.js';
 import { verifyNegShardIntegrity } from './neg-shard-verify.js';
+import { objectPrefixFor, negEvidenceRootKey } from './snapshot-identity.js';
 
 const NEG_JSONL = './output/linked/neg-evidence.jsonl';
 
@@ -38,8 +39,9 @@ export async function countNegLines(jsonlPath = NEG_JSONL) {
  *          uncap cold start where neg-evidence is legitimately absent).
  */
 export async function publishNegAndGate({
-    client, bucket, snapshotDate, drainMs = 90_000, sampleCount = 3, jsonlPath = NEG_JSONL,
+    client, bucket, snapshotDate, drainMs = 90_000, sampleCount = 3, jsonlPath = NEG_JSONL, objectPrefix,
 }) {
+    const prefix = objectPrefix || objectPrefixFor(snapshotDate);
     let st = null;
     try { st = await fs.stat(jsonlPath); } catch { st = null; }
     if (!st || st.size === 0) {
@@ -55,7 +57,7 @@ export async function publishNegAndGate({
     // sibling sharded manifest. If the publish produced zero buckets while the
     // file is non-empty, refuse (do not publish a whole-file with no shards).
     const outputRoot = './snapshots';
-    const result = await publishNegShards({ client, bucket, jsonlPath, snapshotDate, outputRoot });
+    const result = await publishNegShards({ client, bucket, jsonlPath, snapshotDate, outputRoot, objectPrefix: prefix });
     if (wcl > 0 && result.bucketCount === 0) {
         throw new Error(`[NEG] ${wcl} records but 0 sharded buckets produced — refusing whole-file publish without sibling shards`);
     }
@@ -71,10 +73,10 @@ export async function publishNegAndGate({
     await verifyNegShardIntegrity(client, bucket, snapshotDate, result.manifests, sampleCount);
     console.log(`[NEG] Integrity probes PASS (${result.bucketCount} buckets, ${result.shardCount} shards, ${wcl} records)`);
 
-    // The neg manifest "pointer" addresses the bucket-0000 manifest as the
-    // canonical sentinel that the sharded snapshot exists; the worker computes
-    // the actual per-key bucket manifest path itself from the date.
-    const negManifestKey = `snapshots/${snapshotDate}/neg-evidence/`;
+    // RK-15 PR-B: the neg "pointer" is the `<object_prefix>neg-evidence/` root —
+    // the reader normalizes neg_evidence_manifest_key at the `/neg-evidence/`
+    // segment and derives per-bucket keys relative to the candidate's prefix.
+    const negManifestKey = negEvidenceRootKey(prefix);
     return {
         skipped: false,
         negManifestKey,

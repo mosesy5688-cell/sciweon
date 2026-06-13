@@ -9,13 +9,14 @@
 
 import { createHash } from 'crypto';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
+import { objectPrefixFor, negShardKey as negShardKeyForPrefix } from './snapshot-identity.js';
 
 function sha256(buf) { return createHash('sha256').update(buf).digest('hex'); }
-function pad4(n) { return String(n).padStart(4, '0'); }
-function pad3(n) { return String(n).padStart(3, '0'); }
 
-function negShardKey(date, bucket, shard) {
-    return `snapshots/${date}/neg-evidence/bucket-${pad4(bucket)}/shard-${pad3(shard)}.bin`;
+// RK-15 PR-B: candidate keys via the per-manifest object_prefix (NEVER a
+// date-derived path) so the re-read verifies THIS candidate.
+function negShardKey(prefix, snapshotDate, bucket, shard) {
+    return negShardKeyForPrefix(prefix || objectPrefixFor(snapshotDate), bucket, shard);
 }
 
 async function streamToBuffer(stream) {
@@ -32,7 +33,7 @@ export async function verifyNegShardIntegrity(client, bucket, snapshotDate, mani
     const flat = [];
     for (const m of manifests) {
         for (const h of m.shard_hashes ?? []) {
-            flat.push({ bucket: m.bucket, shard: h.shard, sha256: h.sha256 });
+            flat.push({ bucket: m.bucket, shard: h.shard, sha256: h.sha256, object_prefix: m.object_prefix });
         }
     }
     if (flat.length === 0) {
@@ -48,7 +49,7 @@ export async function verifyNegShardIntegrity(client, bucket, snapshotDate, mani
         targets.push(flat[idx]);
     }
     for (const t of targets) {
-        const key = negShardKey(snapshotDate, t.bucket, t.shard);
+        const key = negShardKey(t.object_prefix, snapshotDate, t.bucket, t.shard);
         const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
         const observed = sha256(await streamToBuffer(res.Body));
         if (observed !== t.sha256) {

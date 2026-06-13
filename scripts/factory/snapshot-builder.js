@@ -31,6 +31,9 @@ import { gzipSync } from 'zlib';
 import { SNAPSHOT_FILES } from './lib/aggregated-files.js';
 import { LOINC_ATTRIBUTION } from './lib/umls-concept-streams.js';
 import { streamSnapshotFile } from './lib/stream-snapshot-file.js';
+import {
+    deriveSnapshotId, objectPrefixFor, deriveRunId, deriveRunAttempt, SNAPSHOT_SCHEMA_VERSION,
+} from './lib/snapshot-identity.js';
 
 // PR-T1.1-LEVER: neg-evidence whole-file is emitted via the streaming path (it
 // stays additive + preserved after the FDA preserve-all uncap, so it can grow
@@ -77,8 +80,20 @@ async function main() {
     const snapshotDir = path.join(SNAPSHOT_ROOT, dateStr);
     await fs.mkdir(snapshotDir, { recursive: true });
 
+    // RK-15 PR-B: record the immutable identity in the builder manifest so the
+    // snapshot-root manifest carries run_id/run_attempt/commit_sha/object_prefix.
+    const snapshotId = process.env.SNAPSHOT_ID || deriveSnapshotId(dateStr);
+    const objectPrefix = objectPrefixFor(snapshotId);
+
     const manifest = {
         snapshot_date: dateStr,
+        snapshot_id: snapshotId,
+        object_prefix: objectPrefix,
+        schema_version: SNAPSHOT_SCHEMA_VERSION,
+        run_id: deriveRunId(),
+        run_attempt: deriveRunAttempt(),
+        commit_sha: process.env.GITHUB_SHA ?? null,
+        workflow: process.env.GITHUB_WORKFLOW ?? null,
         created_at: new Date().toISOString(),
         sciweon_version: 'V0.4.3',
         files: [],

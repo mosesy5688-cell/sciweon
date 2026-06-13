@@ -94,7 +94,9 @@ async function publishFixture(lines) {
     const file = path.join(dir, 'neg-evidence.jsonl');
     await fs.writeFile(file, lines.join('\n'));
     const store = makeStore();
-    await publishNegShards({ client: store.client, bucket: 'b', jsonlPath: file, snapshotDate: DATE, outputRoot: path.join(dir, 'snapshots') });
+    // This is a v1 worker-serving parity test: it reads back via the legacy
+    // date-derived keys, so the producer writes to the date-only object_prefix.
+    await publishNegShards({ client: store.client, bucket: 'b', jsonlPath: file, snapshotDate: DATE, outputRoot: path.join(dir, 'snapshots'), objectPrefix: `snapshots/${DATE}/` });
     store.put('snapshots/latest.json', JSON.stringify({ latest_snapshot_date: DATE, neg_evidence_manifest_key: `snapshots/${DATE}/neg-evidence/` }));
     return { dir, store };
 }

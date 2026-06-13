@@ -111,6 +111,10 @@ describe('PRESERVE-ALL: sum(manifest totals) === wc-l', () => {
             const client = mockClient();
             await publishNegShards({
                 client, bucket: 'b', jsonlPath: file, snapshotDate: '2026-06-05', outputRoot: path.join(dir, 'snapshots'),
+                // Fixed object_prefix so the manifest's object_prefix field is
+                // deterministic across the two rebuild calls (else deriveRunId()
+                // -> wall-clock would differ).
+                objectPrefix: 'snapshots/2026-06-05/run-1/',
             });
             let manifestBody = null;
             for (const [key, body] of client.store) if (key.endsWith('/manifest.json')) manifestBody = body;

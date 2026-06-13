@@ -18,6 +18,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { deriveSnapshotId, objectPrefixFor, putCreateOnly } from './lib/snapshot-identity.js';
 
 const SNAPSHOT_ROOT = './snapshots';
 const REQUIRED_ENV = ['R2_ENDPOINT', 'R2_BUCKET', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'];
@@ -36,7 +37,17 @@ async function main() {
     const dateStr = process.argv.find(a => a.startsWith('--date='))?.split('=')[1]
         || process.env.TARGET_DATE
         || todayUtcIso();
-    console.log(`[SNAPSHOT-UPLOADER] V0.4.3 — push snapshot ${dateStr} to R2`);
+    // RK-15 PR-B: the live F4 publishes every object under the IMMUTABLE
+    // object_prefix `snapshots/<date>/<run_id>-<attempt>/`. The stage-4
+    // orchestrator passes the same snapshot_id via SNAPSHOT_ID so the uploader +
+    // shard publishers agree. The legacy backfill path (SKIP_LATEST_SWAP set, no
+    // SNAPSHOT_ID) is OUT of PR-B scope and keeps the date-only prefix so its
+    // idempotency / post-upload checks (snapshots/<date>/manifest.json) are
+    // byte-unchanged.
+    const isBackfill = !process.env.SNAPSHOT_ID && process.env.SKIP_LATEST_SWAP === '1';
+    const snapshotId = process.env.SNAPSHOT_ID || deriveSnapshotId(dateStr);
+    const objectPrefix = isBackfill ? `snapshots/${dateStr}/` : objectPrefixFor(snapshotId);
+    console.log(`[SNAPSHOT-UPLOADER] V0.4.3 — push snapshot ${dateStr} (id ${snapshotId}) to R2 ${objectPrefix}`);
 
     if (!envReady()) {
         const missing = REQUIRED_ENV.filter(k => !process.env[k]);
@@ -47,8 +58,13 @@ async function main() {
 
     const snapshotDir = path.join(SNAPSHOT_ROOT, dateStr);
     let files;
-    try { files = await fs.readdir(snapshotDir); }
-    catch {
+    try {
+        // FILES ONLY — the shard publishers (compounds/, neg-evidence/) write
+        // subdirs here and upload them to R2 themselves; the uploader handles the
+        // top-level builder gz files + manifest.json, never a subdir.
+        const ents = await fs.readdir(snapshotDir, { withFileTypes: true });
+        files = ents.filter(e => e.isFile()).map(e => e.name);
+    } catch {
         console.error(`[SNAPSHOT-UPLOADER] Snapshot dir not found: ${snapshotDir}`);
         process.exit(1);
     }
@@ -67,13 +83,18 @@ async function main() {
     for (const fname of files) {
         const localPath = path.join(snapshotDir, fname);
         const body = await fs.readFile(localPath);
-        const key = `snapshots/${dateStr}/${fname}`;
-        await client.send(new PutObjectCommand({
-            Bucket: process.env.R2_BUCKET,
-            Key: key,
-            Body: body,
-            ContentType: fname.endsWith('.gz') ? 'application/gzip' : 'application/json',
-        }));
+        const key = `${objectPrefix}${fname}`;
+        const ct = fname.endsWith('.gz') ? 'application/gzip' : 'application/json';
+        if (isBackfill) {
+            // Legacy backfill (out of PR-B scope): unconditional overwrite into the
+            // date-only prefix, exactly as before — its own idempotency early-exit
+            // guards re-runs.
+            await client.send(new PutObjectCommand({ Bucket: process.env.R2_BUCKET, Key: key, Body: body, ContentType: ct }));
+        } else {
+            // Live F4: create-only so a colliding re-publish (same run_id) fails
+            // LOUD instead of overwriting (the RK-15 collision).
+            await putCreateOnly(client, process.env.R2_BUCKET, key, body, ct);
+        }
         uploaded++;
         totalBytes += body.length;
         console.log(`  ${key.padEnd(50)} ${(body.length / 1024).toFixed(1).padStart(8)} KB`);

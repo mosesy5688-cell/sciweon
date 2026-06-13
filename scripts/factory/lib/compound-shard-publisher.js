@@ -21,8 +21,10 @@ import { createReadStream } from 'fs';
 import readline from 'readline';
 import path from 'path';
 import { createHash } from 'crypto';
-import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { ShardWriter } from './shard-writer.js';
+import {
+    objectPrefixFor, compoundsShardKey, compoundsManifestKey, putCreateOnly,
+} from './snapshot-identity.js';
 
 // Per Constitution V16.1 §5.2: 8-10 MB physical limit per shard (Edge-Safe).
 // Workers per-invocation memory budget can handle a single 10MB shard fetch +
@@ -38,20 +40,15 @@ export const MAX_RECORD_BYTES = 64 * 1024 * 1024;
 
 const PHASE_1_BUCKET = 0;
 
-function pad4(n) { return String(n).padStart(4, '0'); }
 function pad3(n) { return String(n).padStart(3, '0'); }
 function sha256(buf) { return createHash('sha256').update(buf).digest('hex'); }
 
-function bucketPrefix(snapshotDate, bucket) {
-    return `snapshots/${snapshotDate}/compounds/bucket-${pad4(bucket)}`;
-}
-
-function shardKey(snapshotDate, bucket, shardId) {
-    return `${bucketPrefix(snapshotDate, bucket)}/shard-${pad3(shardId)}.bin`;
-}
-
-function manifestKey(snapshotDate, bucket) {
-    return `${bucketPrefix(snapshotDate, bucket)}/manifest.json`;
+// RK-15 PR-B: the immutable object_prefix `snapshots/<date>/<run_id>-<attempt>/`
+// is the SINGLE coordinate for every child key (reader derives them relative to
+// object_prefix). A caller that passes only snapshotDate (legacy backfill/test)
+// gets the date-only prefix so the old behavior is preserved.
+function prefixOf(snapshotDate, objectPrefix) {
+    return objectPrefix || objectPrefixFor(snapshotDate);
 }
 
 /**
@@ -175,23 +172,25 @@ async function collectShardFiles(outputDir, lastShardId) {
     return shardFiles;
 }
 
-/** Upload shards + manifest to R2 (manifest LAST so partial state is unseen). */
-async function uploadToR2(client, bucket, snapshotDate, shardFiles, entries) {
-    // 1. Upload shards first
+/**
+ * Upload shards + manifest to R2 under the immutable object_prefix. Shards are
+ * create-only (existing object -> LOUD 412); the manifest (written LAST so a
+ * partial bucket is unseen) carries the v2 provenance fields the reader records.
+ */
+async function uploadToR2(client, bucket, objectPrefix, snapshotDate, shardFiles, entries) {
+    // 1. Upload shards first (create-only; collision = RK-15 -> hard fail).
     const shardKeys = [];
     for (const sf of shardFiles) {
-        const key = shardKey(snapshotDate, PHASE_1_BUCKET, sf.shardId);
-        await client.send(new PutObjectCommand({
-            Bucket: bucket, Key: key, Body: sf.bytes,
-            ContentType: 'application/octet-stream',
-        }));
+        const key = compoundsShardKey(objectPrefix, PHASE_1_BUCKET, sf.shardId);
+        await putCreateOnly(client, bucket, key, sf.bytes, 'application/octet-stream');
         shardKeys.push(key);
     }
-    // 2. Build manifest (shard hashes for integrity verification)
+    // 2. Build manifest (shard hashes for integrity verification).
     const manifest = {
         version: '1.0',
         bucket: PHASE_1_BUCKET,
         snapshot_date: snapshotDate,
+        object_prefix: objectPrefix,
         generated_at: new Date().toISOString(),
         total_records: entries.length,
         shard_count: shardFiles.length,
@@ -203,12 +202,8 @@ async function uploadToR2(client, bucket, snapshotDate, shardFiles, entries) {
             size_bytes: sf.bytes.length,
         })),
     };
-    const mfKey = manifestKey(snapshotDate, PHASE_1_BUCKET);
-    await client.send(new PutObjectCommand({
-        Bucket: bucket, Key: mfKey,
-        Body: JSON.stringify(manifest),
-        ContentType: 'application/json',
-    }));
+    const mfKey = compoundsManifestKey(objectPrefix, PHASE_1_BUCKET);
+    await putCreateOnly(client, bucket, mfKey, JSON.stringify(manifest), 'application/json');
 
     return { manifestKey: mfKey, shardKeys, manifest };
 }
@@ -217,17 +212,18 @@ async function uploadToR2(client, bucket, snapshotDate, shardFiles, entries) {
  * Public entry point — read jsonl -> pack shards -> upload. The caller
  * (stage-4) handles the 90s drain + integrity probes + atomic pointer swap.
  */
-export async function publishCompoundShards({ client, bucket, jsonlPath, snapshotDate, outputDir }) {
+export async function publishCompoundShards({ client, bucket, jsonlPath, snapshotDate, outputDir, objectPrefix }) {
     const startTime = Date.now();
+    const prefix = prefixOf(snapshotDate, objectPrefix);
     const records = await readCompoundsInOrder(jsonlPath);
     console.log(`[PUBLISHER] ${records.length} records read (CID-asc), packing NXVF V4.1 shards`);
     const { entries, shardFiles, oversizeShardCount, oversizeCids } = await packShards(records, outputDir);
     console.log(`[PUBLISHER] ${shardFiles.length} shards produced`
         + (oversizeShardCount > 0 ? ` (oversize_shard=${oversizeShardCount}, cids=[${oversizeCids.join(',')}])` : ''));
 
-    console.log(`[PUBLISHER] Uploading to R2 ${bucketPrefix(snapshotDate, PHASE_1_BUCKET)}/`);
+    console.log(`[PUBLISHER] Uploading to R2 ${compoundsManifestKey(prefix, PHASE_1_BUCKET)}`);
     const { manifestKey: mfKey, shardKeys, manifest } = await uploadToR2(
-        client, bucket, snapshotDate, shardFiles, entries,
+        client, bucket, prefix, snapshotDate, shardFiles, entries,
     );
     console.log(`[PUBLISHER] Uploaded ${shardKeys.length} shards + manifest ${mfKey}`);
 

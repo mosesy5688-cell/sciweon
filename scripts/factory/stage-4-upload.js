@@ -32,9 +32,12 @@ import {
 } from './lib/snapshot-history-gate.js';
 import { makeR2Client } from './lib/bulk-shard-helpers.js';
 import { runShardPublishAndSwap } from './lib/stage-4-shard-orchestrator.js';
+import {
+    deriveSnapshotId, objectPrefixFor, deriveRunId, deriveRunAttempt, rootSealKey,
+} from './lib/snapshot-identity.js';
 
 import { AGGREGATED_FILES } from './lib/aggregated-files.js';
-import { verifySnapshotPresent } from './lib/snapshot-bridge.js';
+import { verifySnapshotSealPresent } from './lib/stage-4-activate.js';
 
 const SCRIPT_DIR = 'scripts/factory';
 
@@ -42,11 +45,11 @@ const REQUIRED_NONEMPTY = [
     'output/linked/compounds-enriched.jsonl',
 ];
 
-function runScript(name) {
+function runScript(name, extraEnv = {}) {
     return new Promise((resolve, reject) => {
         const child = spawn('node', [path.join(SCRIPT_DIR, name)], {
             stdio: 'inherit',
-            env: { ...process.env },
+            env: { ...process.env, ...extraEnv },
         });
         child.on('close', code => code === 0 ? resolve() : reject(new Error(`${name} exit ${code}`)));
         child.on('error', reject);
@@ -56,6 +59,19 @@ function runScript(name) {
 async function main() {
     const startTime = Date.now();
     console.log('[STAGE-4] Sciweon Factory Upload V0.5.x');
+
+    // RK-15 PR-B: derive the UNIQUE IMMUTABLE snapshot identity ONCE, up front,
+    // and thread it to the spawned builder/uploader (via SNAPSHOT_ID env) AND the
+    // shard orchestrator so every object of this publish lands under the same
+    // object_prefix `snapshots/<date>/<run_id>-<attempt>/`.
+    const snapshotDateEarly = process.argv.find(a => a.startsWith('--date='))?.split('=')[1]
+        || process.env.TARGET_DATE
+        || new Date().toISOString().slice(0, 10);
+    const runId = deriveRunId();
+    const runAttempt = deriveRunAttempt();
+    const snapshotId = deriveSnapshotId(snapshotDateEarly, runId, runAttempt);
+    const objectPrefix = objectPrefixFor(snapshotId);
+    console.log(`[STAGE-4] Snapshot identity: id=${snapshotId} prefix=${objectPrefix} (run ${runId} attempt ${runAttempt})`);
 
     console.log('\n[STAGE-4] === Download aggregated from R2 ===');
     try {
@@ -115,7 +131,7 @@ async function main() {
 
     console.log('\n[STAGE-4] === snapshot-builder ===');
     try {
-        await runScript('snapshot-builder.js');
+        await runScript('snapshot-builder.js', { SNAPSHOT_ID: snapshotId });
     } catch (err) {
         console.error(`[STAGE-4] snapshot-builder failed: ${err.message}`);
         process.exit(3);
@@ -123,7 +139,7 @@ async function main() {
 
     console.log('\n[STAGE-4] === snapshot-uploader ===');
     try {
-        await runScript('snapshot-uploader.js');
+        await runScript('snapshot-uploader.js', { SNAPSHOT_ID: snapshotId });
     } catch (err) {
         console.error(`[STAGE-4] snapshot-uploader failed: ${err.message}`);
         process.exit(4);
@@ -135,36 +151,29 @@ async function main() {
     // neg-evidence per-(compound,page) shards, runs the PRESERVE-ALL Sum==wc-l
     // gate, then performs a SINGLE CAS latest.json swap merging both manifest
     // keys (the uploader no longer touches the pointer), then prunes old shards.
-    const snapshotDate = process.argv.find(a => a.startsWith('--date='))?.split('=')[1]
-        || new Date().toISOString().slice(0, 10);
+    const snapshotDate = snapshotDateEarly;
     const { client, bucket: bucketName, missing } = makeR2Client();
     if (missing.length > 0) {
         console.error(`[STAGE-4] R2 client env missing: ${missing.join(', ')} — refusing to publish shards`);
         process.exit(6);
     }
-    await runShardPublishAndSwap({ client, bucketName, snapshotDate });
+    await runShardPublishAndSwap({ client, bucketName, snapshotDate, snapshotId, runId, runAttempt, objectPrefix });
 
-    // Cycle 22 PR-L4: post-upload R2 presence verification. F4 success
-    // claim must be backed by actual listable snapshot/<today>/manifest.json
-    // — otherwise silently fails Layer 4 completeness leg of triple-lock.
-    // Same HARDFAIL defense pattern as cycle 21 PR #4/#112/#113 SSoT guards.
+    // Cycle 22 PR-L4 / RK-15 PR-B: post-upload R2 presence verification. The F4
+    // success claim must be backed by the candidate's listable root seal
+    // `<object_prefix>_snapshot.manifest.json` (the seal written LAST). RK-15
+    // PR-B moved every object under the immutable object_prefix, so the Layer-4
+    // probe targets the seal (not a date-only manifest that no longer exists).
     console.log('\n[STAGE-4] === Post-upload R2 verification ===');
-    const todayIso = new Date().toISOString().slice(0, 10);
     try {
-        // PR-L4f (cycle 22 hotfix): makeR2Client() returns {client, bucket,
-        // missing} object - must destructure or verifySnapshotPresent's
-        // call to client.send() throws "client.send is not a function" and
-        // every F4 exits 10 even though the snapshot uploaded fine. PR-L4
-        // shipped this without exercising the post-upload verify path,
-        // surfaced first time post-PR-CORE-3 F3 dispatch 2026-05-23.
         const { client: r2c } = makeR2Client();
         const bucket = process.env.R2_BUCKET;
-        const present = await verifySnapshotPresent(r2c, bucket, todayIso);
+        const present = await verifySnapshotSealPresent(r2c, bucket, objectPrefix);
         if (!present) {
-            console.error(`[STAGE-4] FAIL: snapshots/${todayIso}/manifest.json not listable in R2 post-upload — Layer 4 completeness violation`);
+            console.error(`[STAGE-4] FAIL: ${rootSealKey(objectPrefix)} not listable in R2 post-upload — Layer 4 completeness violation`);
             process.exit(10);
         }
-        console.log(`[STAGE-4] Post-upload verification OK: snapshots/${todayIso}/manifest.json confirmed in R2`);
+        console.log(`[STAGE-4] Post-upload verification OK: ${rootSealKey(objectPrefix)} confirmed in R2`);
     } catch (err) {
         console.error(`[STAGE-4] Post-upload verification ERROR: ${err.message}`);
         process.exit(10);
