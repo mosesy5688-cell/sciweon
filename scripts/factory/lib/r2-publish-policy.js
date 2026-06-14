@@ -1,0 +1,226 @@
+/**
+ * P-8 recovery control - publication-policy sidecar + auto-F4 gate + F4
+ * MANUAL-mode source attestation.
+ *
+ * The founder REJECTED operational workarounds (workflow disable / time
+ * approximation / latest-pointer guessing). This module is the DATA-PLANE
+ * control: F3 stamps an immutable `_publish_policy.json` sidecar next to the
+ * aggregated bundle declaring whether an AUTO F4 (workflow_run trigger) is
+ * ALLOWED to publish it; the AUTO F4 reads that sidecar and NO-OPs on a
+ * backfill_only (MANUAL_ONLY) artifact; the MANUAL F4 binds to one EXACT run
+ * id, attests the source bytes (ETag/size HEAD before==after, sha256 inventory)
+ * and asserts the policy triplet before any object write.
+ *
+ * Pure-ish: the S3 client + bucket are injected by the caller so verification
+ * harnesses exercise the SAME read/write paths. No @aws-sdk import here.
+ */
+
+import { createHash } from 'crypto';
+import { GetObjectCommand, PutObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
+
+export const PUBLISH_POLICY_SCHEMA_VERSION = 1;
+export const POLICY_AUTO_ALLOWED = 'AUTO_ALLOWED';
+export const POLICY_MANUAL_ONLY = 'MANUAL_ONLY';
+export const MODE_FULL = 'full';
+export const MODE_BACKFILL_ONLY = 'backfill_only';
+
+// R2 key of the per-run publication-policy sidecar.
+export function publishPolicyKey(runId) {
+    return `processed/aggregated/${runId}/_publish_policy.json`;
+}
+
+export function aggregatedLatestKey() {
+    return 'processed/aggregated/latest.json';
+}
+
+/**
+ * Build the canonical publication-policy object. Normal production F3
+ * (BACKFILL_ONLY!=='true') -> {mode:'full', publication_policy:'AUTO_ALLOWED'}.
+ * Backfill_only F3 -> {mode:'backfill_only', publication_policy:'MANUAL_ONLY'}.
+ */
+export function buildPublishPolicy({ aggregatedRunId, backfillOnly, sourceRunId = null, commitSha = null }) {
+    if (!aggregatedRunId) throw new Error('buildPublishPolicy: aggregatedRunId required');
+    const mode = backfillOnly ? MODE_BACKFILL_ONLY : MODE_FULL;
+    const publicationPolicy = backfillOnly ? POLICY_MANUAL_ONLY : POLICY_AUTO_ALLOWED;
+    return {
+        schema_version: PUBLISH_POLICY_SCHEMA_VERSION,
+        aggregated_run_id: aggregatedRunId,
+        mode,
+        publication_policy: publicationPolicy,
+        source_run_id: sourceRunId,
+        commit_sha: commitSha,
+        created_at: new Date().toISOString(),
+    };
+}
+
+/**
+ * F3 convenience: build + write the sidecar in one call (keeps stage-3 thin).
+ * Returns the written key. The caller decides whether a write failure is fatal.
+ */
+export async function stampStage3PublishPolicy({ client, bucket, aggregatedRunId, backfillOnly, sourceRunId = null, commitSha = null }) {
+    const policy = buildPublishPolicy({ aggregatedRunId, backfillOnly, sourceRunId, commitSha });
+    const key = await writePublishPolicy({ client, bucket, policy });
+    return { key, policy };
+}
+
+async function streamToBuffer(stream) {
+    const chunks = [];
+    for await (const c of stream) chunks.push(c);
+    return Buffer.concat(chunks);
+}
+
+/**
+ * F3 sidecar write. Called from stage-3 next to uploadStage('aggregated', ...).
+ * Idempotent overwrite of the immutable per-run key (the run_id namespaces it).
+ */
+export async function writePublishPolicy({ client, bucket, policy }) {
+    const key = publishPolicyKey(policy.aggregated_run_id);
+    await client.send(new PutObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        Body: Buffer.from(JSON.stringify(policy, null, 2)),
+        ContentType: 'application/json',
+    }));
+    return key;
+}
+
+// Read + JSON-parse an object; returns { found, value } so callers distinguish
+// MISSING (clean 404) from unparseable (throws) without conflating them.
+async function getJson({ client, bucket, key }) {
+    try {
+        const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+        const buf = await streamToBuffer(res.Body);
+        return { found: true, value: JSON.parse(buf.toString('utf-8')) };
+    } catch (err) {
+        if (err.name === 'NoSuchKey' || err.$metadata?.httpStatusCode === 404) {
+            return { found: false, value: null };
+        }
+        throw err;
+    }
+}
+
+/**
+ * AUTO-mode gate (workflow_run trigger; no aggregated_run_id input). Reads
+ * processed/aggregated/latest.json -> run_id, then the per-run policy sidecar,
+ * and returns a DECISION the caller acts on. NEVER guesses from latest.json
+ * content, branch, or the workflow file:
+ *   - publication_policy==='AUTO_ALLOWED'                 -> {action:'PROCEED'}
+ *   - publication_policy==='MANUAL_ONLY'                  -> {action:'NOOP'}   (clean exit 0; latest untouched)
+ *   - sidecar MISSING / unparseable / aggregated_run_id mismatch / no latest
+ *                                                          -> {action:'FAIL'}  (non-zero; no publish)
+ */
+export async function decideAutoPublish({ client, bucket }) {
+    const latest = await getJson({ client, bucket, key: aggregatedLatestKey() });
+    if (!latest.found || !latest.value?.run_id) {
+        return { action: 'FAIL', reason: 'processed/aggregated/latest.json missing or has no run_id' };
+    }
+    const runId = latest.value.run_id;
+    let policyRead;
+    try {
+        policyRead = await getJson({ client, bucket, key: publishPolicyKey(runId) });
+    } catch (err) {
+        return { action: 'FAIL', runId, reason: `_publish_policy.json unparseable: ${err.message}` };
+    }
+    if (!policyRead.found) {
+        return { action: 'FAIL', runId, reason: `_publish_policy.json missing for run ${runId}` };
+    }
+    const policy = policyRead.value;
+    if (policy?.aggregated_run_id !== runId) {
+        return {
+            action: 'FAIL', runId, policy,
+            reason: `policy.aggregated_run_id (${policy?.aggregated_run_id}) !== latest run_id (${runId})`,
+        };
+    }
+    if (policy.publication_policy === POLICY_AUTO_ALLOWED) {
+        return { action: 'PROCEED', runId, policy };
+    }
+    if (policy.publication_policy === POLICY_MANUAL_ONLY) {
+        return { action: 'NOOP', runId, policy };
+    }
+    return { action: 'FAIL', runId, policy, reason: `unknown publication_policy: ${policy.publication_policy}` };
+}
+
+async function headEtagSize({ client, bucket, key }) {
+    const res = await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+    return { etag: res.ETag ?? null, size: res.ContentLength ?? res.Size ?? null };
+}
+
+function lineCount(buf) {
+    const s = buf.toString('utf-8');
+    if (s.length === 0) return 0;
+    const trimmed = s.endsWith('\n') ? s.slice(0, -1) : s;
+    if (trimmed.length === 0) return 0;
+    return trimmed.split('\n').length;
+}
+
+// Canonical hash over the per-file inventory (sorted by key) so the attestation
+// hash is order-independent + reproducible.
+function aggregateAttestationHash(inventory) {
+    const canonical = [...inventory]
+        .sort((a, b) => a.key.localeCompare(b.key))
+        .map(e => `${e.key}	${e.size}	${e.sha256}	${e.line_count}`)
+        .join('\n');
+    return createHash('sha256').update(canonical).digest('hex');
+}
+
+/**
+ * F4 MANUAL-mode source attestation. Binds to ONE exact aggregated run id:
+ *   1. HEAD every file (pre) -> {etag,size};
+ *   2. GET every file -> sha256 + line_count;
+ *   3. HEAD every file (post) -> assert etag+size UNCHANGED vs pre (drift -> throw);
+ *   4. read the per-run policy sidecar + assert the triplet:
+ *        policy.aggregated_run_id === aggregatedRunId
+ *        publication_policy === 'MANUAL_ONLY'
+ *        mode === 'backfill_only'
+ * The returned `buffers` ARE the attested bytes the caller must build from
+ * (bytes-used === attested-bytes). Throws BEFORE returning on any failure.
+ */
+export async function attestManualSource({ client, bucket, aggregatedRunId, files }) {
+    if (!aggregatedRunId) throw new Error('attestManualSource: aggregatedRunId required');
+    const prefix = `processed/aggregated/${aggregatedRunId}/`;
+
+    // (4) policy triplet FIRST - fail-loud before downloading bytes if the
+    // artifact is not a sanctioned P-8R1 MANUAL_ONLY backfill_only run.
+    const policyRead = await getJson({ client, bucket, key: publishPolicyKey(aggregatedRunId) });
+    if (!policyRead.found) throw new Error(`[ATTEST] _publish_policy.json missing for run ${aggregatedRunId}`);
+    const policy = policyRead.value;
+    if (policy?.aggregated_run_id !== aggregatedRunId) {
+        throw new Error(`[ATTEST] policy.aggregated_run_id (${policy?.aggregated_run_id}) !== input (${aggregatedRunId})`);
+    }
+    if (policy.publication_policy !== POLICY_MANUAL_ONLY) {
+        throw new Error(`[ATTEST] publication_policy is '${policy.publication_policy}', expected ${POLICY_MANUAL_ONLY}`);
+    }
+    if (policy.mode !== MODE_BACKFILL_ONLY) {
+        throw new Error(`[ATTEST] mode is '${policy.mode}', expected ${MODE_BACKFILL_ONLY}`);
+    }
+
+    const inventory = [];
+    const buffers = {};
+    for (const fname of files) {
+        const key = `${prefix}${fname}`;
+        const pre = await headEtagSize({ client, bucket, key });
+        const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+        const buf = await streamToBuffer(res.Body);
+        const post = await headEtagSize({ client, bucket, key });
+        if (pre.etag !== post.etag || pre.size !== post.size) {
+            throw new Error(`[ATTEST] source drift on ${key}: pre(etag=${pre.etag},size=${pre.size}) != post(etag=${post.etag},size=${post.size})`);
+        }
+        const sha256 = createHash('sha256').update(buf).digest('hex');
+        const lc = lineCount(buf);
+        if (buf.length !== (pre.size ?? buf.length)) {
+            throw new Error(`[ATTEST] downloaded bytes (${buf.length}) != attested HEAD size (${pre.size}) for ${key}`);
+        }
+        buffers[fname] = buf;
+        inventory.push({ key, etag: pre.etag, size: buf.length, sha256, line_count: lc });
+    }
+
+    const attestationHash = aggregateAttestationHash(inventory);
+    return {
+        source_run_id: aggregatedRunId,
+        source_prefix: prefix,
+        policy,
+        inventory,
+        aggregate_attestation_hash: attestationHash,
+        buffers,
+    };
+}

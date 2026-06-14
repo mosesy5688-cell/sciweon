@@ -1,26 +1,20 @@
 /**
  * Aggregated Cumulative Backfill Enricher V1 (cycle 22 PR-CORE-3).
  *
- * Runs INSIDE stage-3-aggregate.js, AFTER mergeLocalAggregatedWithPrevious (so
- * compounds-enriched.jsonl is the freshly-merged cumulative) and BEFORE
- * buildSearchIndex (so downstream indices see the backfilled records).
- *
- * Closes the wiring arc PR-CORE-2 missed: F2 cursor enrichers see only the F1
- * increment (~5k), never the ~70k cumulative backlog. PR-CORE-3 walks the
- * cumulative via the SAME enrichOne + skip-if-stamped predicates, in a separate
- * cursor namespace state/aggregated-cursor/<source>.json. Triple-lock
- * ([[no_shortcut_in_science]]): full O(N/chunk) coverage; predicates ==
- * SOURCE_REQUIRED_FIELDS SSoT. D7/D8: per-source failure logs explicit, never
- * aborts. PR-RXN-1g adds F3-cumulative bridges (A) RxNorm bulk pre-pass +
- * (B) DailyMed re-link. PR-FACTORY3-OPENFDA-KEY: per-source FAERS budget +
- * FETCH_FAILURES-vs-SATURATION de-mask ([[cross_cycle_silent_data_loss]]).
+ * Runs INSIDE stage-3-aggregate.js, AFTER the cumulative merge + BEFORE the
+ * indices. Walks the cumulative backlog via the SAME enrichOne + skip-if-stamped
+ * predicates in cursor namespace state/aggregated-cursor/<source>.json (full
+ * O(N/chunk) coverage; per-source failures logged, never abort). PR-RXN-1g adds
+ * RxNorm bulk pre-pass + DailyMed re-link. PR-FACTORY3-OPENFDA-KEY: per-source
+ * FAERS budget + FETCH_FAILURES-vs-SATURATION de-mask. P-8 GAP-B: optional HARD
+ * per-run FAERS record cap (FAERS_BACKFILL_MAX_RECORDS) + stop_reason evidence.
  */
 
 import { createWriteStream } from 'fs';
 import { once } from 'events';
 import path from 'path';
 import { readCursor, writeCursor, chunkIterator, buildNextCursor } from './lib/enrichment-cursor.js';
-import { drainAdapterBacklog, DEFAULT_CHUNK_DURATION_ESTIMATE_MS } from './lib/drain-adapter-backlog.js';
+import { drainAdapterBacklog, DEFAULT_CHUNK_DURATION_ESTIMATE_MS, STOP_REASON, buildDrainEvidence, parseMaxRecordsEnv } from './lib/drain-adapter-backlog.js';
 import { isEligible as isEligibleUnichem, enrichOne as enrichOneUnichem } from './compound-id-resolver.js';
 import { isEligible as isEligibleRxnorm, enrichOne as enrichOneRxnorm, bulkEnrichOne as bulkEnrichOneRxnorm } from './compound-rxnorm-enricher.js';
 import { isEligible as isEligibleFaers, enrichOne as enrichOneFaers, faersTelemetry } from './compound-faers-enricher.js';
@@ -38,13 +32,15 @@ const DEFAULT_BACKFILL_CHUNK = 2000;
 const DRAIN_BUDGET_MS = Number(process.env.ADAPTER_DRAIN_BUDGET_MS) || 25 * 60 * 1000;
 const COLD_START_MS = Number(process.env.ADAPTER_DRAIN_COLD_START_MS) || DEFAULT_CHUNK_DURATION_ESTIMATE_MS;
 // PR-FACTORY3-OPENFDA-KEY: TARGETED 60min budget for the openfda_faers uncap
-// re-enrich (~40k eligible) -- drains faster WITHOUT extending unichem/rxnorm
-// (shared 25min) or risking the F3 GHA timeout (last F3 ~180min; +35min under
-// the 350min cap). Env: FAERS_BACKFILL_BUDGET_MS.
+// re-enrich (~40k eligible) -- drains faster without extending the shared 25min
+// unichem/rxnorm budget. Env: FAERS_BACKFILL_BUDGET_MS.
 const FAERS_DRAIN_BUDGET_MS = Number(process.env.FAERS_BACKFILL_BUDGET_MS) || 60 * 60 * 1000;
 // FETCH-FAILURE (not saturation) when a run's openFDA error count exceeds this
 // fraction of records attempted (keyless ~=1.0; healthy ~=0). Env override too.
 const FAERS_FETCH_FAILURE_RATIO = Number(process.env.FAERS_FETCH_FAILURE_RATIO) || 0.25;
+// P-8 GAP-B: HARD per-run FAERS record cap. UNSET = no cap = today's behavior;
+// a finite value (P-8R1 bound 8000) caps the drain at exactly N records.
+const FAERS_BACKFILL_MAX_RECORDS = parseMaxRecordsEnv('FAERS_BACKFILL_MAX_RECORDS');
 
 // Per-source rate limits matching the underlying adapters. drainBudgetMs (opt):
 // overrides the shared DRAIN_BUDGET_MS. telemetry (opt): returns cumulative
@@ -53,11 +49,10 @@ const FAERS_FETCH_FAILURE_RATIO = Number(process.env.FAERS_FETCH_FAILURE_RATIO) 
 const SOURCE_CONFIG = Object.freeze({
     unichem:       { delayMs: 250, enrichOne: enrichOneUnichem, isEligible: isEligibleUnichem },
     rxnorm:        { delayMs: 150, enrichOne: enrichOneRxnorm,  isEligible: isEligibleRxnorm, bulkEnrichOne: bulkEnrichOneRxnorm },
-    openfda_faers: { delayMs: 250, enrichOne: enrichOneFaers,   isEligible: isEligibleFaers, drainBudgetMs: FAERS_DRAIN_BUDGET_MS, telemetry: faersTelemetry },
+    openfda_faers: { delayMs: 250, enrichOne: enrichOneFaers,   isEligible: isEligibleFaers, drainBudgetMs: FAERS_DRAIN_BUDGET_MS, telemetry: faersTelemetry, maxRecords: FAERS_BACKFILL_MAX_RECORDS },
 });
 
-// Streaming JSONL writer (V5 architect-locked: per-record write, conditional
-// drain await only on stream.write false return -- no microtask thrash).
+// Streaming JSONL writer (per-record write, conditional drain await).
 async function writeJsonl(file, records) {
     const stream = createWriteStream(file, { encoding: 'utf-8' });
     for (const r of records) {
@@ -68,9 +63,8 @@ async function writeJsonl(file, records) {
 }
 
 // Run one source's backfill on the in-memory compounds list via V5
-// drainAdapterBacklog. Returns { source, processed, stamped, error, fetchErrors }.
-// Mutates compounds in place. Lock 1: drain scopes runStart per-call so
-// sequential sources never inherit a polluted shared clock.
+// drainAdapterBacklog. Returns { source, processed, stamped, error, fetchErrors,
+// evidence }. Mutates compounds in place (drain scopes runStart per-call).
 export async function backfillOneSource(sourceId, compounds, bulkMaps = null) {
     const cfg = SOURCE_CONFIG[sourceId];
     if (!cfg) throw new Error(`Unknown source: ${sourceId}`);
@@ -85,9 +79,8 @@ export async function backfillOneSource(sourceId, compounds, bulkMaps = null) {
         return { source: sourceId, processed: 0, stamped: 0, error: null, fetchErrors: 0 };
     }
 
-    // PR-RXN-1g Fix A: bulk fast-path pre-pass before the per-record REST drain so
-    // the RxNorm bulk Map reaches the cumulative backlog. Fail-soft (no maps ->
-    // REST drain runs); re-filter so REST drains only the bulk-missed long tail.
+    // PR-RXN-1g Fix A: bulk fast-path pre-pass before the per-record REST drain
+    // (fail-soft: no maps -> REST drain runs; re-filter to the bulk-missed tail).
     let bulkStamped = 0;
     if (cfg.bulkEnrichOne && bulkMaps) {
         for (const rec of eligible) cfg.bulkEnrichOne(rec, bulkMaps);
@@ -101,17 +94,15 @@ export async function backfillOneSource(sourceId, compounds, bulkMaps = null) {
         }
     }
 
-    // Forensic sample (1d audit): log first 10 eligible ids so operators can curl
-    // the adapter to confirm a genuine null.
+    // Forensic sample (1d audit): first 10 eligible ids so operators can curl the adapter.
     const sample = eligible.slice(0, 10).map(r => ({
         id: r.id, inchi_key: r.inchi_key, unii: r.external_ids?.unii,
     }));
     console.log(`[BACKFILL/${sourceId}] Forensic sample (first 10 of ${eligible.length} eligible): ${JSON.stringify(sample)}`);
 
     const chunkSize = cursor?.chunk_size ?? DEFAULT_BACKFILL_CHUNK;
-
     // Lock 2: O(1) per-record isEligible flip detection. processedAttempts counts
-    // enrichOne completions post-await only (= records finished, not dispatched; D8).
+    // enrichOne completions post-await only (records finished, not dispatched; D8).
     let stampedThisRun = 0;
     let processedAttempts = 0;
     let errorMsg = null;
@@ -122,10 +113,11 @@ export async function backfillOneSource(sourceId, compounds, bulkMaps = null) {
         if (wasEligibleBefore && !cfg.isEligible(record)) stampedThisRun++;
     };
 
-    // Snapshot cumulative fetch-errors BEFORE the drain (telemetry is module-
-    // cumulative; the before/after diff below isolates this run).
+    // Snapshot cumulative fetch-errors BEFORE the drain (before/after diff isolates this run).
     const errorsBefore = cfg.telemetry ? cfg.telemetry().faersErrorCount : 0;
     const sourceBudgetMs = cfg.drainBudgetMs ?? DRAIN_BUDGET_MS;
+    const cursorBefore = cursor?.cursor_id ?? null; // P-8 GAP-B evidence
+    const requestedMaxRecords = cfg.maxRecords ?? null; // P-8 GAP-B record cap
 
     let drain;
     try {
@@ -134,16 +126,26 @@ export async function backfillOneSource(sourceId, compounds, bulkMaps = null) {
             timeBudgetMs: sourceBudgetMs, coldStartEstimateMs: COLD_START_MS,
             sleepMsBetween: cfg.delayMs, initialCursor: cursor,
             logPrefix: `[BACKFILL/${sourceId}]`, logEveryNRecords: 200,
+            maxRecords: requestedMaxRecords,
         });
     } catch (err) {
         errorMsg = err.message;
         console.error(`[BACKFILL/${sourceId}] Drain aborted mid-flight: ${err.message}`);
-        return { source: sourceId, processed: processedAttempts, stamped: stampedThisRun + bulkStamped, error: errorMsg, fetchErrors: cfg.telemetry ? cfg.telemetry().faersErrorCount - errorsBefore : 0 };
+        // P-8 GAP-B: in-drain throw is SOURCE/INVARIANT failure (INVARIANT explicit in msg).
+        const stopReason = /INVARIANT_FAILURE/.test(err.message)
+            ? STOP_REASON.INVARIANT_FAILURE : STOP_REASON.SOURCE_FAILURE;
+        return {
+            source: sourceId, processed: processedAttempts, stamped: stampedThisRun + bulkStamped,
+            error: errorMsg, fetchErrors: cfg.telemetry ? cfg.telemetry().faersErrorCount - errorsBefore : 0,
+            evidence: buildDrainEvidence({
+                requestedMaxRecords, stampedThisRun, attemptedThisRun: processedAttempts,
+                remainingBacklog: null, stopReason, cursorBefore, cursorAfter: cursorBefore,
+            }),
+        };
     }
 
     // PR-FACTORY3-OPENFDA-KEY: per-run fetch-error delta de-masks a keyless failure
-    // -- a FETCH-FAILURE run (openFDA null from a missing OPENFDA_API_KEY) flips the
-    // verdict off saturation when errors exceed the ratio ([[cross_cycle_silent_data_loss]]).
+    // -- flips the verdict off saturation when errors exceed the ratio.
     const fetchErrorsThisRun = cfg.telemetry ? cfg.telemetry().faersErrorCount - errorsBefore : 0;
     const fetchFailureDominant = cfg.telemetry
         && drain.processedInRun > 0
@@ -151,23 +153,17 @@ export async function backfillOneSource(sourceId, compounds, bulkMaps = null) {
 
     // Forensic verdict (1d audit): saturation vs silent failure vs fetch-failure.
     let verdict;
-    if (fetchFailureDominant) {
-        verdict = `FETCH_FAILURES (${fetchErrorsThisRun} errors / ${drain.processedInRun} processed -- NOT saturation; check OPENFDA_API_KEY) [stamped_this_run=${stampedThisRun}]`;
-    } else if (stampedThisRun > 0) {
-        verdict = `MONOTONIC_GROWTH (+${stampedThisRun} stamps this run -- API healthy, eligible pool draining)`;
-    } else {
-        verdict = `SATURATION_CONFIRMED (0 stamps + ${fetchErrorsThisRun} fetch-errors across ${drain.processedInRun} record attempts -- consistent with prior cycles history of API returning null for this eligible subset)`;
-    }
+    if (fetchFailureDominant) verdict = `FETCH_FAILURES (${fetchErrorsThisRun} errors / ${drain.processedInRun} processed -- NOT saturation; check OPENFDA_API_KEY) [stamped_this_run=${stampedThisRun}]`;
+    else if (stampedThisRun > 0) verdict = `MONOTONIC_GROWTH (+${stampedThisRun} stamps this run -- API healthy, eligible pool draining)`;
+    else verdict = `SATURATION_CONFIRMED (0 stamps + ${fetchErrorsThisRun} fetch-errors across ${drain.processedInRun} record attempts -- API returning null for this eligible subset)`;
     console.log(`[BACKFILL/${sourceId}] Drain done | terminatedBy=${drain.terminatedBy} | processedInRun=${drain.processedInRun} | stamped_this_run=${stampedThisRun} | fetch_errors_this_run=${fetchErrorsThisRun} | remainingBacklog=${drain.remainingBacklog} | verdict=${verdict}`);
 
     // D8: persist cursor after drain (terminal atomic commit per source).
     if (drain.finalCursorResult) {
         const nextCursor = buildNextCursor({
-            source: sourceId, prev: cursor,
-            chunkResult: drain.finalCursorResult,
+            source: sourceId, prev: cursor, chunkResult: drain.finalCursorResult,
             processedCount: drain.processedInRun,
-            totalEligible: drain.finalCursorResult.totalEligible,
-            chunkSize,
+            totalEligible: drain.finalCursorResult.totalEligible, chunkSize,
         });
         try {
             await writeCursor(sourceId, nextCursor, CURSOR_PREFIX);
@@ -179,7 +175,17 @@ export async function backfillOneSource(sourceId, compounds, bulkMaps = null) {
         console.log(`[BACKFILL/${sourceId}] No chunks drained -- cursor unchanged`);
     }
 
-    return { source: sourceId, processed: drain.processedInRun, stamped: stampedThisRun + bulkStamped, error: errorMsg, fetchErrors: fetchErrorsThisRun, fetchFailureDominant };
+    // P-8 GAP-B: evidence block. cursor_after only READS the drain's resulting id
+    // (the cursor ALGORITHM is unchanged); stop_reason comes from the drain.
+    const evidence = buildDrainEvidence({
+        requestedMaxRecords, stampedThisRun: stampedThisRun + bulkStamped,
+        attemptedThisRun: processedAttempts, remainingBacklog: drain.remainingBacklog,
+        stopReason: drain.stopReason ?? STOP_REASON.BACKLOG_EXHAUSTED,
+        cursorBefore, cursorAfter: drain.finalCursor?.cursor_id ?? cursorBefore,
+    });
+    console.log(`[BACKFILL/${sourceId}] P-8 evidence: ${JSON.stringify(evidence)}`);
+
+    return { source: sourceId, processed: drain.processedInRun, stamped: stampedThisRun + bulkStamped, error: errorMsg, fetchErrors: fetchErrorsThisRun, fetchFailureDominant, evidence };
 }
 
 async function main() {
@@ -192,8 +198,7 @@ async function main() {
     }
     console.log(`[BACKFILL] Loaded cumulative ${compounds.length} compounds`);
 
-    // PR-RXN-1g: load RxNorm bulk maps ONCE - shared by Fix A (bulk pre-pass) and
-    // Fix B (DailyMed re-link). Fail-soft: null maps degrade to prior behavior.
+    // PR-RXN-1g: load RxNorm bulk maps ONCE (shared by Fix A + Fix B; fail-soft).
     let bulkMaps = null;
     try { bulkMaps = await loadRxnormBulkMaps(); }
     catch (err) { console.warn(`[BACKFILL] RxNorm bulk maps unavailable (${err.message}) - Fix A + Fix B degrade to prior behavior`); }
@@ -211,8 +216,7 @@ async function main() {
         }
     }
 
-    // Only write back if at least one source succeeded; a total wipe (all errored)
-    // is suspicious -- keep the prior merged cumulative intact for F3's upload.
+    // Only write back if at least one source succeeded (a total wipe is suspicious).
     if (anySuccess) {
         // PR-RXN-1g Fix B re-link + PR-MD-1e harm telemetry + PR-MD-2a corpus add-list emit.
         const labels = await loadJsonlStrict(DRUG_LABELS_FILE);
@@ -227,16 +231,13 @@ async function main() {
     console.log(`\n[BACKFILL] === Summary ===`);
     for (const s of summaries) {
         let tag = s.error ? `ERROR(${s.error.slice(0, 80)})` : 'OK';
-        // Surface fetch-errors LOUDLY so keyless openFDA (0 stamps + N errors)
-        // can never read as benign saturation here either.
+        // Surface fetch-errors LOUDLY so keyless openFDA never reads as benign saturation.
         if (s.fetchFailureDominant) tag = `FETCH_FAILURES(${s.fetchErrors} errors -- check OPENFDA_API_KEY)`;
         const errTag = s.fetchErrors ? ` fetch_errors=${s.fetchErrors}` : '';
         console.log(`  ${s.source.padEnd(15)} processed=${s.processed} stamped=${s.stamped}${errTag} ${tag}`);
     }
 
-    // Exit nonzero on any per-source failure so stage-3's wrapper logs the
-    // degraded outcome -- but per D7 stage-3 treats this as non-fatal and
-    // continues. The bundle is already written (when anySuccess) so upload proceeds.
+    // Exit nonzero on any per-source failure (stage-3 treats it non-fatal per D7).
     const anyError = summaries.some(s => s.error != null);
     process.exit(anyError ? 1 : 0);
 }
