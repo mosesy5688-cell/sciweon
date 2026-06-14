@@ -3,15 +3,18 @@ name: RK-15 V3-C Serving Acceptance
 # RK-15 V3-C — STRICT READ-ONLY serving acceptance.
 #
 # Proves full serving acceptance + a source->candidate->live three-layer parity
-# against the EXACT immutable candidate V3-B already CAS-activated to production
-# latest (snapshots/2026-06-13/27467183738-1/). It does NOT re-activate
-# anything, NOT write R2, NOT change latest, NOT purge cache — the harness routes
-# every R2 call through a read-only guard (a PutObject -> HARD FAIL; the evidence
-# pack's put_count MUST be 0). The live worker is probed by HTTP GET only.
+# against the candidate named by the RUN INPUT. The harness reads production
+# snapshots/latest.json ONCE and ASSERTS it points at EXACTLY the input candidate
+# (snapshot_id + payload sha256 + optional manifest_hash) — NO derive-and-accept:
+# a latest pointing elsewhere (or a legacy_v1 latest) is a HARD FAIL. It does NOT
+# re-activate anything, NOT write R2, NOT change latest, NOT purge cache — the
+# harness routes every R2 call through a read-only guard (a PutObject -> HARD
+# FAIL; the evidence pack's put_count MUST be 0). Live worker: HTTP GET only.
 #
 # FOUNDER-TRIGGERED ONLY: workflow_dispatch (no push / no schedule /
-# no workflow_run — F3/F1 are unreachable from here). worker_base_url is
-# REQUIRED; a missing URL is a FAILURE, never a silent skip.
+# no workflow_run — F3/F1 are unreachable from here). worker_base_url,
+# candidate_snapshot_id, and candidate_payload_hash are REQUIRED; a missing
+# required input is a FAILURE (v3c_pass=false, non-zero exit), never a silent skip.
 
 on:
   workflow_dispatch:
@@ -19,6 +22,18 @@ on:
       worker_base_url:
         description: 'Live worker base URL (e.g. https://sciweon.com) — REQUIRED'
         required: true
+        type: string
+      candidate_snapshot_id:
+        description: 'EXPECTED candidate snapshot_id (e.g. 2026-06-14/27489690948-1) — REQUIRED; production latest MUST equal this or the run HARD-FAILS'
+        required: true
+        type: string
+      candidate_payload_hash:
+        description: 'EXPECTED sha256 of the production latest.json body bytes — REQUIRED; asserted byte-for-byte against the candidate'
+        required: true
+        type: string
+      manifest_hash:
+        description: 'OPTIONAL expected latest.manifest_hash; when set it is asserted == latest.manifest_hash (HARD FAIL on mismatch)'
+        required: false
         type: string
 
 permissions:
@@ -34,6 +49,9 @@ jobs:
       R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
       WORKER_BASE_URL: ${{ inputs.worker_base_url }}
+      CANDIDATE_SNAPSHOT_ID: ${{ inputs.candidate_snapshot_id }}
+      CANDIDATE_PAYLOAD_HASH: ${{ inputs.candidate_payload_hash }}
+      MANIFEST_HASH: ${{ inputs.manifest_hash }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

@@ -1,27 +1,30 @@
 /**
  * RK-15 V3-C — shared PURE logic for the STRICT READ-ONLY serving-acceptance
- * harness. Holds the read-only WRITE-GUARD, the surface registry (code-sourced
- * route patterns), the source/candidate/live three-layer parity rules, the
- * repeated-request stability evaluator, and the small read helpers — split out
- * of rk15-v3c-serving-acceptance.js to stay under the CES 250-line cap and to be
- * unit-testable with a mock client + fetch.
+ * harness: the read-only WRITE-GUARD, the candidate binding (latest == INPUT),
+ * the source/candidate/live three-layer parity rules, the stability evaluator,
+ * and the small read helpers — split out to stay under the CES 250-line cap and
+ * be unit-testable with a mock client + fetch.
  *
- * READ-ONLY CONTRACT: this harness performs ONLY R2 GET/HEAD (source +
- * candidate) and HTTP GET (live worker). It MUST NOT construct ANY PutObject /
- * any write / any latest change / any cache purge. instrumentReadOnlyClient
- * HARD-FAILS the instant a PutObject (or any non-GET/HEAD command) is
- * constructed, and records put_count for the evidence pack (which MUST be 0).
+ * READ-ONLY CONTRACT: ONLY R2 GET/HEAD + HTTP GET. NO PutObject / write / latest
+ * change / cache purge. instrumentReadOnlyClient HARD-FAILS the instant a write
+ * command is constructed and records put_count (which MUST be 0).
  */
 
 import { createHash } from 'crypto';
 import { GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
+import { parseSnapshotContext } from '../../src/worker/lib/snapshot-context.ts';
 
 // The fixed Run #1 aggregated source — bound DIRECTLY (NOT via latest.json).
 export const SOURCE_RUN_ID = '27413864028';
 export const SOURCE_COMPOUNDS_KEY = `processed/aggregated/${SOURCE_RUN_ID}/compounds-enriched.jsonl`;
-// The EXACT immutable candidate V3-B CAS-activated to production latest.
-export const CANDIDATE_SNAPSHOT_ID = '2026-06-13/27467183738-1';
-export const CANDIDATE_PREFIX = `snapshots/${CANDIDATE_SNAPSHOT_ID}/`;
+export const PROD_LATEST_KEY = 'snapshots/latest.json'; // read-only GET only.
+
+// The candidate is NO LONGER hardcoded: it is bound from the RUN INPUT
+// (candidate_snapshot_id) and ASSERTED == production latest at runtime
+// (bindCandidate); the candidate prefix derives from the INPUT id.
+export function candidatePrefix(candidateSnapshotId) {
+    return `snapshots/${candidateSnapshotId}/`;
+}
 
 export function sha256Hex(buf) {
     return createHash('sha256').update(buf).digest('hex');
@@ -39,11 +42,9 @@ export async function streamToBuffer(body) {
 // ── the READ-ONLY write-GUARD ────────────────────────────────────────────────
 
 /**
- * Wrap `client.send` so EVERY command is inspected BEFORE it reaches R2. The
- * harness is STRICTLY READ-ONLY: a PutObjectCommand (or ANY write/copy/delete
- * command) is a HARD CONTRACT VIOLATION and throws here, never hitting the
- * store. Only GetObjectCommand / HeadObjectCommand are permitted. putCount is
- * tracked on the wrapper and MUST remain 0 for the evidence pack.
+ * Wrap `client.send` so EVERY command is inspected BEFORE it reaches R2. A
+ * write/copy/delete command is a HARD CONTRACT VIOLATION and throws here, never
+ * hitting the store; only Get/HeadObjectCommand pass. putCount MUST remain 0.
  */
 const WRITE_COMMANDS = new Set([
     'PutObjectCommand', 'DeleteObjectCommand', 'DeleteObjectsCommand',
@@ -115,8 +116,58 @@ export async function getObjectOrNull(client, bucket, key) {
     }
 }
 
-// ── source-record FAERS extraction (the source layer) ────────────────────────
+// ── candidate binding (the core: latest == INPUT candidate, no derive-accept) ─
 
+/**
+ * Bind the candidate to the RUN INPUT, then ASSERT production latest points at
+ * EXACTLY it (NOT derive-and-accept — INPUT is truth; latest elsewhere = HARD
+ * FAIL). Read latest.json ONCE (GET); parse via parseSnapshotContext (legacy_v1
+ * -> fail); assert snapshot_id == input, sha256(latest bytes) == input hash, and
+ * (if given) manifest_hash == input. Missing required input -> HARD FAIL.
+ */
+export async function bindCandidate(client, bucket, input) {
+    const id = (input?.candidate_snapshot_id ?? '').trim();
+    const payloadHash = (input?.candidate_payload_hash ?? '').trim();
+    const wantManifestHash = (input?.manifest_hash ?? '').trim() || null;
+    const fail = (reason, extra = {}) => ({ check: { pass: false, reason, candidate_snapshot_id: id || null, ...extra }, ctx: null, candidatePrefix: null });
+
+    if (!id || !payloadHash) {
+        return fail('missing required run input — candidate_snapshot_id AND candidate_payload_hash are REQUIRED (missing required input is a HARD FAIL, never a silent skip)', { candidate_payload_hash_present: payloadHash.length > 0 });
+    }
+    // 1) read production latest.json ONCE.
+    let body, sha;
+    try { const g = await getObject(client, bucket, PROD_LATEST_KEY); body = g.body; sha = g.sha256; }
+    catch (err) { return fail(`could not read production ${PROD_LATEST_KEY}: ${String(err?.message ?? err)}`); }
+    // 2) parse via the reader's own parser (legacy_v1 -> hard fail below).
+    let ctx;
+    try { ctx = parseSnapshotContext(body.toString('utf-8')); }
+    catch (err) { return fail(`production latest.json is not a parseable snapshot context: ${String(err?.message ?? err)}`, { latest_payload_sha256: sha }); }
+
+    const isV2 = ctx.layout_version === 'immutable_snapshot_v2';
+    const idMatch = ctx.snapshot_id === id;
+    const hashMatch = sha === payloadHash;
+    const mhMatch = wantManifestHash == null ? true : ctx.manifest_hash === wantManifestHash;
+    const pass = isV2 && idMatch && hashMatch && mhMatch;
+    const reasons = [];
+    if (!isV2) reasons.push(`latest layout_version=${JSON.stringify(ctx.layout_version)} not immutable_snapshot_v2 — cannot match a v2 candidate`);
+    if (!idMatch) reasons.push(`latest.snapshot_id=${JSON.stringify(ctx.snapshot_id)} != input=${JSON.stringify(id)} — HARD FAIL (no derive-and-accept)`);
+    if (!hashMatch) reasons.push(`sha256(latest.json)=${sha} != input hash=${payloadHash} — HARD FAIL`);
+    if (!mhMatch) reasons.push(`latest.manifest_hash=${JSON.stringify(ctx.manifest_hash)} != input=${JSON.stringify(wantManifestHash)} — HARD FAIL`);
+
+    return {
+        check: {
+            pass, candidate_snapshot_id: id, latest_snapshot_id: ctx.snapshot_id,
+            latest_layout_version: ctx.layout_version, latest_payload_sha256: sha,
+            candidate_payload_hash: payloadHash, manifest_hash_input: wantManifestHash,
+            manifest_hash_observed: ctx.manifest_hash ?? null,
+            snapshot_id_match: idMatch, payload_hash_match: hashMatch, manifest_hash_match: mhMatch, is_immutable_v2: isV2,
+            reason: pass ? 'production latest == INPUT candidate (snapshot_id + payload sha256 + manifest_hash all match)' : reasons.join('; '),
+        },
+        ctx, candidatePrefix: candidatePrefix(id),
+    };
+}
+
+// ── source-record FAERS extraction (the source layer) ────────────────────────
 /** Pull faers term-count + total from a source record's fda_signals (read-only). */
 export function faersFromRecord(rec) {
     const fs = rec?.fda_signals ?? {};
@@ -164,16 +215,11 @@ export function scanSourceJsonl(buf, wantCids, synonymTerms) {
 }
 
 // ── three-layer parity rule (§3) ─────────────────────────────────────────────
-
 /**
- * The EXACT parity verdict, per the V3-C contract:
- *   source=0,cand=0,live=0           -> 'faithful_zero'        (NOT a regression)
- *   source>0,cand=0                  -> 'candidate_build_defect'
- *   source>0,cand>0,live=0           -> 'serving_defect'
- *   source=0,cand>0,live>0           -> 'transform_explain'    (explain, not data loss)
- *   source>0,cand>0,live>0 (match)   -> 'consistent'
- * Anything else -> 'mismatch'. `pass` is true only for faithful_zero | consistent
- * | transform_explain (the last carries an explanatory note, not a data-loss).
+ * EXACT parity verdict (V3-C contract). s/c/l = source/candidate/live counts:
+ *   0,0,0 -> faithful_zero (PASS); s>0,c=0 -> candidate_build_defect (FAIL);
+ *   s>0,c>0,l=0 -> serving_defect (FAIL); s=0,c>0,l>0 -> transform_explain
+ *   (PASS w/ note); s>0,c>0,l>0 & c==l -> consistent (PASS); else mismatch (FAIL).
  */
 export function classifyParity({ source_faers_term_count, candidate_faers_term_count, live_faers_term_count }) {
     const s = Number(source_faers_term_count) || 0;
@@ -188,7 +234,6 @@ export function classifyParity({ source_faers_term_count, candidate_faers_term_c
 }
 
 // ── repeated-request stability (§6) ──────────────────────────────────────────
-
 /** Given an array of per-repeat probe samples, assert every field is stable. */
 export function evalStability(samples, fields) {
     if (!Array.isArray(samples) || samples.length === 0) return { stable: false, reason: 'no samples', samples };
