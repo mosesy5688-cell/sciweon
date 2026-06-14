@@ -1,16 +1,10 @@
 // @ts-nocheck
-/**
- * P-8 recovery control — publication-policy sidecar + AUTO-F4 gate + F4
- * MANUAL-mode exact run-binding + source attestation.
- *
- * Covers WO scenarios (1)(2)(3)(4)(9)(10)(11)(12)(13)(14). The drain hard
- * record cap (5)(6)(7)(8) lives in p8-record-cap.test.ts.
- *
- * Uses a Map-backed in-memory S3 client honoring Get/Put/Head so the REAL
- * buildPublishPolicy / writePublishPolicy / decideAutoPublish / attestManualSource
- * paths run unchanged (the injected-client contract the producers use).
- */
-
+// P-8 recovery control: publication-policy sidecar + AUTO-F4 gate + F4
+// MANUAL-mode exact run-binding + source attestation. Covers WO scenarios
+// (1)(2)(3)(4)(9)(10)(11)(12)(13)(14); the drain hard record cap (5)(6)(7)(8)
+// lives in p8-record-cap.test.ts. Uses a Map-backed in-memory S3 client
+// honoring Get/Put/Head so the REAL buildPublishPolicy / writePublishPolicy /
+// decideAutoPublish / attestManualSource paths run unchanged.
 import { describe, it, expect, vi } from 'vitest';
 import { GetObjectCommand, PutObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { createHash } from 'crypto';
@@ -22,7 +16,7 @@ import {
 const BUCKET = 'test-bucket';
 
 // In-memory R2: store maps key -> { body: Buffer, etag }. ETag = sha256 of body
-// unless explicitly overridden (drift test mutates etag without changing body).
+// unless overridden (drift test mutates etag without changing body).
 function makeStore() {
     const store = new Map();
     const fetched = []; // every GET/HEAD key (asserts which keys are read)
@@ -90,7 +84,6 @@ describe('P-8 GAP-A: AUTO-F4 publication-policy gate', () => {
         expect(d.action).toBe('PROCEED');
         expect(d.runId).toBe('RAUTO');
     });
-
     it('(1) backfill_only MANUAL_ONLY policy -> NOOP (clean no-op, no publish)', async () => {
         const { client, store, etagOf } = makeStore();
         setLatest(store, etagOf, 'RBF');
@@ -99,7 +92,6 @@ describe('P-8 GAP-A: AUTO-F4 publication-policy gate', () => {
         expect(d.action).toBe('NOOP');
         expect(d.policy.publication_policy).toBe(POLICY_MANUAL_ONLY);
     });
-
     it('(3) policy sidecar MISSING -> FAIL (fail-loud)', async () => {
         const { client, store, etagOf } = makeStore();
         setLatest(store, etagOf, 'RMISS'); // no sidecar written
@@ -107,7 +99,6 @@ describe('P-8 GAP-A: AUTO-F4 publication-policy gate', () => {
         expect(d.action).toBe('FAIL');
         expect(d.reason).toMatch(/missing/i);
     });
-
     it('(4) policy.aggregated_run_id != triggering latest run_id -> FAIL', async () => {
         const { client, store, etagOf } = makeStore();
         setLatest(store, etagOf, 'RNEW');
@@ -147,14 +138,12 @@ describe('P-8 GAP-C: F4 MANUAL-mode exact run-binding + attestation', () => {
         expect(att.inventory.length).toBe(2);
         expect(att.aggregate_attestation_hash).toMatch(/^[0-9a-f]{64}$/);
     });
-
     it('(10) MANUAL mode NEVER fetches processed/aggregated/latest.json', async () => {
         const { client, store, etagOf, fetched } = makeStore();
         seedManual(store, etagOf, 'RM2');
         await attestManualSource({ client, bucket: BUCKET, aggregatedRunId: 'RM2', files: MANUAL_FILES });
         expect(fetched).not.toContain(aggregatedLatestKey());
     });
-
     it('(11) source drift (ETag changes between pre/post HEAD) -> throws before publish', async () => {
         const { client, store, etagOf } = makeStore();
         seedManual(store, etagOf, 'RM3');
@@ -174,7 +163,6 @@ describe('P-8 GAP-C: F4 MANUAL-mode exact run-binding + attestation', () => {
         await expect(attestManualSource({ client, bucket: BUCKET, aggregatedRunId: 'RM3', files: MANUAL_FILES }))
             .rejects.toThrow(/drift/i);
     });
-
     it('(12)(8) asserts the 3 policy fields: run_id match + MANUAL_ONLY + backfill_only', async () => {
         const { client, store, etagOf } = makeStore();
         // A FULL/AUTO_ALLOWED artifact must be REJECTED by MANUAL attestation.
@@ -182,7 +170,6 @@ describe('P-8 GAP-C: F4 MANUAL-mode exact run-binding + attestation', () => {
         await expect(attestManualSource({ client, bucket: BUCKET, aggregatedRunId: 'RM4', files: MANUAL_FILES }))
             .rejects.toThrow(/MANUAL_ONLY/);
     });
-
     it('(12) policy.aggregated_run_id mismatch -> throws', async () => {
         const { client, store, etagOf } = makeStore();
         seedBundle(store, etagOf, 'RM5', { 'compounds-enriched.jsonl': '{"id":"a"}\n', 'bioactivities.jsonl': '{"id":"x"}\n' });
