@@ -233,7 +233,7 @@ describe('stage-4 swapV2Latest — ACTIVE not produced on a CAS failure (propaga
                 identity,
                 manifestHash: 'deadbeef',
                 compoundsManifestKey: 'snapshots/2026-06-05/run-1/compounds/bucket-0000/manifest.json',
-                negManifestKey: null,
+                neg: null,
                 hasXref: false,
             }),
         ).rejects.toBeInstanceOf(ConditionalUnsupportedError);

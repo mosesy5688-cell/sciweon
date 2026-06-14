@@ -86,6 +86,35 @@ export function negShardKey(objectPrefix, bucket, shard) {
 export function negEvidenceRootKey(objectPrefix) {
     return `${objectPrefix}neg-evidence/`;
 }
+
+/**
+ * RK-17: the SERVING descriptor pointer written into the seal field
+ * `neg_evidence_manifest_key` + latest.json + consumed by the reader routing.
+ * It is the bare `<prefix>neg-evidence/` ROOT (the reader normalizes at the
+ * `/neg-evidence/` segment). MEANING UNCHANGED vs the historical pointer — this
+ * is an explicitly-named alias of `negEvidenceRootKey` so the descriptor role is
+ * NEVER confused with the validation-probe role (a bare prefix is NOT a real R2
+ * object; HEAD-probing it 404s a complete candidate -> RK-17).
+ */
+export const negEvidenceDescriptorKey = negEvidenceRootKey;
+
+/**
+ * RK-17: the ONE shared neg key contract BOTH the normal F4 path and the V3
+ * harness consume, so neither hand-rolls a divergent neg key string:
+ *   - descriptorKey      the serving root pointer (seal/latest/reader routing);
+ *   - validationProbeKey  a REAL per-bucket manifest object (manifestKeys[0]),
+ *                         the ONLY neg key that may enter validateCandidate's
+ *                         required_inventory + be HEAD-probed for existence.
+ * `negShardsResult` is the publishNegShards return ({ manifestKeys, ... }).
+ * validationProbeKey is null when no buckets were produced (neg empty/skipped).
+ */
+export function buildNegKeyContract(objectPrefix, negShardsResult) {
+    const manifestKeys = (negShardsResult && negShardsResult.manifestKeys) || [];
+    return {
+        descriptorKey: negEvidenceDescriptorKey(objectPrefix),
+        validationProbeKey: manifestKeys.length ? manifestKeys[0] : null,
+    };
+}
 export function xrefIndexKey(objectPrefix) {
     return `${objectPrefix}xref-index.json.gz`;
 }

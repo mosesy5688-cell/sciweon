@@ -83,7 +83,11 @@ export async function readAState({ client, bucket, sessionId }) {
     const aPrefix = ctx.object_prefix;
     const aManifestKey = ctx.compounds_manifest_key;
     const compoundManifest = JSON.parse((await getObject(client, bucket, aManifestKey)).body.toString('utf-8'));
-    const negManifestKey = ctx.neg_evidence_manifest_key ?? null;
+    // RK-17: latest carries the neg DESCRIPTOR root (a bare prefix the reader
+    // normalizes, NOT a HEAD-able object). The seal's required_inventory carries the
+    // REAL per-bucket neg manifest (the validation probe key) -> HEAD that one.
+    const aSeal = JSON.parse((await getObject(client, bucket, `${aPrefix}_snapshot.manifest.json`)).body.toString('utf-8'));
+    const negManifestKey = (aSeal.required_inventory ?? []).find(k => k.includes('/neg-evidence/bucket-')) ?? null;
     const inventory = await snapshotInventory({ client, bucket, prefix: aPrefix, compoundManifest, negManifestKey });
     return { snapshot_id: ctx.snapshot_id, object_prefix: aPrefix, manifest_key: aManifestKey, neg_manifest_key: negManifestKey, inventory };
 }

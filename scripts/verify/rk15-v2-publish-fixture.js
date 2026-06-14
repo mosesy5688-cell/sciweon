@@ -16,7 +16,7 @@
 import path from 'path';
 import {
     deriveSnapshotId, objectPrefixFor, putCreateOnly,
-    xrefIndexKey, searchProjectionKey, compoundsManifestKey,
+    xrefIndexKey, searchProjectionKey, compoundsManifestKey, buildNegKeyContract,
 } from '../factory/lib/snapshot-identity.js';
 import { SATELLITE_INVENTORY, requiredSatelliteKeys } from '../factory/lib/snapshot-inventory.js';
 import { publishCompoundShards } from '../factory/lib/compound-shard-publisher.js';
@@ -51,11 +51,13 @@ export async function publishAndActivate({ client, bucket, identity, fixture, la
     });
 
     // 2) REAL neg shards + manifest, create-only.
-    const neg = await publishNegShards({
+    const negResult = await publishNegShards({
         client, bucket, jsonlPath: fixture.negJsonl, snapshotDate: identity.snapshotDate,
         outputRoot: path.join(fixture.dir, 'out', 'neg'), objectPrefix: prefix,
     });
-    const negManifestKey = neg.manifestKeys[0] ?? null;
+    // RK-17: the shared neg key contract (same helper as F4) — descriptor root for
+    // the seal/latest, a REAL per-bucket manifest for the validation/HEAD probes.
+    const neg = buildNegKeyContract(prefix, negResult);
 
     // 3) xref/routing + search/entity projection objects, create-only.
     await putCreateOnly(client, bucket, xrefIndexKey(prefix), fixture.xrefIndexBytes, 'application/gzip');
@@ -72,7 +74,7 @@ export async function publishAndActivate({ client, bucket, identity, fixture, la
     // 4) seal LAST (OBJECTS_COMPLETE) then validate by candidate's OWN keys.
     const { manifestHash } = await buildAndSealCandidate({
         client, bucket, identity, compoundManifest: compound.manifest,
-        negManifestKey, hasXref: true, hasSearch: true, satelliteKeys,
+        neg, hasXref: true, hasSearch: true, satelliteKeys,
     });
     await validateCandidate({ client, bucket, identity, expectedHash: manifestHash });
 
@@ -80,14 +82,16 @@ export async function publishAndActivate({ client, bucket, identity, fixture, la
     const cmKey = compoundsManifestKey(prefix, compound.manifest.bucket ?? 0);
     const latest = await swapV2Latest({
         client, bucket, identity, manifestHash, compoundsManifestKey: cmKey,
-        negManifestKey, hasXref: true, latestKey,
+        neg, hasXref: true, latestKey,
     });
     const active = await postSwapActiveProbe({ client, bucket, identity, manifestHash, latestKey });
 
+    // negManifestKey exposed to the phases is the REAL probe key (HEAD-able), not
+    // the descriptor root (the phases HEAD it for serving-green checks).
     return {
         snapshotId: identity.snapshotId, objectPrefix: prefix,
-        manifestKey: cmKey, manifestHash, negManifestKey,
-        compoundManifest: compound.manifest, negResult: neg,
+        manifestKey: cmKey, manifestHash, negManifestKey: neg.validationProbeKey,
+        compoundManifest: compound.manifest, negResult,
         latest, activeState: active.state,
     };
 }
@@ -102,6 +106,9 @@ export async function snapshotInventory({ client, bucket, prefix, compoundManife
     for (const sh of compoundManifest.shard_hashes ?? []) {
         await add(`${prefix}compounds/bucket-${String(compoundManifest.bucket ?? 0).padStart(4, '0')}/shard-${String(sh.shard).padStart(3, '0')}.bin`);
     }
+    // RK-17: callers pass the REAL per-bucket neg manifest (the validation probe
+    // key), never the bare descriptor root -> HEAD it directly. A trailing-slash
+    // key would be a contract violation (a bare prefix is not an R2 object).
     if (negManifestKey) await add(negManifestKey);
     await add(xrefIndexKey(prefix));
     await add(searchProjectionKey(prefix));

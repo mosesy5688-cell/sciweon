@@ -29,7 +29,7 @@ describe('RK-15 PR-B — validated activation', () => {
         const { identity, manifest } = await publishCandidate(client, '2026-06-13', '100');
         const { manifestHash } = await activateValidatedCandidate({
             client, bucket: 'b', identity, compoundManifest: manifest,
-            negManifestKey: null, hasXref: true, hasSearch: true,
+            neg: null, hasXref: true, hasSearch: true,
         });
         const latest = JSON.parse(client.store.get(LATEST_KEY).body);
         expect(latest.layout_version).toBe('immutable_snapshot_v2');
@@ -50,7 +50,7 @@ describe('RK-15 PR-B — validated activation', () => {
         const { identity, manifest } = await publishCandidate(client, '2026-06-13', '150');
         await activateValidatedCandidate({
             client, bucket: 'b', identity, compoundManifest: manifest,
-            negManifestKey: null, hasXref: true, hasSearch: true,
+            neg: null, hasXref: true, hasSearch: true,
         });
         const latestText = client.store.get(LATEST_KEY).body;
         // The reader parses it as a clean immutable_snapshot_v2 (no SnapshotContractError).
@@ -86,7 +86,7 @@ describe('RK-15 PR-B — validated activation', () => {
         // Build the seal then validate — the validation step must not GET latest.
         const { manifestHash } = await buildAndSealCandidate({
             client, bucket: 'b', identity, compoundManifest: manifest,
-            negManifestKey: null, hasXref: true, hasSearch: true,
+            neg: null, hasXref: true, hasSearch: true,
         });
         const readsBeforeValidate = client.reads.length;
         await validateCandidate({ client, bucket: 'b', identity, expectedHash: manifestHash });
@@ -106,7 +106,7 @@ describe('RK-15 PR-B — validated activation', () => {
         // validating against a wrong expected hash directly.
         const { manifestHash } = await buildAndSealCandidate({
             client, bucket: 'b', identity, compoundManifest: manifest,
-            negManifestKey: null, hasXref: true, hasSearch: true,
+            neg: null, hasXref: true, hasSearch: true,
         });
         const wrongHash = 'f'.repeat(64) === manifestHash ? '0'.repeat(64) : 'f'.repeat(64);
         await expect(
@@ -124,7 +124,7 @@ describe('RK-15 PR-B — validated activation', () => {
         await expect(
             activateValidatedCandidate({
                 client, bucket: 'b', identity, compoundManifest: manifest,
-                negManifestKey: null, hasXref: true, hasSearch: true,
+                neg: null, hasXref: true, hasSearch: true,
             }),
         ).rejects.toThrow(/required candidate object/i);
         expect(JSON.parse(client.store.get(LATEST_KEY).body).latest_snapshot_date).toBe('2000-01-01');
@@ -137,7 +137,7 @@ describe('RK-15 PR-B — validated activation', () => {
         await expect(
             activateValidatedCandidate({
                 client, bucket: 'b', identity, compoundManifest: manifest,
-                negManifestKey: null, hasXref: true, hasSearch: true,
+                neg: null, hasXref: true, hasSearch: true,
             }),
         ).rejects.toThrow();
         // Old latest preserved; the candidate's seal/manifest still present (retained).
@@ -151,7 +151,7 @@ describe('RK-15 PR-B — validated activation', () => {
         const a = await publishCandidate(client, '2026-06-13', '200');
         await activateValidatedCandidate({
             client, bucket: 'b', identity: a.identity, compoundManifest: a.manifest,
-            negManifestKey: null, hasXref: true, hasSearch: true,
+            neg: null, hasXref: true, hasSearch: true,
         });
         const aShardKey = `${a.prefix}compounds/bucket-0000/shard-000.bin`;
         const aShardEtag = client.store.get(aShardKey).etag;
@@ -161,7 +161,7 @@ describe('RK-15 PR-B — validated activation', () => {
         expect(b.prefix).not.toBe(a.prefix);
         await activateValidatedCandidate({
             client, bucket: 'b', identity: b.identity, compoundManifest: b.manifest,
-            negManifestKey: null, hasXref: true, hasSearch: true,
+            neg: null, hasXref: true, hasSearch: true,
         });
 
         // B wrote NO key under A's prefix (every B key is under B's prefix).

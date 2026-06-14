@@ -11,7 +11,8 @@
  *   4. HARD-FAIL refusing a post-uncap whole-file publish that lacks a sibling
  *      sharded manifest (the snapshot exists but no shards => unsafe to serve).
  *
- * Returns { negManifestKey, stats } for the terminal swap. The terminal swap +
+ * Returns { neg, stats } for the terminal swap (neg = the shared RK-17 key
+ * contract { descriptorKey, validationProbeKey }). The terminal swap +
  * prune are owned by stage-4-upload.js (so there is ONE pointer write per F4).
  */
 
@@ -21,7 +22,7 @@ import readline from 'readline';
 import path from 'path';
 import { publishNegShards } from './neg-shard-publisher.js';
 import { verifyNegShardIntegrity } from './neg-shard-verify.js';
-import { objectPrefixFor, negEvidenceRootKey } from './snapshot-identity.js';
+import { objectPrefixFor, buildNegKeyContract } from './snapshot-identity.js';
 
 const NEG_JSONL = './output/linked/neg-evidence.jsonl';
 
@@ -34,7 +35,7 @@ export async function countNegLines(jsonlPath = NEG_JSONL) {
 }
 
 /**
- * @returns { negManifestKey, manifests, stats } when shards were published, or
+ * @returns { neg, manifests, stats } when shards were published, or
  *          { skipped: true, reason } when there is no neg-evidence file (pre-
  *          uncap cold start where neg-evidence is legitimately absent).
  */
@@ -73,13 +74,14 @@ export async function publishNegAndGate({
     await verifyNegShardIntegrity(client, bucket, snapshotDate, result.manifests, sampleCount);
     console.log(`[NEG] Integrity probes PASS (${result.bucketCount} buckets, ${result.shardCount} shards, ${wcl} records)`);
 
-    // RK-15 PR-B: the neg "pointer" is the `<object_prefix>neg-evidence/` root —
-    // the reader normalizes neg_evidence_manifest_key at the `/neg-evidence/`
-    // segment and derives per-bucket keys relative to the candidate's prefix.
-    const negManifestKey = negEvidenceRootKey(prefix);
+    // RK-17: return the SHARED neg key contract { descriptorKey, validationProbeKey }
+    // (the SAME helper the V3 harness uses) so the two paths can NEVER diverge.
+    // descriptorKey = the `<object_prefix>neg-evidence/` serving root the reader
+    // normalizes; validationProbeKey = a REAL per-bucket manifest (manifestKeys[0]).
+    const neg = buildNegKeyContract(prefix, result);
     return {
         skipped: false,
-        negManifestKey,
+        neg,
         manifests: result.manifests,
         stats: {
             records: wcl, buckets: result.bucketCount, shards: result.shardCount, elapsedSec: result.elapsedSec,

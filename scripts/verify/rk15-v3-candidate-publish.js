@@ -28,7 +28,7 @@ import zlib from 'zlib';
 
 import {
     objectPrefixFor, putCreateOnly, xrefIndexKey, searchProjectionKey,
-    compoundsManifestKey, canonicalManifestHash,
+    compoundsManifestKey, canonicalManifestHash, buildNegKeyContract,
 } from '../factory/lib/snapshot-identity.js';
 import { publishCompoundShards } from '../factory/lib/compound-shard-publisher.js';
 import { publishNegShards } from '../factory/lib/neg-shard-publisher.js';
@@ -127,11 +127,14 @@ export async function buildCandidate({ client, bucket, identity, buffers }) {
         outputDir: path.join(staged.dir, 'out', 'compounds', 'bucket-0000'), objectPrefix: prefix,
     });
     // 2) REAL neg shards + manifest, create-only.
-    const neg = await publishNegShards({
+    const negResult = await publishNegShards({
         client, bucket, jsonlPath: staged.negJsonl, snapshotDate: identity.snapshotDate,
         outputRoot: path.join(staged.dir, 'out', 'neg'), objectPrefix: prefix,
     });
-    const negManifestKey = neg.manifestKeys?.[0] ?? null;
+    // RK-17: build the neg key pair via the SHARED contract (the SAME helper the
+    // normal F4 path uses) so the V3 harness can NEVER diverge from F4. The seal
+    // gets the descriptor ROOT; validateCandidate probes the REAL manifest key.
+    const neg = buildNegKeyContract(prefix, negResult);
     // 3) xref/routing + search/entity projection, create-only.
     await putCreateOnly(client, bucket, xrefIndexKey(prefix), staged.xrefIndexBytes, 'application/gzip');
     await putCreateOnly(client, bucket, searchProjectionKey(prefix), staged.searchProjectionBytes, 'application/gzip');
@@ -145,7 +148,7 @@ export async function buildCandidate({ client, bucket, identity, buffers }) {
     // 4) seal LAST (OBJECTS_COMPLETE) then validate by the candidate's OWN keys.
     const { manifestHash } = await buildAndSealCandidate({
         client, bucket, identity, compoundManifest: compound.manifest,
-        negManifestKey, hasXref: true, hasSearch: true, satelliteKeys,
+        neg, hasXref: true, hasSearch: true, satelliteKeys,
     });
     await validateCandidate({ client, bucket, identity, expectedHash: manifestHash });
 
@@ -155,9 +158,11 @@ export async function buildCandidate({ client, bucket, identity, buffers }) {
     const latestKey = candidateLatestKey(prefix);
     const latest = await swapV2Latest({
         client, bucket, identity, manifestHash, compoundsManifestKey: cmKey,
-        negManifestKey, hasXref: true, latestKey,
+        neg, hasXref: true, latestKey,
     });
-    return { snapshotId: identity.snapshotId, objectPrefix: prefix, manifestKey: cmKey, manifestHash, negManifestKey, compoundManifest: compound.manifest, latest, latestKey };
+    // The candidate probe HEAD-probes a REAL neg object -> the validationProbeKey
+    // (NOT the descriptor root, which is a bare prefix that would 404 a HEAD).
+    return { snapshotId: identity.snapshotId, objectPrefix: prefix, manifestKey: cmKey, manifestHash, negProbeKey: neg.validationProbeKey, compoundManifest: compound.manifest, latest, latestKey };
 }
 
 /**
@@ -166,7 +171,7 @@ export async function buildCandidate({ client, bucket, identity, buffers }) {
  * resolve compound manifest/shards + xref + neg + search inventory + a direct
  * decode of `targetCid` from the REAL shard (assert the decoded CID matches).
  */
-export async function candidateProbe({ client, bucket, prefix, latestKey, manifestKey, compoundManifest, negManifestKey, targetCid }) {
+export async function candidateProbe({ client, bucket, prefix, latestKey, manifestKey, compoundManifest, negProbeKey, targetCid }) {
     const { decodeNxvfEntity } = await import('./rk15-v2-lib.js');
     const latestText = (await getObject(client, bucket, latestKey)).body.toString('utf-8');
     const candidatePayloadHash = sha256Hex(Buffer.from(latestText, 'utf-8'));
@@ -196,11 +201,13 @@ export async function candidateProbe({ client, bucket, prefix, latestKey, manife
     // xref / neg / search inventory present + non-empty.
     const xrefHead = await headObject(client, bucket, ctx.xref_index_key ?? xrefIndexKey(prefix)).catch(() => null);
     const searchHead = await headObject(client, bucket, searchProjectionKey(prefix)).catch(() => null);
-    const negHead = negManifestKey ? await headObject(client, bucket, negManifestKey).catch(() => null) : null;
+    // RK-17: HEAD a REAL neg object (the validationProbeKey), never the descriptor
+    // root (a bare `/neg-evidence/` prefix would 404 a HEAD).
+    const negHead = negProbeKey ? await headObject(client, bucket, negProbeKey).catch(() => null) : null;
     checks.inventory_resolves = {
-        pass: !!xrefHead && xrefHead.size > 0 && !!searchHead && searchHead.size > 0 && (!negManifestKey || (!!negHead && negHead.size > 0)),
+        pass: !!xrefHead && xrefHead.size > 0 && !!searchHead && searchHead.size > 0 && (!negProbeKey || (!!negHead && negHead.size > 0)),
         action: 'xref/routing + negative-evidence + search/entity inventory resolve',
-        xref: !!xrefHead, search: !!searchHead, neg: negManifestKey ? !!negHead : 'n/a',
+        xref: !!xrefHead, search: !!searchHead, neg: negProbeKey ? !!negHead : 'n/a',
     };
     const pass = Object.values(checks).every(c => c.pass);
     return { pass, checks, candidatePayload: latestText, candidatePayloadHash, parsedSnapshotId: ctx.snapshot_id };
