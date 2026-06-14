@@ -1,0 +1,83 @@
+name: P-8 R1 Read-Only R2 Probe
+
+# P-8 R1 -- STRICTLY READ-ONLY R2 verification probe.
+#
+# Two parts, both read-only: (1) inventories the aggregate bundle prefix
+# processed/aggregated/<aggregated_run_id>/ (the 22 AGGREGATED_FILES + the
+# _publish_policy.json control sidecar; asserts MANUAL_ONLY / backfill_only /
+# run-id match and NO unexpected objects), and (2) reads production
+# snapshots/latest.json ONCE and reconciles its identity (layout_version +
+# snapshot_id + payload sha256 + manifest_hash) vs the dispatch INPUT expected
+# values. It NEVER writes R2 / changes latest / purges cache -- every R2 call
+# routes through a read-only guard that REFUSES any non-read command (a Put /
+# Delete / Copy / Multipart -> HARD FAIL; put_count / delete_count /
+# write_attempt_count MUST all be 0 for a pass).
+#
+# FOUNDER-TRIGGERED ONLY: workflow_dispatch (no push / no schedule /
+# no workflow_run -- it cannot be reached from F1/F3). It dispatches NOTHING
+# and modifies NOTHING; it only reads + uploads the evidence JSON artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      aggregated_run_id:
+        description: 'F3 aggregated run id (prefix processed/aggregated/<id>/)'
+        required: false
+        default: '27494573900'
+        type: string
+      expected_snapshot_id:
+        description: 'EXPECTED production latest snapshot_id'
+        required: false
+        default: '2026-06-14/27489690948-1'
+        type: string
+      expected_payload_sha256:
+        description: 'EXPECTED sha256 of the production latest.json body bytes'
+        required: false
+        default: '4f3ab48ca8c289dff3572d3918c06d4617001543cd84a79bc12717de59d6a40c'
+        type: string
+      expected_manifest_hash:
+        description: 'EXPECTED latest.manifest_hash'
+        required: false
+        default: 'f37a02b8f63472449e8c78001931f336aaa187c831a34d23a95c93d9d088368d'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  p8-r1-readonly-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AGGREGATED_RUN_ID: ${{ inputs.aggregated_run_id }}
+      EXPECTED_SNAPSHOT_ID: ${{ inputs.expected_snapshot_id }}
+      EXPECTED_PAYLOAD_SHA256: ${{ inputs.expected_payload_sha256 }}
+      EXPECTED_MANIFEST_HASH: ${{ inputs.expected_manifest_hash }}
+      P8R1_OUTPUT_DIR: output
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+      - name: Run P-8 R1 read-only R2 probe (STRICT READ-ONLY)
+        run: node scripts/verify/p8-r1-readonly-probe.js
+      - name: Upload P-8 R1 evidence artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p8-r1-readonly-evidence
+          path: output/p8-r1-readonly-evidence.json
+          retention-days: 90
+          if-no-files-found: warn
