@@ -38,7 +38,7 @@ async function publishComplete(client, date, runId, overrideBodies = null) {
     }
     const { manifestHash } = await buildAndSealCandidate({
         client, bucket: 'b', identity, compoundManifest: manifest,
-        negManifestKey: null, hasXref: true, hasSearch: true, satelliteKeys,
+        neg: null, hasXref: true, hasSearch: true, satelliteKeys,
     });
     return { identity, manifest, prefix, manifestHash, satelliteKeys };
 }
@@ -107,7 +107,7 @@ describe('RK-15 full-snapshot completeness — validateCandidate fail-loud', () 
         const { identity, manifest } = await publishCandidate(client, '2026-06-13', '910', false);
         const { manifestHash } = await buildAndSealCandidate({
             client, bucket: 'b', identity, compoundManifest: manifest,
-            negManifestKey: null, hasXref: true, hasSearch: true, // satelliteKeys omitted -> empty
+            neg: null, hasXref: true, hasSearch: true, // satelliteKeys omitted -> empty
         });
         await expect(
             validateCandidate({ client, bucket: 'b', identity, expectedHash: manifestHash }),
@@ -124,7 +124,7 @@ describe('RK-15 full-snapshot completeness — validateCandidate fail-loud', () 
         const satelliteKeys = [...requiredSatelliteKeys(prefix), bogus];
         const { manifestHash } = await buildAndSealCandidate({
             client, bucket: 'b', identity, compoundManifest: manifest,
-            negManifestKey: null, hasXref: true, hasSearch: true, satelliteKeys,
+            neg: null, hasXref: true, hasSearch: true, satelliteKeys,
         });
         await expect(
             validateCandidate({ client, bucket: 'b', identity, expectedHash: manifestHash }),
@@ -146,7 +146,7 @@ describe('RK-15 full-snapshot completeness — validateCandidate fail-loud', () 
         await expect(
             activateValidatedCandidate({
                 client, bucket: 'b', identity, compoundManifest: manifest,
-                negManifestKey: null, hasXref: true, hasSearch: true, satelliteKeys,
+                neg: null, hasXref: true, hasSearch: true, satelliteKeys,
             }),
         ).rejects.toThrow(/satellite object missing/i);
         expect(JSON.parse(client.store.get(LATEST_KEY).body).latest_snapshot_date).toBe('2000-01-01');
@@ -166,7 +166,7 @@ describe('RK-15 full-snapshot completeness — caller-independent SSoT enforceme
         client.store.set(LATEST_KEY, { body: JSON.stringify({ latest_snapshot_date: '2000-01-01' }), etag: '"old"' });
         const { manifestHash } = await activateValidatedCandidate({
             client, bucket: 'b', identity, compoundManifest: manifest,
-            negManifestKey: null, hasXref: true, hasSearch: true, // NO satelliteKeys
+            neg: null, hasXref: true, hasSearch: true, // NO satelliteKeys
         });
         const latest = JSON.parse(client.store.get(LATEST_KEY).body);
         expect(latest.snapshot_id).toBe(identity.snapshotId);
@@ -182,7 +182,7 @@ describe('RK-15 full-snapshot completeness — caller-independent SSoT enforceme
         await expect(
             activateValidatedCandidate({
                 client, bucket: 'b', identity, compoundManifest: manifest,
-                negManifestKey: null, hasXref: true, hasSearch: true, // NO satelliteKeys
+                neg: null, hasXref: true, hasSearch: true, // NO satelliteKeys
             }),
         ).rejects.toThrow(/satellite object missing/i);
         expect(JSON.parse(client.store.get(LATEST_KEY).body).latest_snapshot_date).toBe('2000-01-01');

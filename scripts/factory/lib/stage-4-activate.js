@@ -12,10 +12,11 @@
  *                     latest points at THIS candidate
  *
  * Failure isolation: latest.json is touched ONLY in swapV2Latest, AFTER the
- * candidate is VALIDATED. Any earlier failure (upload/inventory/hash/ref/sample)
- * throws before the swap, so the old latest is left untouched and the half-built
- * candidate stays under its own run-id prefix (undiscoverable by an active
- * reader). On CAS failure the candidate is retained but NOT active.
+ * candidate is VALIDATED. Any earlier failure throws before the swap (old latest
+ * untouched; the half-built candidate stays under its own run-id prefix). On CAS
+ * failure the candidate is retained but NOT active. RK-17: the neg key is the
+ * shared { descriptorKey, validationProbeKey } contract (buildNegKeyContract) --
+ * descriptor root for seal/latest, a REAL manifest for the required-inventory probe.
  */
 
 import { GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
@@ -55,21 +56,22 @@ export async function verifySnapshotSealPresent(client, bucket, objectPrefix) {
 }
 
 /**
- * Run the full validated-activation sequence in the strict order:
- *   build+seal (OBJECTS_COMPLETE) -> validate candidate by its OWN keys
- *   (VALIDATED/ACTIVATABLE) -> CAS the v2 latest.json (ACTIVE) -> post-swap
- *   active probe. Returns { manifestHash, latest }. Throws on ANY gate so the
- *   caller leaves latest.json unchanged.
+ * Run the full validated-activation sequence in strict order: build+seal
+ * (OBJECTS_COMPLETE) -> validate candidate by its OWN keys (VALIDATED) -> CAS
+ * the v2 latest.json (ACTIVE) -> post-swap probe. Returns { manifestHash,
+ * latest }. Throws on ANY gate so the caller leaves latest.json unchanged.
  */
 export async function activateValidatedCandidate({
-    client, bucket, identity, compoundManifest, negManifestKey, hasXref, hasSearch,
+    client, bucket, identity, compoundManifest, neg = null, hasXref, hasSearch,
     satelliteKeys = [], latestKey = LATEST_KEY,
 }) {
+    // RK-17: `neg` is the shared { descriptorKey, validationProbeKey } contract
+    // (nullable when skipped) from buildNegKeyContract — descriptorKey = serving
+    // root (seal/latest/reader); validationProbeKey = a REAL per-bucket manifest.
     // (3->4 step 5) seal LAST. satelliteKeys carries the COMPLETE satellite serving
-    // inventory (RK-15 full-snapshot completeness) — the real F4 producer passes
-    // the keys it published so validateCandidate enforces completeness here too.
+    // inventory (RK-15) — real F4 passes the keys it published so completeness is enforced.
     const { manifestHash } = await buildAndSealCandidate({
-        client, bucket, identity, compoundManifest, negManifestKey, hasXref, hasSearch, satelliteKeys,
+        client, bucket, identity, compoundManifest, neg, hasXref, hasSearch, satelliteKeys,
     });
     // (step 6+7) re-read + verify the candidate by its OWN keys (never latest).
     await validateCandidate({ client, bucket, identity, expectedHash: manifestHash });
@@ -77,7 +79,7 @@ export async function activateValidatedCandidate({
     // (step 9) CAS the v2 latest.json (default prod key; harness injects isolated).
     const cmKey = compoundManifestKeyOf(compoundManifest, identity.objectPrefix);
     const latest = await swapV2Latest({
-        client, bucket, identity, manifestHash, compoundsManifestKey: cmKey, negManifestKey, hasXref, latestKey,
+        client, bucket, identity, manifestHash, compoundsManifestKey: cmKey, neg, hasXref, latestKey,
     });
     // (step 10) post-swap active validation.
     await postSwapActiveProbe({ client, bucket, identity, manifestHash, latestKey });
@@ -86,12 +88,12 @@ export async function activateValidatedCandidate({
 
 /**
  * Build the canonical snapshot-root seal and write it LAST (create-only). The
- * seal lists the candidate's required object inventory + the compound manifest
- * hash; the canonical hash over the seal (sans its own hash field) is the
- * manifest_hash bound into latest.json. Returns { manifestHash, seal, sealKey }.
+ * seal lists the required object inventory + the compound manifest hash; the
+ * canonical hash over the seal (sans its own hash field) is the manifest_hash
+ * bound into latest.json. Returns { manifestHash, seal, sealKey }.
  */
 export async function buildAndSealCandidate({
-    client, bucket, identity, compoundManifest, negManifestKey, hasXref, hasSearch,
+    client, bucket, identity, compoundManifest, neg = null, hasXref, hasSearch,
     satelliteKeys = [],
 }) {
     const { snapshotId, objectPrefix, snapshotDate, runId, runAttempt, commitSha } = identity;
@@ -100,14 +102,14 @@ export async function buildAndSealCandidate({
     const requiredKeys = [compoundManifestKeyOf(compoundManifest, objectPrefix)];
     if (hasXref) requiredKeys.push(xrefIndexKey(objectPrefix));
     if (hasSearch) requiredKeys.push(searchProjectionKey(objectPrefix));
-    if (negManifestKey) requiredKeys.push(negManifestKey);
+    // RK-17: the neg required-inventory entry is the REAL per-bucket manifest
+    // (validationProbeKey), NEVER the descriptor ROOT (a bare `/neg-evidence/`
+    // prefix is not an object; HEAD-probing it 404s a complete candidate).
+    if (neg && neg.validationProbeKey) requiredKeys.push(neg.validationProbeKey);
     // RK-15 full-snapshot completeness: the seal ALSO declares the COMPLETE
-    // satellite serving inventory (papers/trials/.../target-index whole gz files).
-    // These are kept in a SEPARATE list because validateCandidate decode-probes
-    // them (gunzip + parse a line), not just HEADs them. Declaring an INCOMPLETE
-    // satellite set was the V3-A bug -> here every published satellite key is
-    // sealed, and they ALL fold into required_inventory so the seal hash binds the
-    // complete-snapshot definition (any drift changes the manifest_hash).
+    // satellite serving inventory in a SEPARATE list (validateCandidate decode-
+    // probes them, not just HEADs) AND folds them into required_inventory so the
+    // seal hash binds the complete-snapshot definition (any drift changes the hash).
     const satelliteInventory = satelliteInventoryForSeal(satelliteKeys);
     const fullRequiredInventory = [...requiredKeys, ...satelliteInventory];
 
@@ -124,7 +126,9 @@ export async function buildAndSealCandidate({
         created_at: new Date().toISOString(),
         state: PUBLISH_STATES.OBJECTS_COMPLETE,
         compounds_manifest_key: compoundManifestKeyOf(compoundManifest, objectPrefix),
-        neg_evidence_manifest_key: negManifestKey ?? null,
+        // RK-17: the SERVING descriptor root (reader normalizes at `/neg-evidence/`),
+        // NEVER the probe key and NEVER in required_inventory (so never HEAD-probed).
+        neg_evidence_manifest_key: (neg && neg.descriptorKey) || null,
         xref_index_key: hasXref ? xrefIndexKey(objectPrefix) : null,
         compound_total_records: compoundManifest.total_records,
         compound_shard_hashes: compoundManifest.shard_hashes,
@@ -146,14 +150,12 @@ function compoundManifestKeyOf(manifest, objectPrefix) {
 
 /**
  * Validate the candidate by reading ONLY its own keys (NEVER latest.json):
- *   - the root seal re-reads + its canonical hash matches the expected hash;
- *   - every STRUCTURED required-inventory object exists with size > 0;
- *   - every SSoT-required SATELLITE is present + reader-decodable (gunzip + a
- *     parseable record) — enforced against the SSoT, INDEPENDENT of the seal's
- *     self-declared satellite_inventory and the caller's satelliteKeys param;
- *   - the compound manifest re-reads + its declared refs resolve;
- *   - a sample shard decodes (NXVF round-trip).
- * Throws on any gate. Returns { state: VALIDATED }.
+ * the root seal re-reads + its canonical hash matches; every STRUCTURED
+ * required-inventory object exists with size > 0 (RK-17: a bare logical-prefix
+ * key is refused before any HEAD); every SSoT-required SATELLITE is present +
+ * reader-decodable (gunzip + a parseable record), enforced against the SSoT
+ * independent of the seal's self-declaration; the compound manifest re-reads +
+ * a sample shard decodes (NXVF). Throws on any gate. Returns { state: VALIDATED }.
  */
 export async function validateCandidate({ client, bucket, identity, expectedHash }) {
     const { objectPrefix } = identity;
@@ -166,12 +168,18 @@ export async function validateCandidate({ client, bucket, identity, expectedHash
         throw new Error(`[ACTIVATE] candidate seal hash mismatch: stored=${storedHash} recomputed=${recomputed} expected=${expectedHash}`);
     }
     // (b) required STRUCTURED inventory: every declared object exists + non-empty.
-    // Satellites are in required_inventory too (so the seal hash binds the
-    // complete-snapshot definition) but are validated MORE strictly in (b2) —
-    // skip them here so (b2) owns their precise missing/empty/decode errors.
+    // Satellites are in required_inventory too (binding the seal hash) but are
+    // validated MORE strictly in (b2) — skip them here so (b2) owns their errors.
     const satelliteSet = new Set(seal.satellite_inventory ?? []);
     for (const key of seal.required_inventory ?? []) {
         if (satelliteSet.has(key)) continue; // satellites validated by (b2)
+        // RK-17 invariant (permanent): a probe key MUST be a real object. A bare
+        // logical prefix (trailing `/`, e.g. the neg descriptor root) is NOT an R2
+        // object -> HEAD would 404 a complete candidate; refuse to HEAD it.
+        if (key.endsWith('/')) {
+            throw new Error(`[ACTIVATE] refusing to HEAD a logical-prefix key (${key}): `
+                + `a validation probe key must be a real object, not a bare prefix`);
+        }
         let size;
         try { size = await headSize(client, bucket, key); }
         catch (err) { throw new Error(`[ACTIVATE] required candidate object missing: ${key} (${err.message})`); }
@@ -179,13 +187,10 @@ export async function validateCandidate({ client, bucket, identity, expectedHash
     }
     // (b2) RK-15 full-snapshot completeness (AUTHORITATIVE, SSoT-based): every
     // SSoT-required satellite must be present + reader-decodable at object_prefix,
-    // enforced INDEPENDENT of the seal's self-declared satellite_inventory AND the
-    // caller's satelliteKeys param (see candidate-satellite-inventory.js). So ANY
-    // caller — the V3 harness OR the real F4 orchestrator that passes NO
-    // satelliteKeys — gets completeness enforced (the V3-A incomplete-candidate bug).
+    // enforced INDEPENDENT of the seal's self-declared inventory AND the caller's
+    // satelliteKeys param (see candidate-satellite-inventory.js) for ANY caller.
     await enforceCompleteSatelliteInventory({ client, bucket, objectPrefix, seal });
-    // (c)+(d) re-read the compound manifest, resolve a sample shard by hash, and
-    // decode its header to prove it is a real NXVF container.
+    // (c)+(d) re-read the compound manifest, resolve a sample shard, decode NXVF.
     await probeCompoundSampleShard({ client, bucket, objectPrefix, seal });
     return { state: PUBLISH_STATES.VALIDATED };
 }
@@ -196,11 +201,10 @@ export async function validateCandidate({ client, bucket, identity, expectedHash
  * candidate is RETAINED but NOT active and the old latest is unchanged (the
  * caller hard-fails the run).
  */
-export async function swapV2Latest({ client, bucket, identity, manifestHash, compoundsManifestKey: cmKey, negManifestKey, hasXref, latestKey = LATEST_KEY }) {
+export async function swapV2Latest({ client, bucket, identity, manifestHash, compoundsManifestKey: cmKey, neg = null, hasXref, latestKey = LATEST_KEY }) {
     const { snapshotId, objectPrefix, snapshotDate, runId, runAttempt, commitSha } = identity;
-    // v2 fields REPLACE the legacy pointer wholesale: an immutable_snapshot_v2
-    // latest carries no legacy_v1 date-shape (the reader fails loud on a mixed
-    // pointer). We clear the v1-only keys so the swapped pointer is a clean v2.
+    // v2 fields REPLACE the legacy pointer wholesale; we clear the v1-only keys so
+    // the swapped pointer is a clean immutable_snapshot_v2 (reader fails on a mix).
     const updates = {
         layout_version: LAYOUT_VERSION_V2,
         schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -211,7 +215,8 @@ export async function swapV2Latest({ client, bucket, identity, manifestHash, com
         run_attempt: runAttempt,
         commit_sha: commitSha,
         compounds_manifest_key: cmKey,
-        neg_evidence_manifest_key: negManifestKey ?? null,
+        // RK-17: latest.json carries the SERVING descriptor root, never the probe key.
+        neg_evidence_manifest_key: (neg && neg.descriptorKey) || null,
         xref_index_key: hasXref ? xrefIndexKey(objectPrefix) : null,
         manifest_hash: manifestHash,
         created_at: new Date().toISOString(),
@@ -221,15 +226,15 @@ export async function swapV2Latest({ client, bucket, identity, manifestHash, com
         manifest_key: null,
     };
     const expectKeys = ['layout_version', 'snapshot_id', 'object_prefix', 'compounds_manifest_key', 'manifest_hash'];
-    // latestKey DEFAULTS to the production snapshots/latest.json — the isolated
-    // RK-15 V2 harness passes its OWN test pointer so production is untouched.
+    // latestKey DEFAULTS to production snapshots/latest.json; the isolated V2
+    // harness passes its OWN test pointer so production is untouched.
     return swapLatestPointer(client, bucket, updates, expectKeys, latestKey);
 }
 
 /**
  * Post-swap active probe: re-read latest.json and confirm it points at THIS
  * candidate (snapshot_id + object_prefix + manifest_hash). A mismatch means a
- * concurrent writer won; the run fails LOUD (latest was NOT left at us).
+ * concurrent writer won; the run fails LOUD.
  */
 export async function postSwapActiveProbe({ client, bucket, identity, manifestHash, latestKey = LATEST_KEY }) {
     const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: latestKey }));

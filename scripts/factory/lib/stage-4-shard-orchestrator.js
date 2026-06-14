@@ -144,7 +144,7 @@ export async function runShardPublishAndSwap({
         const activation = await activateValidatedCandidate({
             client, bucket: bucketName, identity,
             compoundManifest: publishResult.manifest,
-            negManifestKey: negResult.skipped ? null : negResult.negManifestKey,
+            neg: negResult.skipped ? null : negResult.neg,
             hasXref: true, hasSearch: true,
         });
         console.log(`[STAGE-4] Candidate ACTIVE: manifest_hash=${activation.manifestHash.slice(0, 16)}... `

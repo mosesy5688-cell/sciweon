@@ -79,7 +79,7 @@ export async function runV3A({ client, bucket, sourceRunId, date, runId, runAtte
     const probe = await candidateProbe({
         client: inst, bucket, prefix: cand.objectPrefix, latestKey: cand.latestKey,
         manifestKey: cand.manifestKey, compoundManifest: cand.compoundManifest,
-        negManifestKey: cand.negManifestKey, targetCid,
+        negProbeKey: cand.negProbeKey, targetCid,
     });
     checks.candidate_probe = { pass: probe.pass, action: 'candidate probe (parseSnapshotContext on candidate payload)', ...probe.checks };
 
@@ -101,7 +101,7 @@ export async function runV3A({ client, bucket, sourceRunId, date, runId, runAtte
         source_attestation_hash: source.attestationHash, source_inventory: source.inventory,
         snapshot_id: cand.snapshotId, object_prefix: cand.objectPrefix,
         run_id: String(runId), run_attempt: String(runAttempt), commit_sha: commitSha,
-        manifest_key: cand.manifestKey, manifest_hash: cand.manifestHash, neg_manifest_key: cand.negManifestKey,
+        manifest_key: cand.manifestKey, manifest_hash: cand.manifestHash, neg_probe_key: cand.negProbeKey,
         candidate_latest_key: candidateLatestKey(cand.objectPrefix),
         candidate_payload: probe.candidatePayload, candidate_payload_hash: probe.candidatePayloadHash,
         prod_latest_before: prodBefore && { etag: prodBefore.etag, sha256: prodBefore.sha256 },
