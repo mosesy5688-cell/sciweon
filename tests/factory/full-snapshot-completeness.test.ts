@@ -1,21 +1,14 @@
 // @ts-nocheck
 /**
  * RK-15 full-snapshot completeness — validateCandidate fail-loud + complete
- * candidate publish + active-candidate-untouched.
+ * candidate publish + caller-independent SSoT enforcement.
  *
  * The V3-A defect: an INCOMPLETE candidate (no satellites) went VALIDATED + LIVE
  * -> papers/trials/bioactivities/repurposing 503, target 404. These tests prove
- * the COMPLETE-snapshot contract:
- *   - a complete Run#1-shaped candidate -> validateCandidate PASS + every
- *     satellite reader-decodes (gunzip + a sample loader key-derivation);
- *   - missing/empty/wrong-prefix/undeclared/corrupt satellite -> validate FAIL,
- *     latest NOT swapped, candidate not ACTIVATABLE;
- *   - the seal declares the COMPLETE inventory; a seal-inventory<->object
- *     mismatch FAILs;
- *   - the active (known-bad) candidate prefix is NEVER written.
- *
- * Against a mock S3 client emulating R2 conditional PUTs (true R2 honoring is
- * confirmed live by the workflow).
+ * the COMPLETE-snapshot contract: a complete candidate PASSes + every satellite
+ * reader-decodes; missing/empty/corrupt/undeclared satellites FAIL with latest
+ * NOT swapped; the SSoT gate holds for ANY caller (incl. the real-F4 no-
+ * satelliteKeys shape). Mock S3 emulates R2 conditional PUTs (true R2 live).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -25,7 +18,7 @@ import {
 } from '../../scripts/factory/lib/stage-4-activate.js';
 import { requiredSatelliteKeys, SATELLITE_INVENTORY } from '../../scripts/factory/lib/snapshot-inventory.js';
 import { searchProjectionKey, xrefIndexKey, putCreateOnly } from '../../scripts/factory/lib/snapshot-identity.js';
-import { makeClient, publishCandidate, LATEST_KEY } from './helpers/pr-b-activate-fixtures';
+import { makeClient, publishCandidate, satelliteBodies, LATEST_KEY } from './helpers/pr-b-activate-fixtures';
 import { runV3A } from '../../scripts/verify/rk15-v3-candidate.js';
 import { makeR2Mock, seedSource, seedProdLatest, buildSourceBuffers, PROD_LATEST_KEY } from './helpers/rk15-v3-fixtures';
 import { loadTargetIndex, getTargetEntry } from '../../src/worker/lib/target-loader';
@@ -33,19 +26,11 @@ import { loadTargetIndex, getTargetEntry } from '../../src/worker/lib/target-loa
 const HEAVY_MS = 60_000;
 const RUN = { sourceRunId: '27413864028', date: '2026-06-13', runId: '7000', runAttempt: '1', commitSha: 'sat', targetCid: 2244 };
 
-/** Reader-decodable satellite bodies keyed by suffix (gunzip + a parseable line). */
-function satelliteBodies() {
-    const m = {};
-    for (const e of SATELLITE_INVENTORY) {
-        m[e.key_suffix] = gzipSync(Buffer.from(JSON.stringify({ ok: true, file: e.snapshot_file }) + '\n', 'utf-8'), { level: 9 });
-    }
-    return m;
-}
-
-/** Publish a COMPLETE candidate (compound + xref + search + ALL satellites) into
- * `client` and seal it. Returns { identity, manifest, prefix, manifestHash, satelliteKeys }. */
+/** Publish a COMPLETE candidate + seal it. `withSatellites: false` on
+ * publishCandidate so THIS helper owns the satellite publish (it can inject
+ * overrideBodies for the corrupt/empty/zero-record cases). */
 async function publishComplete(client, date, runId, overrideBodies = null) {
-    const { identity, manifest, prefix } = await publishCandidate(client, date, runId);
+    const { identity, manifest, prefix } = await publishCandidate(client, date, runId, false);
     const bodies = overrideBodies ?? satelliteBodies();
     const satelliteKeys = requiredSatelliteKeys(prefix);
     for (const e of SATELLITE_INVENTORY) {
@@ -115,14 +100,14 @@ describe('RK-15 full-snapshot completeness — validateCandidate fail-loud', () 
         ).rejects.toThrow(/ZERO records/i);
     });
 
-    it('(8) seal declares a satellite key the store does NOT have -> FAIL (seal<->objects inconsistent)', async () => {
+    it('(8) NO satellites published (incomplete candidate) -> FAIL even though the seal under-declares', async () => {
         const client = makeClient();
-        const { identity, manifest, prefix } = await publishCandidate(client, '2026-06-13', '910');
-        // Seal declares the COMPLETE satellite set, but we publish NONE of them.
-        const satelliteKeys = requiredSatelliteKeys(prefix);
+        // Incomplete: NO satellites; seal UNDER-declares (empty satellite_inventory,
+        // the real-F4 shape). SSoT-based validate must STILL fail (seal-independent).
+        const { identity, manifest } = await publishCandidate(client, '2026-06-13', '910', false);
         const { manifestHash } = await buildAndSealCandidate({
             client, bucket: 'b', identity, compoundManifest: manifest,
-            negManifestKey: null, hasXref: true, hasSearch: true, satelliteKeys,
+            negManifestKey: null, hasXref: true, hasSearch: true, // satelliteKeys omitted -> empty
         });
         await expect(
             validateCandidate({ client, bucket: 'b', identity, expectedHash: manifestHash }),
@@ -131,12 +116,15 @@ describe('RK-15 full-snapshot completeness — validateCandidate fail-loud', () 
 
     it('(8b) a sealed satellite key that is NOT a known serving surface -> FAIL', async () => {
         const client = makeClient();
-        const { identity, manifest, prefix } = await publishCandidate(client, '2026-06-13', '911');
+        // COMPLETE candidate (all SSoT satellites present) so the SSoT loop passes;
+        // the seal additionally OVER-declares a bogus key -> the seal-audit rejects it.
+        const { identity, manifest, prefix } = await publishCandidate(client, '2026-06-13', '911', true);
         const bogus = `${prefix}phantom.jsonl.gz`;
         await putCreateOnly(client, 'b', bogus, gzipSync(Buffer.from('{"x":1}\n')), 'application/gzip');
+        const satelliteKeys = [...requiredSatelliteKeys(prefix), bogus];
         const { manifestHash } = await buildAndSealCandidate({
             client, bucket: 'b', identity, compoundManifest: manifest,
-            negManifestKey: null, hasXref: true, hasSearch: true, satelliteKeys: [bogus],
+            negManifestKey: null, hasXref: true, hasSearch: true, satelliteKeys,
         });
         await expect(
             validateCandidate({ client, bucket: 'b', identity, expectedHash: manifestHash }),
@@ -145,10 +133,9 @@ describe('RK-15 full-snapshot completeness — validateCandidate fail-loud', () 
 
     it('(11) an INCOMPLETE candidate never reaches ACTIVATABLE -> latest UNCHANGED', async () => {
         const client = makeClient();
-        // Publish compound + xref + search + satellites, but do NOT pre-seal:
-        // activateValidatedCandidate seals + validates + swaps. Then drop a
-        // satellite so the validate step (inside activate) fails BEFORE any swap.
-        const { identity, manifest, prefix } = await publishCandidate(client, '2026-06-13', '912');
+        // Publish satellites, then drop one so the validate step inside activate
+        // (which seals + validates + swaps) fails BEFORE any swap.
+        const { identity, manifest, prefix } = await publishCandidate(client, '2026-06-13', '912', false);
         const bodies = satelliteBodies();
         const satelliteKeys = requiredSatelliteKeys(prefix);
         for (const e of SATELLITE_INVENTORY) {
@@ -160,6 +147,42 @@ describe('RK-15 full-snapshot completeness — validateCandidate fail-loud', () 
             activateValidatedCandidate({
                 client, bucket: 'b', identity, compoundManifest: manifest,
                 negManifestKey: null, hasXref: true, hasSearch: true, satelliteKeys,
+            }),
+        ).rejects.toThrow(/satellite object missing/i);
+        expect(JSON.parse(client.store.get(LATEST_KEY).body).latest_snapshot_date).toBe('2000-01-01');
+    });
+});
+
+// CALLER-INDEPENDENT contract: the REAL F4 orchestrator calls
+// activateValidatedCandidate WITHOUT satelliteKeys (seals an EMPTY
+// satellite_inventory). validateCandidate enforces the SSoT satellites at
+// object_prefix regardless -> the V3-A bug class is closed for ANY caller.
+describe('RK-15 full-snapshot completeness — caller-independent SSoT enforcement (real-F4 shape)', () => {
+    it('(F4-a) real-F4 shape (NO satelliteKeys) over a COMPLETE store -> ACTIVE (latest swapped)', async () => {
+        const client = makeClient();
+        // publishCandidate(true) publishes the SSoT satellites (as snapshot-builder
+        // does); activate is then called WITHOUT satelliteKeys (the real F4 call).
+        const { identity, manifest } = await publishCandidate(client, '2026-06-13', '920', true);
+        client.store.set(LATEST_KEY, { body: JSON.stringify({ latest_snapshot_date: '2000-01-01' }), etag: '"old"' });
+        const { manifestHash } = await activateValidatedCandidate({
+            client, bucket: 'b', identity, compoundManifest: manifest,
+            negManifestKey: null, hasXref: true, hasSearch: true, // NO satelliteKeys
+        });
+        const latest = JSON.parse(client.store.get(LATEST_KEY).body);
+        expect(latest.snapshot_id).toBe(identity.snapshotId);
+        expect(latest.manifest_hash).toBe(manifestHash);
+    });
+
+    it('(F4-b) real-F4 shape (NO satelliteKeys) over an INCOMPLETE store -> FAIL, latest UNCHANGED', async () => {
+        const client = makeClient();
+        // INCOMPLETE (no satellites); seal under-declares; real-F4 passes NO
+        // satelliteKeys. SSoT enforcement must STILL fail loud before any swap.
+        const { identity, manifest } = await publishCandidate(client, '2026-06-13', '921', false);
+        client.store.set(LATEST_KEY, { body: JSON.stringify({ latest_snapshot_date: '2000-01-01' }), etag: '"old"' });
+        await expect(
+            activateValidatedCandidate({
+                client, bucket: 'b', identity, compoundManifest: manifest,
+                negManifestKey: null, hasXref: true, hasSearch: true, // NO satelliteKeys
             }),
         ).rejects.toThrow(/satellite object missing/i);
         expect(JSON.parse(client.store.get(LATEST_KEY).body).latest_snapshot_date).toBe('2000-01-01');

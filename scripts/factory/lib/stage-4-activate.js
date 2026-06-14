@@ -18,29 +18,19 @@
  * reader). On CAS failure the candidate is retained but NOT active.
  */
 
-import { gunzipSync } from 'zlib';
 import { GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import {
     PUBLISH_STATES, LAYOUT_VERSION_V2, SNAPSHOT_SCHEMA_VERSION,
     canonicalManifestHash, rootSealKey, compoundsManifestKey,
-    compoundsShardKey, xrefIndexKey, searchProjectionKey, putCreateOnly,
+    xrefIndexKey, searchProjectionKey, putCreateOnly,
 } from './snapshot-identity.js';
-import { satelliteFor } from './snapshot-inventory.js';
+import {
+    satelliteInventoryForSeal, enforceCompleteSatelliteInventory,
+} from './candidate-satellite-inventory.js';
+import { probeCompoundSampleShard } from './candidate-shard-probe.js';
 import { swapLatestPointer } from './publish-shards-and-swap.js';
 
 const LATEST_KEY = 'snapshots/latest.json';
-
-// NXVF V4.1 container header (shard-writer.js): "NXVF" magic at byte 0 +
-// EntityCount (UInt32LE) at byte 11. A sample-shard decode = assert the magic +
-// a positive entity count, proving the candidate shard is a real container.
-const NXVF_MAGIC = Buffer.from([0x4E, 0x58, 0x56, 0x46]);
-function assertNxvfShard(buf) {
-    if (buf.length < 29 || !buf.subarray(0, 4).equals(NXVF_MAGIC)) {
-        throw new Error('not an NXVF container (bad magic / too short)');
-    }
-    const entityCount = buf.readUInt32LE(11);
-    if (entityCount <= 0) throw new Error('NXVF container declares zero entities');
-}
 
 async function streamToBuffer(stream) {
     const chunks = [];
@@ -118,7 +108,7 @@ export async function buildAndSealCandidate({
     // satellite set was the V3-A bug -> here every published satellite key is
     // sealed, and they ALL fold into required_inventory so the seal hash binds the
     // complete-snapshot definition (any drift changes the manifest_hash).
-    const satelliteInventory = [...satelliteKeys];
+    const satelliteInventory = satelliteInventoryForSeal(satelliteKeys);
     const fullRequiredInventory = [...requiredKeys, ...satelliteInventory];
 
     const sealCore = {
@@ -154,16 +144,13 @@ function compoundManifestKeyOf(manifest, objectPrefix) {
     return compoundsManifestKey(objectPrefix, manifest.bucket ?? 0);
 }
 
-/** The satellite key's suffix relative to the candidate prefix (e.g.
- * `papers.jsonl.gz`), used to look the surface up in SATELLITE_INVENTORY. */
-function satelliteSuffixOf(key, objectPrefix) {
-    return key.startsWith(objectPrefix) ? key.slice(objectPrefix.length) : key;
-}
-
 /**
  * Validate the candidate by reading ONLY its own keys (NEVER latest.json):
  *   - the root seal re-reads + its canonical hash matches the expected hash;
- *   - every required-inventory object exists with size > 0;
+ *   - every STRUCTURED required-inventory object exists with size > 0;
+ *   - every SSoT-required SATELLITE is present + reader-decodable (gunzip + a
+ *     parseable record) — enforced against the SSoT, INDEPENDENT of the seal's
+ *     self-declared satellite_inventory and the caller's satelliteKeys param;
  *   - the compound manifest re-reads + its declared refs resolve;
  *   - a sample shard decodes (NXVF round-trip).
  * Throws on any gate. Returns { state: VALIDATED }.
@@ -190,47 +177,16 @@ export async function validateCandidate({ client, bucket, identity, expectedHash
         catch (err) { throw new Error(`[ACTIVATE] required candidate object missing: ${key} (${err.message})`); }
         if (!size || size <= 0) throw new Error(`[ACTIVATE] required candidate object is empty: ${key}`);
     }
-    // (b2) RK-15 full-snapshot completeness: every SATELLITE serving object must
-    // be present AND reader-DECODABLE (gunzip + parse one line), not merely
-    // present. A present-but-corrupt/empty-after-gunzip satellite would pass a
-    // HEAD yet 503/404 the live reader (the V3-A class of bug). The seal MUST
-    // declare the COMPLETE satellite set (every SATELLITE_INVENTORY surface);
-    // a satellite key whose suffix is not a known serving surface is rejected.
-    for (const key of seal.satellite_inventory ?? []) {
-        const suffix = satelliteSuffixOf(key, objectPrefix);
-        if (!satelliteFor(suffix)) {
-            throw new Error(`[ACTIVATE] sealed satellite key is not a known serving surface: ${key}`);
-        }
-        let buf;
-        try {
-            const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
-            buf = await streamToBuffer(res.Body);
-        } catch (err) {
-            throw new Error(`[ACTIVATE] required satellite object missing: ${key} (${err.message})`);
-        }
-        if (!buf || buf.length === 0) throw new Error(`[ACTIVATE] required satellite object is empty: ${key}`);
-        // reader-decodability: gunzip then assert at least one non-empty parseable line.
-        let text;
-        try { text = gunzipSync(buf).toString('utf-8'); }
-        catch (err) { throw new Error(`[ACTIVATE] satellite object not gunzip-decodable (reader would 503): ${key} (${err.message})`); }
-        const firstLine = text.split('\n').find(l => l.trim().length > 0);
-        if (!firstLine) throw new Error(`[ACTIVATE] satellite object decodes to ZERO records (reader would serve empty/404): ${key}`);
-        try { JSON.parse(firstLine); }
-        catch (err) { throw new Error(`[ACTIVATE] satellite object first record is not valid JSON (reader would 503): ${key} (${err.message})`); }
-    }
-    // (c) re-read the compound manifest + resolve a sample shard ref by hash.
-    const mfRes = await client.send(new GetObjectCommand({ Bucket: bucket, Key: seal.compounds_manifest_key }));
-    const manifest = JSON.parse((await streamToBuffer(mfRes.Body)).toString('utf-8'));
-    if (!Array.isArray(manifest.shard_hashes) || manifest.shard_hashes.length === 0) {
-        throw new Error('[ACTIVATE] candidate compound manifest has no shards');
-    }
-    const sample = manifest.shard_hashes[0];
-    const shardKey = compoundsShardKey(objectPrefix, manifest.bucket ?? 0, sample.shard);
-    const shRes = await client.send(new GetObjectCommand({ Bucket: bucket, Key: shardKey }));
-    const shardBuf = await streamToBuffer(shRes.Body);
-    // (d) decode a sample shard header to prove it is a real NXVF container.
-    try { assertNxvfShard(shardBuf); }
-    catch (err) { throw new Error(`[ACTIVATE] candidate sample shard failed to decode: ${shardKey} (${err.message})`); }
+    // (b2) RK-15 full-snapshot completeness (AUTHORITATIVE, SSoT-based): every
+    // SSoT-required satellite must be present + reader-decodable at object_prefix,
+    // enforced INDEPENDENT of the seal's self-declared satellite_inventory AND the
+    // caller's satelliteKeys param (see candidate-satellite-inventory.js). So ANY
+    // caller — the V3 harness OR the real F4 orchestrator that passes NO
+    // satelliteKeys — gets completeness enforced (the V3-A incomplete-candidate bug).
+    await enforceCompleteSatelliteInventory({ client, bucket, objectPrefix, seal });
+    // (c)+(d) re-read the compound manifest, resolve a sample shard by hash, and
+    // decode its header to prove it is a real NXVF container.
+    await probeCompoundSampleShard({ client, bucket, objectPrefix, seal });
     return { state: PUBLISH_STATES.VALIDATED };
 }
 
