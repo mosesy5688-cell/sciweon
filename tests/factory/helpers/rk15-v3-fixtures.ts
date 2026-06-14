@@ -39,20 +39,49 @@ const NEG = [
     { id: 'neg::3', subject: { trial_id: 'NCT00000000' }, severity: 'critical', evidence_type: 'trial_termination', detail: 'trial signal' },
 ];
 
-/** Build the 22-file Run #1 aggregated source content. The 4 build-relevant files
- * carry real content; the other 18 are non-empty placeholders (present+non-empty
- * is all V3-A asserts of them). */
+/** Build the 22-file Run #1 aggregated source content. The build-relevant files
+ * (compounds/neg/search/xref + the SATELLITE serving files papers/trials/
+ * trial-links/bioactivities/target-index) carry REAL reader-shaped content; the
+ * remaining files are non-empty placeholders (present+non-empty is all V3-A
+ * asserts of those). RK-15 full-snapshot completeness: the satellites are now
+ * published by the candidate builder, so they must be reader-decodable lines. */
 export function buildSourceBuffers() {
     const compounds = Buffer.from(ALL_COMPOUNDS.map(c => JSON.stringify(c)).join('\n'), 'utf-8');
     const neg = Buffer.from(NEG.map(n => JSON.stringify(n)).join('\n'), 'utf-8');
     const search = Buffer.from(NAMED.map(c => JSON.stringify({ cid: c.pubchem_cid, inchi_key: c.inchi_key, chembl_id: c.chembl_id, name: c.name })).join('\n'), 'utf-8');
     const xref = Buffer.from(JSON.stringify({ version: '1.0', routing: Object.fromEntries(NAMED.flatMap(c => [[c.chembl_id, c.pubchem_cid], [c.external_ids.unii, c.pubchem_cid], [c.external_ids.drugbank_id, c.pubchem_cid]].filter(([k]) => k))) }), 'utf-8');
+    // Satellite serving content — reader-shaped (paper-loader/trial-loader/
+    // bioactivity-loader/target-loader key derivations decode these).
+    const papers = Buffer.from([
+        { paper_id: 'PMID:1', mentioned_compounds: [{ compound_id: 'sciweon::compound::CID:2244' }] },
+        { paper_id: 'PMID:2', mentioned_compounds: [{ compound_id: 'sciweon::compound::CID:3672' }] },
+    ].map(p => JSON.stringify(p)).join('\n'), 'utf-8');
+    const trialLinks = Buffer.from([
+        { compound_id: 'sciweon::compound::CID:2244', nct_id: 'NCT00000001' },
+    ].map(t => JSON.stringify(t)).join('\n'), 'utf-8');
+    const trials = Buffer.from([
+        { nct_id: 'NCT00000001', title: 'aspirin trial' },
+    ].map(t => JSON.stringify(t)).join('\n'), 'utf-8');
+    const bioactivities = Buffer.from([
+        { id: 'bio::1', compound_id: 'sciweon::compound::CID:2244', target: { uniprot_accession: 'P23219' } },
+    ].map(b => JSON.stringify(b)).join('\n'), 'utf-8');
+    // target-index.json is a SINGLE JSON object (not jsonl) — a known target so a
+    // legit 404 (target not in index) is NOT conflated with a missing index.
+    const targetIndex = Buffer.from(JSON.stringify({
+        version: '1.0', built_at: '2026-06-13T00:00:00Z',
+        targets: { P23219: { uniprot_accession: 'P23219', protein_name: 'PTGS1', gene_symbol: 'PTGS1', chembl_target_id: 'CHEMBL221', organism: { taxon_id: 9606, scientific_name: 'Homo sapiens' }, compound_ids: ['sciweon::compound::CID:2244'], bioactivity_ids: ['bio::1'], trial_ids: [], negative_evidence_ids: [] } },
+    }), 'utf-8');
     const buffers: Record<string, Buffer> = {};
     for (const f of AGGREGATED_FILES) buffers[f] = Buffer.from(`{"placeholder":"${f}"}`, 'utf-8');
     buffers['compounds-enriched.jsonl'] = compounds;
     buffers['neg-evidence.jsonl'] = neg;
     buffers['compounds-search.jsonl'] = search;
     buffers['xref-index.json'] = xref;
+    buffers['papers.jsonl'] = papers;
+    buffers['trial-links.jsonl'] = trialLinks;
+    buffers['trials.jsonl'] = trials;
+    buffers['bioactivities.jsonl'] = bioactivities;
+    buffers['target-index.json'] = targetIndex;
     return buffers;
 }
 
