@@ -14,6 +14,7 @@ import { PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sd
 import {
     instrumentReadOnlyClient, putCount, classifyParity, evalStability,
     scanSourceJsonl, faersFromRecord, getObject,
+    bindCandidate, candidatePrefix, sha256Hex, PROD_LATEST_KEY,
 } from '../../scripts/verify/rk15-v3c-lib.js';
 import { buildSurfaceRegistry, probeSurface } from '../../scripts/verify/rk15-v3c-surfaces.js';
 
@@ -33,6 +34,88 @@ describe('RK-15 V3-C — READ-ONLY write-GUARD (put_count must be 0)', () => {
         await inst.send(new GetObjectCommand({ Bucket: 'b', Key: 'k' }));
         expect(got).toBe(true);
         expect(putCount(inst)).toBe(0);
+    });
+});
+
+describe('RK-15 V3-C — candidate binding (latest == INPUT candidate; NO derive-and-accept)', () => {
+    // A complete immutable_snapshot_v2 latest.json for the NEW candidate.
+    const NEW_ID = '2026-06-14/27489690948-1';
+    const OLD_ID = '2026-06-13/27467183738-1';
+    const v2Latest = (id: string, manifestHash: string | null = 'mh-abc') => JSON.stringify({
+        layout_version: 'immutable_snapshot_v2',
+        snapshot_id: id,
+        object_prefix: `snapshots/${id}/`,
+        compounds_manifest_key: `snapshots/${id}/compounds/bucket-0000/manifest.json`,
+        ...(manifestHash ? { manifest_hash: manifestHash } : {}),
+    });
+    const legacyV1 = JSON.stringify({ latest_snapshot_date: '2026-06-14' });
+
+    // A mock R2 client that returns `latestText` for the latest.json GET. Wrapped
+    // in the read-only guard so we also prove put_count stays 0 throughout.
+    const clientFor = (latestText: string) => instrumentReadOnlyClient({
+        async send(cmd: any) {
+            if (cmd?.input?.Key === PROD_LATEST_KEY) return { Body: latestText, ETag: '"e"' };
+            throw Object.assign(new Error('NoSuchKey'), { name: 'NoSuchKey' });
+        },
+    });
+
+    it('NEW input + latest points at the NEW candidate (matching payload hash) -> PASS', async () => {
+        const latest = v2Latest(NEW_ID);
+        const inst = clientFor(latest);
+        const res = await bindCandidate(inst, 'bkt', { candidate_snapshot_id: NEW_ID, candidate_payload_hash: sha256Hex(Buffer.from(latest, 'utf-8')) });
+        expect(res.check.pass).toBe(true);
+        expect(res.check.latest_snapshot_id).toBe(NEW_ID);
+        expect(res.candidatePrefix).toBe(`snapshots/${NEW_ID}/`);
+        expect(putCount(inst)).toBe(0);
+    });
+
+    it('OLD input + latest points at the NEW candidate -> HARD FAIL (snapshot_id mismatch; no auto-switch to latest id)', async () => {
+        const latest = v2Latest(NEW_ID);
+        const res = await bindCandidate(clientFor(latest), 'bkt', { candidate_snapshot_id: OLD_ID, candidate_payload_hash: sha256Hex(Buffer.from(latest, 'utf-8')) });
+        expect(res.check.pass).toBe(false);
+        expect(res.check.snapshot_id_match).toBe(false);
+        expect(res.check.candidate_snapshot_id).toBe(OLD_ID); // binds the INPUT, not latest
+        expect(res.check.reason).toMatch(/no derive-and-accept/i);
+    });
+
+    it('snapshot_id matches but payload-hash MISMATCHES -> HARD FAIL', async () => {
+        const latest = v2Latest(NEW_ID);
+        const res = await bindCandidate(clientFor(latest), 'bkt', { candidate_snapshot_id: NEW_ID, candidate_payload_hash: 'deadbeef-wrong-hash' });
+        expect(res.check.pass).toBe(false);
+        expect(res.check.snapshot_id_match).toBe(true);
+        expect(res.check.payload_hash_match).toBe(false);
+    });
+
+    it('manifest_hash input mismatches latest.manifest_hash -> HARD FAIL', async () => {
+        const latest = v2Latest(NEW_ID, 'mh-abc');
+        const res = await bindCandidate(clientFor(latest), 'bkt', { candidate_snapshot_id: NEW_ID, candidate_payload_hash: sha256Hex(Buffer.from(latest, 'utf-8')), manifest_hash: 'mh-WRONG' });
+        expect(res.check.pass).toBe(false);
+        expect(res.check.manifest_hash_match).toBe(false);
+    });
+
+    it('production latest is legacy_v1 (not immutable_v2) -> HARD FAIL', async () => {
+        const res = await bindCandidate(clientFor(legacyV1), 'bkt', { candidate_snapshot_id: NEW_ID, candidate_payload_hash: sha256Hex(Buffer.from(legacyV1, 'utf-8')) });
+        expect(res.check.pass).toBe(false);
+        expect(res.check.is_immutable_v2).toBe(false);
+        expect(res.check.latest_layout_version).toBe('legacy_v1');
+    });
+
+    it('missing required input (candidate_payload_hash) -> HARD FAIL (never reads R2)', async () => {
+        let read = false;
+        const inst = instrumentReadOnlyClient({ async send() { read = true; return { Body: v2Latest(NEW_ID) }; } });
+        const res = await bindCandidate(inst, 'bkt', { candidate_snapshot_id: NEW_ID });
+        expect(res.check.pass).toBe(false);
+        expect(res.check.reason).toMatch(/missing required/i);
+        expect(read).toBe(false);
+    });
+
+    it('candidatePrefix + ALL candidate R2 reads are keyed on the INPUT id (not a hardcoded old id)', () => {
+        expect(candidatePrefix(NEW_ID)).toBe(`snapshots/${NEW_ID}/`);
+        expect(candidatePrefix(NEW_ID)).not.toContain(OLD_ID);
+        // A shard key built from the input prefix carries the INPUT id.
+        const shardKey = `${candidatePrefix(NEW_ID)}compounds/bucket-0000/shard-000.bin`;
+        expect(shardKey).toContain(NEW_ID);
+        expect(shardKey).not.toContain('27467183738');
     });
 });
 

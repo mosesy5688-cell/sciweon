@@ -2,22 +2,25 @@
  * RK-15 V3-C — STRICT READ-ONLY serving-acceptance harness.
  *
  * PROVES full serving acceptance + a SOURCE -> CANDIDATE -> LIVE three-layer
- * parity against the EXACT immutable candidate V3-B already CAS-activated to
- * production latest (snapshots/2026-06-13/27467183738-1/). It does NOT
- * re-activate anything, NOT write R2, NOT change latest, NOT purge cache — every
- * R2 call goes through instrumentReadOnlyClient (a PutObject -> HARD FAIL;
- * put_count MUST be 0). The live worker is probed by HTTP GET only.
+ * parity against the candidate specified by the RUN INPUT (candidate_snapshot_id
+ * / candidate_payload_hash / optional manifest_hash). The harness reads
+ * production snapshots/latest.json ONCE and ASSERTS it points at EXACTLY the
+ * INPUT candidate (snapshot_id + payload sha256 + manifest_hash) — NO
+ * derive-and-accept: a latest pointing elsewhere (or a legacy_v1 latest) is a
+ * HARD FAIL. It does NOT re-activate anything, NOT write R2, NOT change latest,
+ * NOT purge cache — every R2 call goes through instrumentReadOnlyClient (a
+ * PutObject -> HARD FAIL; put_count MUST be 0). Live worker: HTTP GET only.
  *
- * WORKER_BASE_URL is REQUIRED: missing/empty -> hard fail (NEVER the V3-B
- * "no URL -> exercised=false -> still PASS" mode). All route patterns are
- * code-sourced from src/worker.ts (rk15-v3c-surfaces.js) — no guessing; a
- * surface with no public route is recorded NOT APPLICABLE with file:line.
+ * REQUIRED INPUTS: WORKER_BASE_URL, candidate_snapshot_id, candidate_payload_hash
+ * — any missing -> HARD FAIL (NEVER a silent skip / "still PASS" mode). Route
+ * patterns are code-sourced from src/worker.ts (rk15-v3c-surfaces.js); a surface
+ * with no public route is recorded NOT APPLICABLE with file:line.
  */
 
 import fs from 'fs/promises';
 import { makeR2Client } from '../factory/lib/r2-stage-bridge.js';
 import {
-    SOURCE_COMPOUNDS_KEY, CANDIDATE_SNAPSHOT_ID, CANDIDATE_PREFIX,
+    SOURCE_COMPOUNDS_KEY, bindCandidate,
     instrumentReadOnlyClient, putCount, getObject, getObjectOrNull, getObjectRange,
     faersFromRecord, scanSourceJsonl, classifyParity, evalStability,
 } from './rk15-v3c-lib.js';
@@ -62,14 +65,52 @@ async function decodeRanged(shardBuf, size) {
 
 async function main() {
     const baseUrl = (process.env.WORKER_BASE_URL ?? '').trim();
-    const evidence = { harness: 'rk15-v3c', candidate_snapshot_id: CANDIDATE_SNAPSHOT_ID, worker_base_url_present: baseUrl.length > 0, checks: {} };
+    // The candidate the harness verifies is bound from the RUN INPUT (env),
+    // NOT a hardcoded id. candidate_snapshot_id + candidate_payload_hash are
+    // REQUIRED; manifest_hash is optional. A missing required input -> HARD FAIL.
+    const input = {
+        candidate_snapshot_id: (process.env.CANDIDATE_SNAPSHOT_ID ?? '').trim(),
+        candidate_payload_hash: (process.env.CANDIDATE_PAYLOAD_HASH ?? '').trim(),
+        manifest_hash: (process.env.MANIFEST_HASH ?? '').trim() || null,
+    };
+    const evidence = {
+        harness: 'rk15-v3c',
+        candidate_snapshot_id: input.candidate_snapshot_id || null, // INPUT id
+        candidate_payload_hash: input.candidate_payload_hash || null,
+        manifest_hash: input.manifest_hash,
+        worker_base_url_present: baseUrl.length > 0, checks: {},
+    };
     if (!baseUrl) {
         evidence.checks.worker_base_url = { pass: false, reason: 'WORKER_BASE_URL missing/empty — V3-C requires a live worker; no URL is a FAILURE, never a silent skip' };
+        return finish(evidence, false);
+    }
+    if (!input.candidate_snapshot_id || !input.candidate_payload_hash) {
+        evidence.checks.worker_base_url = { pass: true };
+        evidence.checks.candidate_binding = { pass: false, reason: 'missing required run input — candidate_snapshot_id AND candidate_payload_hash are REQUIRED (HARD FAIL, never a silent skip)', candidate_snapshot_id: input.candidate_snapshot_id || null, candidate_payload_hash_present: input.candidate_payload_hash.length > 0 };
         return finish(evidence, false);
     }
     const fetchImpl = globalThis.fetch;
     const bucket = process.env.R2_BUCKET;
     const client = instrumentReadOnlyClient(makeR2Client());
+
+    // ── CANDIDATE BINDING: read production latest ONCE + assert latest == INPUT ──
+    // No derive-and-accept: a latest that points at a different candidate (or a
+    // legacy_v1 latest, or a payload-hash mismatch) HARD-FAILS here and the
+    // harness stops — it does NOT continue and return PASS for a different id.
+    const binding = await bindCandidate(client, bucket, input);
+    evidence.checks.candidate_binding = binding.check;
+    evidence.latest_snapshot_id = binding.check.latest_snapshot_id ?? null;
+    evidence.latest_payload_sha256 = binding.check.latest_payload_sha256 ?? null;
+    evidence.manifest_hash_observed = binding.check.manifest_hash_observed ?? null;
+    if (!binding.check.pass) {
+        evidence.put_count = putCount(client);
+        evidence.checks.worker_base_url = { pass: true };
+        evidence.checks.read_only = { pass: evidence.put_count === 0, put_count: evidence.put_count };
+        return finish(evidence, false);
+    }
+    // EVERY candidate R2 read + EVERY live identity check uses this INPUT id.
+    const candidateSnapshotId = input.candidate_snapshot_id;
+    const candidatePrefix = binding.candidatePrefix;
 
     // ── SOURCE: stream the source compounds-enriched.jsonl (read-only GET) ──
     const srcBuf = (await getObject(client, bucket, SOURCE_COMPOUNDS_KEY)).body;
@@ -78,8 +119,8 @@ async function main() {
     for (const r of resolvedSyn) if (r.cid != null) byCid.set(r.cid, byCid.get(r.cid) ?? scanSourceJsonl(srcBuf, [r.cid], []).byCid.get(r.cid));
     const allRows = [...KEY_CIDS, ...resolvedSyn.filter(r => r.cid != null).map(r => ({ cid: r.cid, name: r.name }))];
 
-    // ── CANDIDATE: load the manifest (read-only GET) ──
-    const manifestKey = `${CANDIDATE_PREFIX}compounds/bucket-0000/manifest.json`;
+    // ── CANDIDATE: load the manifest (read-only GET) — INPUT-bound prefix ──
+    const manifestKey = `${candidatePrefix}compounds/bucket-0000/manifest.json`;
     const manifestObj = await getObjectOrNull(client, bucket, manifestKey);
     const manifest = manifestObj ? JSON.parse(manifestObj.body.toString('utf-8')) : { entries: [] };
     const manifestBucket = manifest.bucket ?? 0;
@@ -89,7 +130,7 @@ async function main() {
     for (const row of allRows) {
         const srcRec = byCid.get(Number(row.cid)) ?? null;
         const src = faersFromRecord(srcRec ?? {});
-        const cand = await candidateRecordSafe(client, bucket, manifest, manifestBucket, row.cid);
+        const cand = await candidateRecordSafe(client, bucket, candidatePrefix, manifest, manifestBucket, row.cid);
         const live = await liveCompound(baseUrl, row.cid, fetchImpl);
         const verdict = classifyParity({ source_faers_term_count: src.faers_term_count, candidate_faers_term_count: cand.faers_term_count, live_faers_term_count: live.faers_term_count });
         parity_table.push({
@@ -130,12 +171,14 @@ async function main() {
     evidence.serving_matrix = serving_matrix;
     evidence.repeat_stability = repeatStability;
 
-    // ── snapshot consistency (§5) ──
+    // ── snapshot consistency (§5) — identity matched against the INPUT id ──
+    // The live-identity check uses the INPUT candidate_snapshot_id (which the
+    // binding already asserted == production latest), NOT a hardcoded old id.
     const live2244 = await fetchImpl(`${baseUrl.replace(/\/$/, '')}/api/v1/compound/2244`).then(r => r.text()).catch(() => '');
-    const exposesSnapshot = /27467183738-1|2026-06-13/.test(live2244);
+    const exposesSnapshot = live2244.includes(candidateSnapshotId);
     evidence.snapshot_consistency = exposesSnapshot
-        ? { snapshot_identity_exposed: true, expected: CANDIDATE_SNAPSHOT_ID }
-        : { snapshot_identity_exposed: false, note: 'live /compound response does not expose the snapshot id; not modifying data/latest to check (read-only). Candidate identity is proven via the direct candidate manifest/shard reads above.' };
+        ? { snapshot_identity_exposed: true, expected: candidateSnapshotId }
+        : { snapshot_identity_exposed: false, expected: candidateSnapshotId, note: 'live /compound response does not expose the snapshot id; not modifying data/latest to check (read-only). Candidate identity is proven via the candidate-binding (latest==input) + the direct candidate manifest/shard reads above.' };
 
     // ── legacy warm-cache gap (§7) — NOT EXERCISED + compensating evidence ──
     evidence.legacy_compensating = {
@@ -159,17 +202,22 @@ async function main() {
     evidence.checks.serving_matrix = { pass: matrixPass };
     evidence.checks.repeat_stability = { pass: Object.values(repeatStability).every(s => s.stable) };
     evidence.checks.legacy_compensating = { pass: evidence.legacy_compensating.compensating_evidence === 'PASS' };
-    const v3cPass = Object.values(evidence.checks).every(c => c.pass) && evidence.put_count === 0 && evidence.worker_base_url_present;
+    // v3c_pass ANDs the candidate_binding check (latest == INPUT) explicitly.
+    const v3cPass = Object.values(evidence.checks).every(c => c.pass)
+        && evidence.checks.candidate_binding?.pass === true
+        && evidence.put_count === 0 && evidence.worker_base_url_present;
     return finish(evidence, v3cPass);
 }
 
-// Safe candidate resolution that range-reads + decodes the entity inline.
-async function candidateRecordSafe(client, bucket, manifest, manifestBucket, cid) {
+// Safe candidate resolution that range-reads + decodes the entity inline. The
+// candidate prefix is the INPUT-bound prefix (snapshots/${input_id}/), NOT a
+// hardcoded id — every candidate R2 read is keyed on the input candidate.
+async function candidateRecordSafe(client, bucket, candidatePrefix, manifest, manifestBucket, cid) {
     const entry = (manifest.entries ?? []).find(e => Number(e.cid) === Number(cid));
     if (!entry) return { present: false, tier1: false, faers_term_count: 0, faers_total_count: 0 };
     try {
         const bid = String(manifestBucket).padStart(4, '0');
-        const shardKey = `${CANDIDATE_PREFIX}compounds/bucket-${bid}/shard-${String(entry.shard).padStart(3, '0')}.bin`;
+        const shardKey = `${candidatePrefix}compounds/bucket-${bid}/shard-${String(entry.shard).padStart(3, '0')}.bin`;
         const ranged = await getObjectRange(client, bucket, shardKey, entry.offset, entry.size);
         const decoded = await decodeRanged(ranged, entry.size);
         const rec = JSON.parse(decoded.toString('utf-8'));
