@@ -9,6 +9,18 @@ on:
     types: [completed]
     branches: [main]
   workflow_dispatch:
+    inputs:
+      # P-8 GAP-C: OPTIONAL exact-run binding. When SET -> MANUAL mode: F4
+      # downloads processed/aggregated/<aggregated_run_id>/ DIRECTLY (never the
+      # latest pointer), attests the source bytes + asserts the MANUAL_ONLY /
+      # backfill_only policy triplet, then publishes that EXACT artifact (P-8R2).
+      # When EMPTY (default) -> AUTO mode: the on:workflow_run publication-policy
+      # gate (GAP-A) follows the latest pointer and NO-OPs on a MANUAL_ONLY run.
+      aggregated_run_id:
+        description: 'P-8 MANUAL mode: exact processed/aggregated/<run_id> to publish (empty = AUTO mode, follow latest pointer + policy gate)'
+        required: false
+        type: string
+        default: ''
 
 concurrency:
   group: factory-pipeline
@@ -41,6 +53,10 @@ jobs:
             npm install
           fi
       - name: Run stage 4
+        env:
+          # P-8 GAP-C: empty on the on:workflow_run (AUTO) path; the operator-
+          # supplied exact run id on the workflow_dispatch (MANUAL) path.
+          AGGREGATED_RUN_ID: ${{ github.event.inputs.aggregated_run_id }}
         run: node scripts/factory/stage-4-upload.js
       - name: Upload stage-4 log artifact
         if: always()

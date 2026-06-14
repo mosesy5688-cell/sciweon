@@ -27,10 +27,48 @@ const EWMA_ALPHA = 0.7;
 const ROBUSTNESS_PREMIUM = 1.3;
 const COLD_START_PAD = 1.1;
 
+// P-8 GAP-B: canonical stop-reason set surfaced alongside terminatedBy. The
+// legacy terminatedBy ('empty'|'budget'|'wrapped') is PRESERVED for existing
+// callers/tests; stop_reason is the operator-facing P-8 vocabulary.
+export const STOP_REASON = Object.freeze({
+    MAX_RECORDS_REACHED: 'MAX_RECORDS_REACHED',
+    TIME_BUDGET_REACHED: 'TIME_BUDGET_REACHED',
+    BACKLOG_EXHAUSTED: 'BACKLOG_EXHAUSTED',
+    SOURCE_FAILURE: 'SOURCE_FAILURE',
+    INVARIANT_FAILURE: 'INVARIANT_FAILURE',
+});
+
+// P-8 GAP-B: parse an optional record-cap env var. null when unset/blank;
+// throws on a non-negative-integer violation so a typo never silently caps.
+export function parseMaxRecordsEnv(name) {
+    const raw = process.env[name];
+    if (raw == null || raw === '') return null;
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 0) {
+        throw new Error(`${name} invalid: '${raw}' (expected a non-negative integer)`);
+    }
+    return n;
+}
+
+// P-8 GAP-B: canonical evidence block for a per-source drain outcome. stop_reason
+// is taken from the drain result; an in-drain throw passes an explicit override.
+export function buildDrainEvidence({ requestedMaxRecords, stampedThisRun, attemptedThisRun, remainingBacklog, stopReason, cursorBefore, cursorAfter }) {
+    return {
+        requested_max_records: requestedMaxRecords ?? null,
+        stamped_this_run: stampedThisRun,
+        attempted_this_run: attemptedThisRun,
+        remaining_backlog: remainingBacklog ?? null,
+        stop_reason: stopReason,
+        cursor_before: cursorBefore ?? null,
+        cursor_after: cursorAfter ?? null,
+    };
+}
+
 function emptyResult(initialCursor) {
     return {
         terminatedBy: 'empty', chunksDrained: 0, processedInRun: 0,
         remainingBacklog: 0, finalCursor: initialCursor, finalCursorResult: null,
+        stopReason: STOP_REASON.BACKLOG_EXHAUSTED,
     };
 }
 
@@ -54,12 +92,26 @@ function updateEwma(prevWindowMs, lastChunkMs) {
 export async function drainAdapterBacklog({
     eligible, enrichOne, chunkIterator, chunkSize, timeBudgetMs,
     coldStartEstimateMs, sleepMsBetween, initialCursor,
-    logPrefix = '[DRAIN]', logEveryNRecords = 100,
+    logPrefix = '[DRAIN]', logEveryNRecords = 100, maxRecords = null,
 }) {
     if (!eligible || eligible.length === 0) return emptyResult(initialCursor);
     if (typeof enrichOne !== 'function' || typeof chunkIterator !== 'function'
         || !(chunkSize > 0) || !(timeBudgetMs > 0) || !(coldStartEstimateMs > 0)) {
         throw new Error('drainAdapterBacklog: missing or invalid required param');
+    }
+    // P-8 GAP-B: optional HARD record cap. null/unset = no cap (today's
+    // behavior). A finite cap MUST be a positive integer; a <=0 cap is an
+    // INVARIANT_FAILURE (caller passed garbage) rather than a silent no-op.
+    const hasCap = maxRecords != null;
+    if (hasCap && !(Number.isInteger(maxRecords) && maxRecords >= 0)) {
+        throw new Error('drainAdapterBacklog: maxRecords must be a non-negative integer when set');
+    }
+    if (hasCap && maxRecords === 0) {
+        return {
+            terminatedBy: 'budget', chunksDrained: 0, processedInRun: 0,
+            remainingBacklog: eligible.length, finalCursor: initialCursor,
+            finalCursorResult: null, stopReason: STOP_REASON.MAX_RECORDS_REACHED,
+        };
     }
 
     const runStart = Date.now();
@@ -71,6 +123,20 @@ export async function drainAdapterBacklog({
     let lastChunkResult = null;
 
     while (!wrapped) {
+        // P-8 GAP-B: HARD record cap checked BEFORE fetching/processing a chunk
+        // so a non-2000-multiple cap never overshoots. If we have already
+        // stamped exactly maxRecords, stop now (we never process record max+1).
+        if (hasCap && processedInRun >= maxRecords) {
+            return {
+                terminatedBy: 'budget', chunksDrained, processedInRun,
+                remainingBacklog: lastChunkResult
+                    ? Math.max(0, lastChunkResult.totalEligible - processedInRun)
+                    : Math.max(0, eligible.length - processedInRun),
+                finalCursor: cursor, finalCursorResult: lastChunkResult,
+                stopReason: STOP_REASON.MAX_RECORDS_REACHED,
+            };
+        }
+
         const elapsed = Date.now() - runStart;
         const projected = projectNextChunkMs(chunksDrained, windowMs, coldStartEstimateMs);
         if (elapsed + projected > timeBudgetMs) {
@@ -80,6 +146,7 @@ export async function drainAdapterBacklog({
                     ? Math.max(0, lastChunkResult.totalEligible - processedInRun)
                     : eligible.length,
                 finalCursor: cursor, finalCursorResult: lastChunkResult,
+                stopReason: STOP_REASON.TIME_BUDGET_REACHED,
             };
         }
 
@@ -87,9 +154,16 @@ export async function drainAdapterBacklog({
         // head records once we've drained the tail. Without this, a corpus of
         // N records with chunkSize C where N % C != 0 would cause the final
         // chunk to wrap + re-process the first (C - remainder) records.
-        const effectiveChunkSize = lastChunkResult
+        // P-8 GAP-B: ALSO clamp to the remaining record-cap budget so a cap that
+        // is NOT a multiple of chunkSize (e.g. 8000 with a 3000 chunk, or a cap
+        // < chunkSize) processes AT MOST `maxRecords - processedInRun` more
+        // records this chunk and never overshoots to max+1.
+        let effectiveChunkSize = lastChunkResult
             ? Math.min(chunkSize, Math.max(0, lastChunkResult.totalEligible - processedInRun))
             : chunkSize;
+        if (hasCap) {
+            effectiveChunkSize = Math.min(effectiveChunkSize, Math.max(0, maxRecords - processedInRun));
+        }
         if (effectiveChunkSize === 0) { wrapped = true; break; }
 
         const chunkStart = Date.now();
@@ -113,6 +187,13 @@ export async function drainAdapterBacklog({
         cursor = { ...(cursor ?? {}), cursor_id: nextCursorId };
         lastChunkResult = result;
 
+        // P-8 GAP-B invariant: the pre-chunk effectiveChunkSize clamp guarantees
+        // we never process record max+1. Assert it (a clamp regression must throw
+        // an INVARIANT_FAILURE, never silently overshoot the founder's cap).
+        if (hasCap && processedInRun > maxRecords) {
+            throw new Error(`[DRAIN] INVARIANT_FAILURE: processedInRun (${processedInRun}) overshot maxRecords (${maxRecords})`);
+        }
+
         const lastChunkMs = Date.now() - chunkStart;
         windowMs = updateEwma(windowMs, lastChunkMs);
         console.log(`${logPrefix} chunk ${chunksDrained} complete | wall=${(lastChunkMs / 1000).toFixed(1)}s | ewma=${(windowMs / 1000).toFixed(1)}s | wrapped=${wrapped}`);
@@ -125,8 +206,22 @@ export async function drainAdapterBacklog({
         if (processedInRun >= result.totalEligible) { wrapped = true; break; }
     }
 
+    // P-8 GAP-B: if the loop ended because the record cap was hit (not because
+    // the backlog genuinely wrapped), surface MAX_RECORDS_REACHED + the true
+    // remaining backlog. Otherwise the backlog is exhausted (remaining 0).
+    const capStopped = hasCap && processedInRun >= maxRecords
+        && lastChunkResult && processedInRun < lastChunkResult.totalEligible;
+    if (capStopped) {
+        return {
+            terminatedBy: 'wrapped', chunksDrained, processedInRun,
+            remainingBacklog: Math.max(0, lastChunkResult.totalEligible - processedInRun),
+            finalCursor: cursor, finalCursorResult: lastChunkResult,
+            stopReason: STOP_REASON.MAX_RECORDS_REACHED,
+        };
+    }
     return {
         terminatedBy: 'wrapped', chunksDrained, processedInRun,
         remainingBacklog: 0, finalCursor: cursor, finalCursorResult: lastChunkResult,
+        stopReason: STOP_REASON.BACKLOG_EXHAUSTED,
     };
 }

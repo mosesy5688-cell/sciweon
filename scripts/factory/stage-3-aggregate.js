@@ -28,12 +28,14 @@
  *   5  previous bundle empty / partial-upload crash suspected
  *   6  latest.json pointer schema malformed (missing run_id field)
  *   7  cumulative merge unexpected failure
+ *   8  publication-policy sidecar write failed (P-8 GAP-A gate not stamped)
  */
 
 import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs/promises';
 import { downloadStage, uploadStage, deriveRunId, readStagePointer, downloadStageByRunId } from './lib/r2-stage-bridge.js';
+import { stampStage3PublishPolicy } from './lib/r2-publish-policy.js';
 import { executeCumulativeMerge } from './lib/stage-3-merge.js';
 import { buildIndex as buildSearchIndex, OUTPUT_FILE as SEARCH_INDEX_FILE } from './lib/search-index-builder.js';
 import { buildIndex as buildTargetIndex, OUTPUT_FILE as TARGET_INDEX_FILE } from './lib/target-index-builder.js';
@@ -70,11 +72,13 @@ async function main() {
     console.log(`[STAGE-3] Sciweon Factory Aggregate V0.5.x run_id=${runId}`);
 
     console.log('\n[STAGE-3] === Download enriched from R2 ===');
+    let sourceEnrichedRunId = null;
     try {
         // Cycle 21 PR #113: use ENRICHED_FILES SSoT (not a hardcoded 2-file list)
         // for BOTH sides of the enriched boundary so drug-labels.jsonl is never
         // download-skipped (which previously hard-failed uploadStage downstream).
-        await downloadStage('enriched', ENRICHED_FILES);
+        const dl = await downloadStage('enriched', ENRICHED_FILES);
+        sourceEnrichedRunId = dl?.runId ?? null;
     } catch (err) {
         console.error(`[STAGE-3] Enriched download failed: ${err.message}`);
         process.exit(2);
@@ -88,23 +92,15 @@ async function main() {
     const loincColdStart = await isLoincColdStart({ client: makeR2Client('STAGE-3'), bucket: process.env.R2_BUCKET });
     if (loincColdStart) warnLoincColdStart();
 
-    // PR-1 F3 outage-decouple: the linker groups (parallel, disjoint output files,
-    // trials sequential) + the cross-link group now run via lib/stage-3-linkers.js,
-    // each WRAPPED non-fatal -- a thrown linker/cross-link branch (frozen cursor /
-    // real bug / cross-link assertLoaded) is CAUGHT + recorded as a failed summary
-    // (so it still drives the exit code) instead of ABORTING the stage before the
-    // FAERS backfill. A 3rd-party paper/trial OUTAGE degrades (exits 0) and is NOT a
-    // failure -> F3 exits 0 -> F4 publishes the FAERS payoff. (Was: an un-wrapped
-    // Promise.all + cross-link runSequential that re-threw and killed the backfill.)
-    //
-    // WO_F3 backfill_only branch: a workflow_dispatch with backfill_only=true SKIPS
-    // runLinkerStage entirely (no S2 / OpenAlex / trial-linker re-run -- P-7/cost
-    // isolation) and instead REHYDRATES the prior bundle's linker-only files so the
-    // unchanged cumulative merge / stampers / public builders / projections / upload
-    // still see a COMPLETE local set (else broken F4 publish; see lib/stage-3-
-    // backfill-only.js). The FAERS backfill below runs identically either way.
-    // Default (false / unset, incl. the cron workflow_run path) = the byte-for-byte
-    // unchanged runLinkerStage call.
+    // PR-1 F3 outage-decouple: the linker + cross-link groups run via
+    // lib/stage-3-linkers.js each WRAPPED non-fatal -- a thrown branch is CAUGHT +
+    // recorded (drives the exit code) instead of ABORTING before the FAERS backfill;
+    // a 3rd-party outage degrades (exits 0) so F4 still publishes the FAERS payoff.
+    // WO_F3 backfill_only branch: backfill_only=true SKIPS runLinkerStage entirely
+    // (no S2/OpenAlex/trial-linker re-run -- P-7/cost isolation) and REHYDRATES the
+    // prior bundle's linker-only files so the unchanged merge/stampers/builders/
+    // upload see a COMPLETE local set (lib/stage-3-backfill-only.js). The FAERS
+    // backfill below runs identically either way; default/unset = unchanged call.
     const backfillOnly = process.env.BACKFILL_ONLY === 'true';
     let linkerStage;
     if (backfillOnly) {
@@ -196,6 +192,22 @@ async function main() {
     } catch (err) {
         console.error(`[STAGE-3] R2 upload failed: ${err.message}`);
         process.exit(3);
+    }
+
+    // P-8 GAP-A: stamp the immutable publication-policy sidecar. Normal F3 ->
+    // full/AUTO_ALLOWED (the on:workflow_run F4 publishes as today); backfill_only
+    // F3 (P-8R1) -> backfill_only/MANUAL_ONLY (AUTO F4 NO-OPs; only the explicit
+    // run-bound MANUAL F4 may publish). FAIL-LOUD: a write failure aborts F3.
+    try {
+        const { key, policy } = await stampStage3PublishPolicy({
+            client: makeR2Client('STAGE-3'), bucket: process.env.R2_BUCKET,
+            aggregatedRunId: runId, backfillOnly,
+            sourceRunId: sourceEnrichedRunId, commitSha: process.env.GITHUB_SHA ?? null,
+        });
+        console.log(`[STAGE-3] Publication-policy sidecar written: ${key} (mode=${policy.mode}, policy=${policy.publication_policy})`);
+    } catch (err) {
+        console.error(`[STAGE-3] FATAL: publication-policy sidecar write failed: ${err.message}`);
+        process.exit(8);
     }
 
     // V0.5.5 — mark first_run_complete sentinel after successful upload.

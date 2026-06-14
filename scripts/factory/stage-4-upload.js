@@ -18,12 +18,15 @@
  *   2  aggregated download failed
  *   3  snapshot-builder failed
  *   4  snapshot-uploader failed
+ *  11  P-8 AUTO publication-policy gate fail-loud (policy missing/mismatch);
+ *      a MANUAL_ONLY (backfill_only) artifact is a clean NO-OP exit 0, not 11
  */
 
 import { spawn } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
-import { downloadStage, verifyNonEmpty } from './lib/r2-stage-bridge.js';
+import { downloadStage, verifyNonEmpty, makeR2Client as makeBridgeClient } from './lib/r2-stage-bridge.js';
+import { resolveAggregatedRunId, runAutoPublishGate, runManualAttestAndDownload } from './lib/stage-4-publish-mode.js';
 import {
     loadPreviousSnapshotManifest,
     countJsonlRecords,
@@ -73,12 +76,28 @@ async function main() {
     const objectPrefix = objectPrefixFor(snapshotId);
     console.log(`[STAGE-4] Snapshot identity: id=${snapshotId} prefix=${objectPrefix} (run ${runId} attempt ${runAttempt})`);
 
-    console.log('\n[STAGE-4] === Download aggregated from R2 ===');
-    try {
-        await downloadStage('aggregated', AGGREGATED_FILES);
-    } catch (err) {
-        console.error(`[STAGE-4] Aggregated download failed: ${err.message}`);
-        process.exit(2);
+    // P-8 GAP-C/GAP-A: AUTO vs MANUAL mode. MANUAL (aggregated_run_id provided)
+    // binds to one EXACT run id + attests; AUTO (empty) runs the publication-
+    // policy gate which NO-OPs on a MANUAL_ONLY (backfill_only) artifact.
+    const aggregatedRunId = resolveAggregatedRunId();
+    if (aggregatedRunId) {
+        console.log(`[STAGE-4] MODE=MANUAL (aggregated_run_id=${aggregatedRunId})`);
+        try {
+            await runManualAttestAndDownload({ makeClient: makeBridgeClient, aggregatedRunId, files: AGGREGATED_FILES });
+        } catch (err) {
+            console.error(`[STAGE-4] MANUAL attestation/download FAILED (no publish): ${err.message}`);
+            process.exit(2);
+        }
+    } else {
+        console.log('[STAGE-4] MODE=AUTO (no aggregated_run_id input)');
+        await runAutoPublishGate({ makeClient: makeBridgeClient }); // PROCEED, or exits (NOOP=0 / FAIL=11)
+        console.log('\n[STAGE-4] === Download aggregated from R2 ===');
+        try {
+            await downloadStage('aggregated', AGGREGATED_FILES);
+        } catch (err) {
+            console.error(`[STAGE-4] Aggregated download failed: ${err.message}`);
+            process.exit(2);
+        }
     }
 
     console.log('\n[STAGE-4] === Data integrity check ===');
