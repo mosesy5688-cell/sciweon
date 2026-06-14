@@ -22,23 +22,15 @@ import { GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import {
     PUBLISH_STATES, LAYOUT_VERSION_V2, SNAPSHOT_SCHEMA_VERSION,
     canonicalManifestHash, rootSealKey, compoundsManifestKey,
-    compoundsShardKey, xrefIndexKey, searchProjectionKey, putCreateOnly,
+    xrefIndexKey, searchProjectionKey, putCreateOnly,
 } from './snapshot-identity.js';
+import {
+    satelliteInventoryForSeal, enforceCompleteSatelliteInventory,
+} from './candidate-satellite-inventory.js';
+import { probeCompoundSampleShard } from './candidate-shard-probe.js';
 import { swapLatestPointer } from './publish-shards-and-swap.js';
 
 const LATEST_KEY = 'snapshots/latest.json';
-
-// NXVF V4.1 container header (shard-writer.js): "NXVF" magic at byte 0 +
-// EntityCount (UInt32LE) at byte 11. A sample-shard decode = assert the magic +
-// a positive entity count, proving the candidate shard is a real container.
-const NXVF_MAGIC = Buffer.from([0x4E, 0x58, 0x56, 0x46]);
-function assertNxvfShard(buf) {
-    if (buf.length < 29 || !buf.subarray(0, 4).equals(NXVF_MAGIC)) {
-        throw new Error('not an NXVF container (bad magic / too short)');
-    }
-    const entityCount = buf.readUInt32LE(11);
-    if (entityCount <= 0) throw new Error('NXVF container declares zero entities');
-}
 
 async function streamToBuffer(stream) {
     const chunks = [];
@@ -71,11 +63,13 @@ export async function verifySnapshotSealPresent(client, bucket, objectPrefix) {
  */
 export async function activateValidatedCandidate({
     client, bucket, identity, compoundManifest, negManifestKey, hasXref, hasSearch,
-    latestKey = LATEST_KEY,
+    satelliteKeys = [], latestKey = LATEST_KEY,
 }) {
-    // (3->4 step 5) seal LAST.
+    // (3->4 step 5) seal LAST. satelliteKeys carries the COMPLETE satellite serving
+    // inventory (RK-15 full-snapshot completeness) — the real F4 producer passes
+    // the keys it published so validateCandidate enforces completeness here too.
     const { manifestHash } = await buildAndSealCandidate({
-        client, bucket, identity, compoundManifest, negManifestKey, hasXref, hasSearch,
+        client, bucket, identity, compoundManifest, negManifestKey, hasXref, hasSearch, satelliteKeys,
     });
     // (step 6+7) re-read + verify the candidate by its OWN keys (never latest).
     await validateCandidate({ client, bucket, identity, expectedHash: manifestHash });
@@ -98,12 +92,24 @@ export async function activateValidatedCandidate({
  */
 export async function buildAndSealCandidate({
     client, bucket, identity, compoundManifest, negManifestKey, hasXref, hasSearch,
+    satelliteKeys = [],
 }) {
     const { snapshotId, objectPrefix, snapshotDate, runId, runAttempt, commitSha } = identity;
+    // STRUCTURED required keys (compound manifest + xref + search + neg manifest):
+    // existence + non-empty is the gate (the compound shard is separately decoded).
     const requiredKeys = [compoundManifestKeyOf(compoundManifest, objectPrefix)];
     if (hasXref) requiredKeys.push(xrefIndexKey(objectPrefix));
     if (hasSearch) requiredKeys.push(searchProjectionKey(objectPrefix));
     if (negManifestKey) requiredKeys.push(negManifestKey);
+    // RK-15 full-snapshot completeness: the seal ALSO declares the COMPLETE
+    // satellite serving inventory (papers/trials/.../target-index whole gz files).
+    // These are kept in a SEPARATE list because validateCandidate decode-probes
+    // them (gunzip + parse a line), not just HEADs them. Declaring an INCOMPLETE
+    // satellite set was the V3-A bug -> here every published satellite key is
+    // sealed, and they ALL fold into required_inventory so the seal hash binds the
+    // complete-snapshot definition (any drift changes the manifest_hash).
+    const satelliteInventory = satelliteInventoryForSeal(satelliteKeys);
+    const fullRequiredInventory = [...requiredKeys, ...satelliteInventory];
 
     const sealCore = {
         layout_version: LAYOUT_VERSION_V2,
@@ -122,7 +128,8 @@ export async function buildAndSealCandidate({
         xref_index_key: hasXref ? xrefIndexKey(objectPrefix) : null,
         compound_total_records: compoundManifest.total_records,
         compound_shard_hashes: compoundManifest.shard_hashes,
-        required_inventory: requiredKeys,
+        required_inventory: fullRequiredInventory,
+        satellite_inventory: satelliteInventory,
     };
     // The hash is computed over the seal WITHOUT the hash field (it cannot hash
     // itself). It is then stored alongside so a verifier can recompute + compare.
@@ -140,7 +147,10 @@ function compoundManifestKeyOf(manifest, objectPrefix) {
 /**
  * Validate the candidate by reading ONLY its own keys (NEVER latest.json):
  *   - the root seal re-reads + its canonical hash matches the expected hash;
- *   - every required-inventory object exists with size > 0;
+ *   - every STRUCTURED required-inventory object exists with size > 0;
+ *   - every SSoT-required SATELLITE is present + reader-decodable (gunzip + a
+ *     parseable record) — enforced against the SSoT, INDEPENDENT of the seal's
+ *     self-declared satellite_inventory and the caller's satelliteKeys param;
  *   - the compound manifest re-reads + its declared refs resolve;
  *   - a sample shard decodes (NXVF round-trip).
  * Throws on any gate. Returns { state: VALIDATED }.
@@ -155,26 +165,28 @@ export async function validateCandidate({ client, bucket, identity, expectedHash
     if (recomputed !== expectedHash || storedHash !== expectedHash) {
         throw new Error(`[ACTIVATE] candidate seal hash mismatch: stored=${storedHash} recomputed=${recomputed} expected=${expectedHash}`);
     }
-    // (b) required inventory: every declared object exists + non-empty.
+    // (b) required STRUCTURED inventory: every declared object exists + non-empty.
+    // Satellites are in required_inventory too (so the seal hash binds the
+    // complete-snapshot definition) but are validated MORE strictly in (b2) —
+    // skip them here so (b2) owns their precise missing/empty/decode errors.
+    const satelliteSet = new Set(seal.satellite_inventory ?? []);
     for (const key of seal.required_inventory ?? []) {
+        if (satelliteSet.has(key)) continue; // satellites validated by (b2)
         let size;
         try { size = await headSize(client, bucket, key); }
         catch (err) { throw new Error(`[ACTIVATE] required candidate object missing: ${key} (${err.message})`); }
         if (!size || size <= 0) throw new Error(`[ACTIVATE] required candidate object is empty: ${key}`);
     }
-    // (c) re-read the compound manifest + resolve a sample shard ref by hash.
-    const mfRes = await client.send(new GetObjectCommand({ Bucket: bucket, Key: seal.compounds_manifest_key }));
-    const manifest = JSON.parse((await streamToBuffer(mfRes.Body)).toString('utf-8'));
-    if (!Array.isArray(manifest.shard_hashes) || manifest.shard_hashes.length === 0) {
-        throw new Error('[ACTIVATE] candidate compound manifest has no shards');
-    }
-    const sample = manifest.shard_hashes[0];
-    const shardKey = compoundsShardKey(objectPrefix, manifest.bucket ?? 0, sample.shard);
-    const shRes = await client.send(new GetObjectCommand({ Bucket: bucket, Key: shardKey }));
-    const shardBuf = await streamToBuffer(shRes.Body);
-    // (d) decode a sample shard header to prove it is a real NXVF container.
-    try { assertNxvfShard(shardBuf); }
-    catch (err) { throw new Error(`[ACTIVATE] candidate sample shard failed to decode: ${shardKey} (${err.message})`); }
+    // (b2) RK-15 full-snapshot completeness (AUTHORITATIVE, SSoT-based): every
+    // SSoT-required satellite must be present + reader-decodable at object_prefix,
+    // enforced INDEPENDENT of the seal's self-declared satellite_inventory AND the
+    // caller's satelliteKeys param (see candidate-satellite-inventory.js). So ANY
+    // caller — the V3 harness OR the real F4 orchestrator that passes NO
+    // satelliteKeys — gets completeness enforced (the V3-A incomplete-candidate bug).
+    await enforceCompleteSatelliteInventory({ client, bucket, objectPrefix, seal });
+    // (c)+(d) re-read the compound manifest, resolve a sample shard by hash, and
+    // decode its header to prove it is a real NXVF container.
+    await probeCompoundSampleShard({ client, bucket, objectPrefix, seal });
     return { state: PUBLISH_STATES.VALIDATED };
 }
 

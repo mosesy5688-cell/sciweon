@@ -21,6 +21,7 @@ import path from 'path';
 import os from 'os';
 import zlib from 'zlib';
 import { createHash } from 'crypto';
+import { SATELLITE_INVENTORY } from '../factory/lib/snapshot-inventory.js';
 
 // Deterministic, CRYPTOGRAPHICALLY-INCOMPRESSIBLE filler. The shard SPLIT
 // decision tracks the COMPRESSED on-disk size (ShardWriter zstd-compresses each
@@ -102,16 +103,28 @@ export async function buildFixture() {
     };
     const xrefGz = zlib.gzipSync(Buffer.from(JSON.stringify(xrefObj), 'utf-8'), { level: 9 });
 
+    // RK-15 full-snapshot completeness: validateCandidate now decode-probes EVERY
+    // SSoT-required SATELLITE serving file at the candidate prefix. The V2 publish
+    // path must therefore publish a reader-decodable gz for each (the real F4
+    // snapshot-builder does the equivalent). Deterministic stub content suffices —
+    // this harness asserts the identity/CAS contract, not satellite content parity.
+    const satelliteBytes = {};
+    for (const e of SATELLITE_INVENTORY) {
+        satelliteBytes[e.key_suffix] = zlib.gzipSync(
+            Buffer.from(JSON.stringify({ ok: true, file: e.snapshot_file }) + '\n', 'utf-8'), { level: 9 });
+    }
+
     return {
         dir,
         compoundsJsonl,
         negJsonl,
         searchProjectionBytes: searchGz,
         xrefIndexBytes: xrefGz,
+        satelliteBytes,
         // Classes the harness must observe in the published inventory.
         objectClasses: [
             'compounds_manifest', 'compounds_shards', 'neg_manifest', 'neg_shards',
-            'xref_index', 'search_projection', 'root_seal',
+            'xref_index', 'search_projection', 'satellites', 'root_seal',
         ],
     };
 }

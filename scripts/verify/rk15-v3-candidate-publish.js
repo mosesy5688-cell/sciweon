@@ -34,6 +34,7 @@ import { publishCompoundShards } from '../factory/lib/compound-shard-publisher.j
 import { publishNegShards } from '../factory/lib/neg-shard-publisher.js';
 import { buildAndSealCandidate, validateCandidate, swapV2Latest } from '../factory/lib/stage-4-activate.js';
 import { AGGREGATED_FILES } from '../factory/lib/aggregated-files.js';
+import { SATELLITE_INVENTORY } from '../factory/lib/snapshot-inventory.js';
 import { parseSnapshotContext } from '../../src/worker/lib/snapshot-context.ts';
 import {
     FIXED_SOURCE_PREFIX, getObject, headObject, sha256Hex, lineCount,
@@ -90,6 +91,28 @@ async function stageSourceOnDisk(buffers) {
 }
 
 /**
+ * RK-15 full-snapshot completeness: gzip + create-only PUT every SATELLITE_INVENTORY
+ * serving file (papers/trials/trial-links/bioactivities/target-index/compounds-
+ * enriched/neg-evidence whole-file) from the attested source buffers to the SAME
+ * `<prefix><fname>.gz` keys the real F4 snapshot-builder publishes. gzipSync(level:9)
+ * is byte-identical to the builder's createGzip(level:9). Returns the published keys.
+ */
+export async function publishSatelliteSnapshotFiles({ client, bucket, prefix, buffers }) {
+    const keys = [];
+    for (const entry of SATELLITE_INVENTORY) {
+        const src = buffers[entry.snapshot_file];
+        if (!src || src.length === 0) {
+            throw new Error(`[V3A SATELLITE] required serving source missing/empty: ${entry.snapshot_file} (surface: ${entry.surface})`);
+        }
+        const key = `${prefix}${entry.key_suffix}`;
+        const gz = zlib.gzipSync(src, { level: 9 });
+        await putCreateOnly(client, bucket, key, gz, 'application/gzip');
+        keys.push(key);
+    }
+    return keys;
+}
+
+/**
  * Build the candidate under the PRODUCTION prefix (create-only), seal LAST,
  * validate by its OWN keys, then write the candidate v2 pointer to the ISOLATED
  * _candidate_latest.json (NOT production latest). Returns the candidate evidence.
@@ -112,10 +135,17 @@ export async function buildCandidate({ client, bucket, identity, buffers }) {
     // 3) xref/routing + search/entity projection, create-only.
     await putCreateOnly(client, bucket, xrefIndexKey(prefix), staged.xrefIndexBytes, 'application/gzip');
     await putCreateOnly(client, bucket, searchProjectionKey(prefix), staged.searchProjectionBytes, 'application/gzip');
+    // 3b) FULL-SNAPSHOT COMPLETENESS (RK-15 fix): publish EVERY satellite serving
+    // file the readers require (papers/trials/trial-links/bioactivities/target-
+    // index/compounds-enriched/neg-evidence whole-file), gzipped + create-only to
+    // the SAME `<prefix><fname>.gz` keys a real F4 snapshot-builder publishes. The
+    // V3-A defect was these being OMITTED -> satellites 503/404 after cutover.
+    // Each is gzipped from the ATTESTED Run#1 source buffer (level 9 == builder).
+    const satelliteKeys = await publishSatelliteSnapshotFiles({ client, bucket, prefix, buffers });
     // 4) seal LAST (OBJECTS_COMPLETE) then validate by the candidate's OWN keys.
     const { manifestHash } = await buildAndSealCandidate({
         client, bucket, identity, compoundManifest: compound.manifest,
-        negManifestKey, hasXref: true, hasSearch: true,
+        negManifestKey, hasXref: true, hasSearch: true, satelliteKeys,
     });
     await validateCandidate({ client, bucket, identity, expectedHash: manifestHash });
 

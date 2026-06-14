@@ -18,6 +18,7 @@ import {
     deriveSnapshotId, objectPrefixFor, putCreateOnly,
     xrefIndexKey, searchProjectionKey, compoundsManifestKey,
 } from '../factory/lib/snapshot-identity.js';
+import { SATELLITE_INVENTORY, requiredSatelliteKeys } from '../factory/lib/snapshot-inventory.js';
 import { publishCompoundShards } from '../factory/lib/compound-shard-publisher.js';
 import { publishNegShards } from '../factory/lib/neg-shard-publisher.js';
 import { buildAndSealCandidate, validateCandidate, swapV2Latest, postSwapActiveProbe } from '../factory/lib/stage-4-activate.js';
@@ -60,10 +61,18 @@ export async function publishAndActivate({ client, bucket, identity, fixture, la
     await putCreateOnly(client, bucket, xrefIndexKey(prefix), fixture.xrefIndexBytes, 'application/gzip');
     await putCreateOnly(client, bucket, searchProjectionKey(prefix), fixture.searchProjectionBytes, 'application/gzip');
 
+    // 3b) RK-15 full-snapshot completeness: publish EVERY SSoT satellite serving
+    // file (the real F4 snapshot-builder does the same) so the now-SSoT-based
+    // validateCandidate finds them. Create-only under the isolated prefix.
+    for (const e of SATELLITE_INVENTORY) {
+        await putCreateOnly(client, bucket, `${prefix}${e.key_suffix}`, fixture.satelliteBytes[e.key_suffix], 'application/gzip');
+    }
+    const satelliteKeys = requiredSatelliteKeys(prefix);
+
     // 4) seal LAST (OBJECTS_COMPLETE) then validate by candidate's OWN keys.
     const { manifestHash } = await buildAndSealCandidate({
         client, bucket, identity, compoundManifest: compound.manifest,
-        negManifestKey, hasXref: true, hasSearch: true,
+        negManifestKey, hasXref: true, hasSearch: true, satelliteKeys,
     });
     await validateCandidate({ client, bucket, identity, expectedHash: manifestHash });
 
