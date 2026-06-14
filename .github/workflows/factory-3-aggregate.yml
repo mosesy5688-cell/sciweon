@@ -25,6 +25,13 @@ on:
         options:
           - 'false'
           - 'true'
+      faers_max_records:
+        description: >-
+          P-8R1 ONLY: cap the FAERS backfill to N records (positive integer);
+          requires backfill_only=true; empty = unbounded (normal).
+        required: false
+        type: string
+        default: ''
 
 concurrency:
   group: factory-pipeline
@@ -83,6 +90,34 @@ jobs:
         # compliant native-binary architecture as PR-OT-3a hotfix; avoids
         # zstd-codec WASM OOM at ~16MB inputs).
         run: sudo apt-get update -qq && sudo apt-get install -y -qq zstd && zstd --version
+      # P-8R1 cap-input guard: resolve the OPTIONAL faers_max_records dispatch
+      # input into FAERS_BACKFILL_MAX_RECORDS via the single validation
+      # chokepoint (lib/faers-cap-input.js). FAIL-LOUD (exit 1) on any contract
+      # violation (cap without backfill_only=true, non-positive-integer, etc.).
+      # Exports the env to $GITHUB_ENV ONLY when the helper returns non-null;
+      # the AUTO workflow_run cascade and an empty input leave the env UNSET ->
+      # the drain's parseMaxRecordsEnv sees nothing -> UNBOUNDED (normal F3).
+      - name: Resolve FAERS backfill record cap (P-8R1)
+        env:
+          GH_EVENT_NAME: ${{ github.event_name }}
+          BACKFILL_ONLY: ${{ github.event.inputs.backfill_only || 'false' }}
+          FAERS_MAX_RECORDS_INPUT: ${{ github.event.inputs.faers_max_records || '' }}
+        run: |
+          node --input-type=module -e '
+            import { resolveFaersMaxRecords } from "./scripts/factory/lib/faers-cap-input.js";
+            import { appendFileSync } from "node:fs";
+            const value = resolveFaersMaxRecords({
+              eventName: process.env.GH_EVENT_NAME,
+              backfillOnly: process.env.BACKFILL_ONLY,
+              faersMaxRecords: process.env.FAERS_MAX_RECORDS_INPUT,
+            });
+            if (value == null) {
+              console.log("FAERS_BACKFILL_MAX_RECORDS: unset (unbounded / normal F3 path)");
+            } else {
+              appendFileSync(process.env.GITHUB_ENV, `FAERS_BACKFILL_MAX_RECORDS=${value}\n`);
+              console.log(`FAERS_BACKFILL_MAX_RECORDS=${value} (P-8R1 bounded backfill)`);
+            }
+          '
       - name: Run stage 3
         env:
           # WO_F3 backfill_only: skip the S2/OpenAlex/trial linkers + re-enrich
