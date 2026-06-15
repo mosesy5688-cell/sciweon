@@ -2,20 +2,26 @@
  * RK-16C FULL-CORPUS SUPPLEMENTAL SPIKE (E) — runner entrypoint.
  *
  * Re-validates page-size + partition selection at production scale. BUILD-ONLY:
- * by DEFAULT (`--dry-run`) it performs NO network read — it prints the EXACT
- * proposed production object keys + estimated request count + total bytes from
- * the pinned corpus identity, then runs the FULL 12-cell matrix (128/256/512/
- * 1024 x P0/P1/P2) against a FIXTURE (local 2026-05-13 corpus if present, else a
+ * by DEFAULT it performs NO network read — it prints the EXACT proposed
+ * production object keys + estimated request count + total bytes from the pinned
+ * corpus identity, then runs the FULL 12-cell matrix (128/256/512/1024 x
+ * P0/P1/P2) against a FIXTURE (local 2026-05-13 corpus if present, else a
  * synthetic fixture, LABELED) and judges every cell with the pre-registered
  * rubric. It does NOT fetch the 475k corpus, register a family, or write R2.
  *
  *   DRY-RUN (default):  node scripts/spikes/rk16c/run-fullcorpus.mjs
  *   CLEANUP:            node scripts/spikes/rk16c/run-fullcorpus.mjs --cleanup
  *
- * FUTURE FOUNDER-GATED two-stage commands (NOT exercised in the BUILD phase;
- * the runner refuses them here by design — no optional integrity, no [brackets]):
+ * CONTROL FLOW: parseArgs -> selectAction(args) (pure state matrix) -> dispatch.
+ *   - no flags            -> BUILD fixture matrix (zero network)
+ *   - --preflight only    -> dry-run plan only (zero network, NO matrix)
+ *   - --preflight --execute (with the exact --manifest-key for --snapshot)
+ *                         -> metadata-only preflightManifest via runPreflight()
+ *   - generic --execute   -> REFUSED before any client (the full-run/payload path
+ *                            is CLI-UNREACHABLE; only --preflight --execute runs).
+ * The full-run adapter symbol is NOT imported in this runner by design.
+ *
  *   PREFLIGHT (metadata-only): node scripts/spikes/rk16c/run-fullcorpus.mjs --preflight --execute --snapshot 2026-06-14/27502029137-1 --manifest-key snapshots/2026-06-14/27502029137-1/_snapshot.manifest.json
- *   FULL RUN:                  node scripts/spikes/rk16c/run-fullcorpus.mjs --execute --lock scripts/spikes/rk16c/RK16C_FULLCORPUS_LOCK.json
  */
 
 import fs from 'fs';
@@ -24,6 +30,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { computeDryRunPlan, cleanup } from './lib/r2-readonly-adapter.mjs';
 import { CANDIDATE_SNAPSHOT_ID, EXPECTED_ROW_COUNT } from './lib/corpus-identity.mjs';
+import { selectAction, runPreflight } from './lib/preflight-control.mjs';
 import { resolveFixture } from './lib/fixture-source.mjs';
 import { buildCell, RECORD_TARGETS, PARTITION_POLICIES } from './lib/fullcorpus-cells.mjs';
 import { PARTITION_STRATEGIES } from './lib/policy.mjs';
@@ -69,28 +76,40 @@ export async function runMatrix(proj, outputDir) {
 
 async function main() {
     const args = parseArgs(process.argv);
-    if (args.cleanup) {
+    const { action, reason } = selectAction(args);
+
+    if (action === 'cleanup') {
         const r = cleanup(args.snapshot);
         console.log('[rk16c-fullcorpus] cleanup:', JSON.stringify(r));
         return;
     }
 
-    // (H) DRY-RUN plan — NO network. Always computed + printed.
+    if (action === 'execute-refused' || action === 'fail-closed') {
+        // Construct NO client; the full-run/payload path is never invoked here.
+        console.error(`\n[rk16c-fullcorpus] REFUSED (${action}): ${reason}`);
+        console.error('[rk16c-fullcorpus] The full-run/payload path is CLI-UNREACHABLE from this runner; only `--preflight --execute --manifest-key <exact key>` is permitted (metadata-only).');
+        process.exit(2);
+        return;
+    }
+
+    if (action === 'preflight-execute') {
+        await runPreflight(args); // REAL deps built lazily; reaches preflightManifest only.
+        return;
+    }
+
+    // 'dry-run-matrix' and 'preflight-plan' both compute + print the dry-run plan.
     const dryRun = computeDryRunPlan({
         snapshot: args.snapshot, expectedRows: args.expectedRows, buildCommit: codeSha(),
     });
     console.log('\n===== RK-16C FULL-CORPUS DRY-RUN PLAN (NO NETWORK) =====');
     console.log(JSON.stringify(dryRun, null, 2));
 
-    if (args.execute) {
-        const stage = args.preflight ? 'PREFLIGHT (metadata-only)' : 'FULL RUN (lock-gated)';
-        console.log(`\n[rk16c-fullcorpus] --execute ${stage} is FOUNDER-GATED and NOT exercised in the BUILD phase. Refusing here.`);
-        console.log('Stage 1 PREFLIGHT: preflightManifest(); Stage 2 FULL RUN: executeFullRun() (loads + require()s a complete lock BEFORE any network).');
-        console.log('See scripts/spikes/rk16c/lib/r2-readonly-adapter.mjs — invoked only under explicit founder authorization.');
+    if (action === 'preflight-plan') {
+        console.log('\n[rk16c-fullcorpus] --preflight (no --execute): dry-run plan only — NO matrix, NO network, NO candidate lock.');
         return;
     }
 
-    // BUILD phase: fixture matrix + real-degree + rubric (NO 475k fetch).
+    // 'dry-run-matrix': fixture matrix + real-degree + rubric (NO 475k fetch).
     const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rk16c-fc-'));
     const env = startEnvelope({
         rubricVersion: RUBRIC_VERSION, corpusIdentity: dryRun.identity_envelope,
