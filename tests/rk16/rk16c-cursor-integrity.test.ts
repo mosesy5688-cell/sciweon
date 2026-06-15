@@ -6,7 +6,7 @@
  * producer-tuple. OFFLINE/FIXTURE, unsigned/base64url/untrusted.
  */
 import { describe, it, expect } from 'vitest';
-import { loadCorpus } from '../../scripts/spikes/rk16c/lib/corpus.mjs';
+import { loadCorpus, corpusExists } from '../../scripts/spikes/rk16c/lib/corpus.mjs';
 import { buildCanonical, projectRows } from '../../scripts/spikes/rk16c/lib/build-axis.mjs';
 import {
     attestReferentialIntegrity, assertCleanReferentialIntegrity,
@@ -17,7 +17,10 @@ import {
     InvalidCursorError, FilterMismatchError, StaleCursorError,
 } from '../../src/worker/lib/rk16/cursor';
 
-const corpus = loadCorpus();
+// Corpus-grounded specs skip when the local corpus is absent (CI: snapshots/ is
+// gitignored). The synthetic cursor + WASM-guard specs below run everywhere.
+const hasCorpus = corpusExists();
+const corpus = hasCorpus ? loadCorpus() : { rows: [] };
 const sample = corpus.rows.slice(0, 600);
 
 function payload(over = {}) {
@@ -67,7 +70,7 @@ describe('rk16c cursor typed errors + advance', () => {
     });
 });
 
-describe('rk16c exhaustive referential integrity (clean)', () => {
+describe.skipIf(!hasCorpus)('rk16c exhaustive referential integrity (clean)', () => {
     it('every projection row resolves; dangling=0, mismatch=0', async () => {
         const { canon, byCanonicalId } = await buildCanonical(sample, undefined);
         const proj = projectRows(sample, byCanonicalId);
@@ -90,13 +93,16 @@ describe('rk16c exhaustive referential integrity (clean)', () => {
     });
 });
 
-describe('rk16c determinism + WASM activatable=false', () => {
+describe.skipIf(!hasCorpus)('rk16c determinism (corpus-grounded)', () => {
     it('same input -> byte-identical canonical shard + sha256', async () => {
         const a = await buildCanonical(sample, undefined, 'canon/d.bin');
         const b = await buildCanonical(sample, undefined, 'canon/d.bin');
         expect(Buffer.compare(a.canon.shard_bytes, b.canon.shard_bytes)).toBe(0);
         expect(a.canon.shard_hashes[0]).toBe(b.canon.shard_hashes[0]);
     });
+});
+
+describe('rk16c WASM activatable guard (synthetic)', () => {
     it('a WASM-fallback artifact is NOT activatable (assertActivatableCodec throws)', () => {
         expect(() => assertActivatableCodec(buildProducerTuple('wasm'))).toThrow(/NOT-ACTIVATABLE/);
         // only rust-ffi is activatable

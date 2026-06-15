@@ -19,6 +19,13 @@ export const REPO_ROOT = path.resolve(HERE, '..', '..', '..', '..');
 
 export const CORPUS_REL_PATH = 'snapshots/2026-05-13/bioactivities.jsonl.gz';
 
+/** True iff the LOCAL corpus file is present. It is absent in CI (snapshots/ is
+ * gitignored), so corpus-grounded tests skip there -- the offline spike uses an
+ * EXISTING LOCAL copy, never CI/production. */
+export function corpusExists() {
+    return fs.existsSync(path.join(REPO_ROOT, CORPUS_REL_PATH));
+}
+
 /** sha256 (hex) of a buffer. */
 function sha256(buf) {
     return createHash('sha256').update(buf).digest('hex');

@@ -5,7 +5,7 @@
  * rk16c FamilyPolicy. NO family registered, NO production access.
  */
 import { describe, it, expect } from 'vitest';
-import { loadCorpus } from '../../scripts/spikes/rk16c/lib/corpus.mjs';
+import { loadCorpus, corpusExists } from '../../scripts/spikes/rk16c/lib/corpus.mjs';
 import {
     rk16cFamilyPolicy, compoundAxisKey, targetAxisKey, uniprotAliasKey, canonicalId,
 } from '../../scripts/spikes/rk16c/lib/policy.mjs';
@@ -13,10 +13,13 @@ import { buildCanonical, projectRows, groupByKey } from '../../scripts/spikes/rk
 import { writeProjectionPages } from '../../scripts/factory/lib/rk16/projection-page-writer.js';
 import { PARSED_HEAP_CEILING } from '../../scripts/spikes/rk16c/lib/param-matrix.mjs';
 
-const corpus = loadCorpus();
+// CORPUS-GROUNDED: skip cleanly when the local corpus is absent (e.g. CI, where
+// snapshots/ is gitignored). The synthetic heavy-hitter spec covers CI.
+const hasCorpus = corpusExists();
+const corpus = hasCorpus ? loadCorpus() : { rows: [] };
 const sample = corpus.rows.slice(0, 800); // bounded subset keeps the test fast
 
-describe('rk16c canonical authority', () => {
+describe.skipIf(!hasCorpus)('rk16c canonical authority', () => {
     it('1 record = 1 NXVF entity, stored once; key = the row id', async () => {
         const { canon } = await buildCanonical(sample, undefined, 'canon/shard-000.bin');
         expect(canon.entity_count).toBe(sample.length);
@@ -31,7 +34,7 @@ describe('rk16c canonical authority', () => {
     });
 });
 
-describe('rk16c two materialized axes', () => {
+describe.skipIf(!hasCorpus)('rk16c two materialized axes', () => {
     it('compound + target axes; uniprot is an alias, NOT the authority', async () => {
         const { byCanonicalId } = await buildCanonical(sample, undefined);
         const proj = projectRows(sample, byCanonicalId);
@@ -52,7 +55,7 @@ describe('rk16c two materialized axes', () => {
     });
 });
 
-describe('rk16c projection == project(canonical, policy)', () => {
+describe.skipIf(!hasCorpus)('rk16c projection == project(canonical, policy)', () => {
     it('projection rows carry the required base fields and are a pure function', async () => {
         const { byCanonicalId } = await buildCanonical(sample, undefined);
         for (const r of sample.slice(0, 200)) {
@@ -70,7 +73,7 @@ describe('rk16c projection == project(canonical, policy)', () => {
     });
 });
 
-describe('rk16c page writer seals on the FIRST of three ceilings', () => {
+describe.skipIf(!hasCorpus)('rk16c page writer seals on the FIRST of three ceilings', () => {
     async function rows(n) {
         const { byCanonicalId } = await buildCanonical(sample.slice(0, n), undefined);
         return projectRows(sample.slice(0, n), byCanonicalId);
