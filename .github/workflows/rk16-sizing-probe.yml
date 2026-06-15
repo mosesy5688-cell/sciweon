@@ -1,0 +1,67 @@
+name: RK-16 Read-Only Sizing Probe
+
+# RK-16 -- STRICTLY READ-ONLY R2 SIZING PROBE (build-only; founder-triggered).
+#
+# Binds the production snapshot (reads snapshots/latest.json EXACTLY ONCE,
+# parses it with the reader's OWN parseSnapshotContext, and asserts
+# snapshot_id === expected_snapshot_id -> HARD FAIL on drift), then STREAMS the
+# served gz families (papers / paper-links / bioactivities / trials / trial-
+# links / neg-evidence) under the pinned IMMUTABLE object_prefix to compute the
+# sizing report (papers / bioactivities / repurposing_inputs / sizing). It
+# NEVER writes R2 / builds shards / changes latest / modifies the reader/F4:
+# every R2 call routes through the read-only guard that REFUSES any non-read
+# command (Put / Delete / Copy / Multipart -> HARD FAIL; put_count /
+# delete_count / write_attempt_count MUST all be 0 for a pass). Streaming
+# gunzip never buffers a whole object. All `sizing` values are labeled
+# ESTIMATES (inputs for a future real spike), not measured shard bytes.
+#
+# FOUNDER-TRIGGERED ONLY: workflow_dispatch (no push / no schedule /
+# no workflow_run -- it cannot be reached from F1/F3). It dispatches NOTHING
+# and modifies NOTHING; it only reads + uploads the evidence JSON artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_snapshot_id:
+        description: 'EXPECTED production latest snapshot_id (hard-fail on drift)'
+        required: false
+        default: '2026-06-14/27502029137-1'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  rk16-sizing-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      EXPECTED_SNAPSHOT_ID: ${{ inputs.expected_snapshot_id }}
+      RK16_OUTPUT_DIR: output
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+      - name: Run RK-16 read-only sizing probe (STRICT READ-ONLY)
+        run: node scripts/verify/rk16-sizing-probe.js
+      - name: Upload RK-16 sizing evidence artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rk16-sizing-evidence
+          path: output/rk16-sizing-evidence.json
+          retention-days: 90
+          if-no-files-found: warn
