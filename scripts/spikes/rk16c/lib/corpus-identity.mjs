@@ -20,8 +20,12 @@ export const PROJECTION_SCHEMA_VERSION = 'rk16c-bioactivity-proj-v1';
 export function bioactivitiesObjectKey(snapshotId = CANDIDATE_SNAPSHOT_ID) {
     return `snapshots/${snapshotId}/bioactivities.jsonl.gz`;
 }
-/** The production latest pointer (identity verification only — never followed). */
-export const LATEST_POINTER_KEY = 'snapshots/latest.json';
+/**
+ * FORBIDDEN: the mutable production latest alias. M1 removes it from EVERY read
+ * path. It is exported ONLY so guards/tests can assert it is NEVER requested,
+ * NEVER in the allowlist, and NEVER in consumed_object_keys. It is not read.
+ */
+export const FORBIDDEN_LATEST_ALIAS_KEY = 'snapshots/latest.json';
 /** The snapshot root seal (manifest identity verification). */
 export function manifestObjectKey(snapshotId = CANDIDATE_SNAPSHOT_ID) {
     return `snapshots/${snapshotId}/_snapshot.manifest.json`;
@@ -29,13 +33,14 @@ export function manifestObjectKey(snapshotId = CANDIDATE_SNAPSHOT_ID) {
 
 /**
  * The EXACT, exhaustive object allowlist for a corpus identity read. Anything
- * not in this set must NEVER be requested. Order is the read order.
+ * not in this set must NEVER be requested. Order is the read order. M1: the
+ * production read set is ONLY the two exact snapshot-namespace keys — the
+ * mutable `snapshots/latest.json` alias appears in NO read path.
  */
 export function consumedObjectKeys(snapshotId = CANDIDATE_SNAPSHOT_ID) {
     return [
-        LATEST_POINTER_KEY,            // identity reconciliation (not followed)
         manifestObjectKey(snapshotId), // manifest / seal for hash verification
-        bioactivitiesObjectKey(snapshotId), // the full corpus satellite
+        bioactivitiesObjectKey(snapshotId), // the full corpus satellite (payload)
     ];
 }
 
@@ -111,8 +116,10 @@ export function validateIdentity(actual, pinned) {
 }
 
 /**
- * Reconcile a parsed latest.json context against the pin WITHOUT following it.
- * If latest != pin we FAIL — we never re-target to whatever latest points at.
+ * Reconcile an EXTERNALLY-SUPPLIED latest snapshot id against the pin WITHOUT
+ * reading or following it. M1: the spike NEVER fetches snapshots/latest.json —
+ * this helper only compares a value the caller already holds; it never re-targets
+ * to whatever latest points at and triggers no network read.
  */
 export function reconcileLatestVsPin(latestSnapshotId, pinnedSnapshotId) {
     return {

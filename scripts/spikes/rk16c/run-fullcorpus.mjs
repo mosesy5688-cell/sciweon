@@ -11,10 +11,11 @@
  *
  *   DRY-RUN (default):  node scripts/spikes/rk16c/run-fullcorpus.mjs
  *   CLEANUP:            node scripts/spikes/rk16c/run-fullcorpus.mjs --cleanup
- *   READ-ONLY RUN GATE (future, founder-gated):
- *     node scripts/spikes/rk16c/run-fullcorpus.mjs --execute \
- *       --snapshot 2026-06-14/27502029137-1 --expected-rows 475112 \
- *       --expected-sha256 <pinned>
+ *
+ * FUTURE FOUNDER-GATED two-stage commands (NOT exercised in the BUILD phase;
+ * the runner refuses them here by design — no optional integrity, no [brackets]):
+ *   PREFLIGHT (metadata-only): node scripts/spikes/rk16c/run-fullcorpus.mjs --preflight --execute --snapshot 2026-06-14/27502029137-1 --manifest-key snapshots/2026-06-14/27502029137-1/_snapshot.manifest.json
+ *   FULL RUN:                  node scripts/spikes/rk16c/run-fullcorpus.mjs --execute --lock scripts/spikes/rk16c/RK16C_FULLCORPUS_LOCK.json
  */
 
 import fs from 'fs';
@@ -35,15 +36,17 @@ const RESULTS_DIR = path.join(HERE, 'results');
 const SNAPSHOT_IDENTITY = `${CANDIDATE_SNAPSHOT_ID} (fixture-mode label)`;
 
 function parseArgs(argv) {
-    const a = { dryRun: true, execute: false, cleanup: false, snapshot: CANDIDATE_SNAPSHOT_ID, expectedRows: EXPECTED_ROW_COUNT };
+    const a = { dryRun: true, execute: false, preflight: false, cleanup: false, snapshot: CANDIDATE_SNAPSHOT_ID, expectedRows: EXPECTED_ROW_COUNT };
     for (let i = 2; i < argv.length; i++) {
         const t = argv[i];
         if (t === '--execute') { a.execute = true; a.dryRun = false; }
+        else if (t === '--preflight') a.preflight = true;
         else if (t === '--dry-run') a.dryRun = true;
         else if (t === '--cleanup') a.cleanup = true;
         else if (t === '--snapshot') a.snapshot = argv[++i];
+        else if (t === '--manifest-key') a.manifestKey = argv[++i];
+        else if (t === '--lock') a.lockPath = argv[++i];
         else if (t === '--expected-rows') a.expectedRows = Number(argv[++i]);
-        else if (t === '--expected-sha256') a.expectedSha256 = argv[++i];
     }
     return a;
 }
@@ -80,9 +83,10 @@ async function main() {
     console.log(JSON.stringify(dryRun, null, 2));
 
     if (args.execute) {
-        console.log('\n[rk16c-fullcorpus] --execute is the future READ-ONLY RUN GATE.');
-        console.log('It is FOUNDER-GATED and NOT exercised in the BUILD phase. Refusing here.');
-        console.log('Use scripts/spikes/rk16c/lib/r2-readonly-adapter.mjs executeRead() under explicit founder authorization.');
+        const stage = args.preflight ? 'PREFLIGHT (metadata-only)' : 'FULL RUN (lock-gated)';
+        console.log(`\n[rk16c-fullcorpus] --execute ${stage} is FOUNDER-GATED and NOT exercised in the BUILD phase. Refusing here.`);
+        console.log('Stage 1 PREFLIGHT: preflightManifest(); Stage 2 FULL RUN: executeFullRun() (loads + require()s a complete lock BEFORE any network).');
+        console.log('See scripts/spikes/rk16c/lib/r2-readonly-adapter.mjs — invoked only under explicit founder authorization.');
         return;
     }
 

@@ -1,29 +1,32 @@
 {
   "phase": "BUILD",
   "mode": "dry-run",
-  "generated_at": "2026-06-15T10:52:59.002Z",
+  "generated_at": "2026-06-15T12:13:29.493Z",
   "dry_run_plan": {
     "mode": "dry-run",
     "snapshot_id": "2026-06-14/27502029137-1",
     "expected_row_count": 475112,
     "proposed_object_keys": [
-      "snapshots/latest.json",
       "snapshots/2026-06-14/27502029137-1/_snapshot.manifest.json",
       "snapshots/2026-06-14/27502029137-1/bioactivities.jsonl.gz"
     ],
     "allowlist": [
-      "snapshots/latest.json",
       "snapshots/2026-06-14/27502029137-1/_snapshot.manifest.json",
       "snapshots/2026-06-14/27502029137-1/bioactivities.jsonl.gz"
     ],
-    "estimated_request_count": 6,
-    "estimated_total_bytes": 62988288,
+    "forbidden_keys": [
+      "snapshots/latest.json"
+    ],
+    "estimated_request_count": 4,
+    "estimated_object_count": 2,
+    "estimated_total_bytes": 62980096,
     "hard_caps": {
-      "max_requests": 12,
-      "max_total_bytes": 1610612736
+      "max_requests": 8,
+      "max_objects": 2,
+      "max_total_bytes": 1610612736,
+      "max_manifest_bytes": 2097152
     },
     "per_object_byte_estimates": {
-      "snapshots/latest.json": 8192,
       "snapshots/2026-06-14/27502029137-1/_snapshot.manifest.json": 65536,
       "snapshots/2026-06-14/27502029137-1/bioactivities.jsonl.gz": 62914560
     },
@@ -32,7 +35,6 @@
       "snapshot_production_run_id": "27502029137-1",
       "manifest_object_key": "snapshots/2026-06-14/27502029137-1/_snapshot.manifest.json",
       "consumed_object_keys": [
-        "snapshots/latest.json",
         "snapshots/2026-06-14/27502029137-1/_snapshot.manifest.json",
         "snapshots/2026-06-14/27502029137-1/bioactivities.jsonl.gz"
       ],
@@ -42,7 +44,7 @@
       "schema_version": "rk16c-bioactivity-proj-v1",
       "expected_row_count": 475112,
       "observed_row_count": null,
-      "build_commit": "55d8f8ce5f00df0502d7b667bae426b28f29e171",
+      "build_commit": "abf2a3118dc80e8a730e0b94d2c038b55bbf7681",
       "local_materialization_path": null,
       "materialization_timestamp": null,
       "verification_status": "EXPECTED_ONLY"
@@ -95,7 +97,7 @@
         "total_logical_reads": 85,
         "total_physical_reads": 5,
         "bytes_read": 863734,
-        "wall_clock_ms": 7779,
+        "wall_clock_ms": 7648,
         "bounded_failures": 0,
         "over_heap_ceiling": false,
         "over_read_budget": false
@@ -139,7 +141,7 @@
         "total_logical_reads": 44,
         "total_physical_reads": 4,
         "bytes_read": 566240,
-        "wall_clock_ms": 6783,
+        "wall_clock_ms": 6655,
         "bounded_failures": 0,
         "over_heap_ceiling": false,
         "over_read_budget": false
@@ -183,7 +185,7 @@
         "total_logical_reads": 40,
         "total_physical_reads": 4,
         "bytes_read": 511347,
-        "wall_clock_ms": 6262,
+        "wall_clock_ms": 5765,
         "bounded_failures": 0,
         "over_heap_ceiling": false,
         "over_read_budget": false
@@ -227,7 +229,7 @@
         "total_logical_reads": 36,
         "total_physical_reads": 4,
         "bytes_read": 951738,
-        "wall_clock_ms": 15976,
+        "wall_clock_ms": 14937,
         "bounded_failures": 0,
         "over_heap_ceiling": false,
         "over_read_budget": false
@@ -271,7 +273,7 @@
         "total_logical_reads": 24,
         "total_physical_reads": 4,
         "bytes_read": 624326,
-        "wall_clock_ms": 12511,
+        "wall_clock_ms": 11989,
         "bounded_failures": 0,
         "over_heap_ceiling": false,
         "over_read_budget": false
@@ -315,7 +317,7 @@
         "total_logical_reads": 20,
         "total_physical_reads": 4,
         "bytes_read": 564049,
-        "wall_clock_ms": 11837,
+        "wall_clock_ms": 11586,
         "bounded_failures": 0,
         "over_heap_ceiling": false,
         "over_read_budget": false
@@ -359,7 +361,7 @@
         "total_logical_reads": 20,
         "total_physical_reads": 4,
         "bytes_read": 875170,
-        "wall_clock_ms": 29047,
+        "wall_clock_ms": 30007,
         "bounded_failures": 0,
         "over_heap_ceiling": false,
         "over_read_budget": false
@@ -403,7 +405,7 @@
         "total_logical_reads": 12,
         "total_physical_reads": 4,
         "bytes_read": 577996,
-        "wall_clock_ms": 22756,
+        "wall_clock_ms": 24139,
         "bounded_failures": 0,
         "over_heap_ceiling": false,
         "over_read_budget": false
@@ -447,7 +449,7 @@
         "total_logical_reads": 12,
         "total_physical_reads": 4,
         "bytes_read": 519265,
-        "wall_clock_ms": 20694,
+        "wall_clock_ms": 21800,
         "bounded_failures": 0,
         "over_heap_ceiling": false,
         "over_read_budget": false
@@ -491,7 +493,7 @@
         "total_logical_reads": 12,
         "total_physical_reads": 4,
         "bytes_read": 885954,
-        "wall_clock_ms": 59027,
+        "wall_clock_ms": 64139,
         "bounded_failures": 0,
         "over_heap_ceiling": false,
         "over_read_budget": false
@@ -535,7 +537,7 @@
         "total_logical_reads": 8,
         "total_physical_reads": 4,
         "bytes_read": 585208,
-        "wall_clock_ms": 46270,
+        "wall_clock_ms": 51960,
         "bounded_failures": 0,
         "over_heap_ceiling": false,
         "over_read_budget": false
@@ -579,7 +581,7 @@
         "total_logical_reads": 8,
         "total_physical_reads": 4,
         "bytes_read": 526039,
-        "wall_clock_ms": 42474,
+        "wall_clock_ms": 44997,
         "bounded_failures": 0,
         "over_heap_ceiling": false,
         "over_read_budget": false
@@ -736,7 +738,7 @@
           "total_logical_reads": 85,
           "total_physical_reads": 5,
           "bytes_read": 863734,
-          "wall_clock_ms": 7779,
+          "wall_clock_ms": 7648,
           "bounded_failures": 0,
           "over_heap_ceiling": false,
           "over_read_budget": false
@@ -784,7 +786,7 @@
           "total_logical_reads": 44,
           "total_physical_reads": 4,
           "bytes_read": 566240,
-          "wall_clock_ms": 6783,
+          "wall_clock_ms": 6655,
           "bounded_failures": 0,
           "over_heap_ceiling": false,
           "over_read_budget": false
@@ -832,7 +834,7 @@
           "total_logical_reads": 40,
           "total_physical_reads": 4,
           "bytes_read": 511347,
-          "wall_clock_ms": 6262,
+          "wall_clock_ms": 5765,
           "bounded_failures": 0,
           "over_heap_ceiling": false,
           "over_read_budget": false
@@ -880,7 +882,7 @@
           "total_logical_reads": 36,
           "total_physical_reads": 4,
           "bytes_read": 951738,
-          "wall_clock_ms": 15976,
+          "wall_clock_ms": 14937,
           "bounded_failures": 0,
           "over_heap_ceiling": false,
           "over_read_budget": false
@@ -928,7 +930,7 @@
           "total_logical_reads": 24,
           "total_physical_reads": 4,
           "bytes_read": 624326,
-          "wall_clock_ms": 12511,
+          "wall_clock_ms": 11989,
           "bounded_failures": 0,
           "over_heap_ceiling": false,
           "over_read_budget": false
@@ -976,7 +978,7 @@
           "total_logical_reads": 20,
           "total_physical_reads": 4,
           "bytes_read": 564049,
-          "wall_clock_ms": 11837,
+          "wall_clock_ms": 11586,
           "bounded_failures": 0,
           "over_heap_ceiling": false,
           "over_read_budget": false
@@ -1024,7 +1026,7 @@
           "total_logical_reads": 20,
           "total_physical_reads": 4,
           "bytes_read": 875170,
-          "wall_clock_ms": 29047,
+          "wall_clock_ms": 30007,
           "bounded_failures": 0,
           "over_heap_ceiling": false,
           "over_read_budget": false
@@ -1072,7 +1074,7 @@
           "total_logical_reads": 12,
           "total_physical_reads": 4,
           "bytes_read": 577996,
-          "wall_clock_ms": 22756,
+          "wall_clock_ms": 24139,
           "bounded_failures": 0,
           "over_heap_ceiling": false,
           "over_read_budget": false
@@ -1120,7 +1122,7 @@
           "total_logical_reads": 12,
           "total_physical_reads": 4,
           "bytes_read": 519265,
-          "wall_clock_ms": 20694,
+          "wall_clock_ms": 21800,
           "bounded_failures": 0,
           "over_heap_ceiling": false,
           "over_read_budget": false
@@ -1168,7 +1170,7 @@
           "total_logical_reads": 12,
           "total_physical_reads": 4,
           "bytes_read": 885954,
-          "wall_clock_ms": 59027,
+          "wall_clock_ms": 64139,
           "bounded_failures": 0,
           "over_heap_ceiling": false,
           "over_read_budget": false
@@ -1216,7 +1218,7 @@
           "total_logical_reads": 8,
           "total_physical_reads": 4,
           "bytes_read": 585208,
-          "wall_clock_ms": 46270,
+          "wall_clock_ms": 51960,
           "bounded_failures": 0,
           "over_heap_ceiling": false,
           "over_read_budget": false
@@ -1264,7 +1266,7 @@
           "total_logical_reads": 8,
           "total_physical_reads": 4,
           "bytes_read": 526039,
-          "wall_clock_ms": 42474,
+          "wall_clock_ms": 44997,
           "bounded_failures": 0,
           "over_heap_ceiling": false,
           "over_read_budget": false
@@ -1279,7 +1281,7 @@
   "reproducibility_envelope": {
     "rubric_version": "rk16c-fullcorpus-rubric-v1",
     "command_line": "C:\\nvm4w\\nodejs\\node.exe G:\\sciweon\\scripts\\spikes\\rk16c\\run-fullcorpus.mjs",
-    "code_sha": "55d8f8ce5f00df0502d7b667bae426b28f29e171",
+    "code_sha": "abf2a3118dc80e8a730e0b94d2c038b55bbf7681",
     "runtime": {
       "node_version": "v24.14.0",
       "platform": "win32",
@@ -1292,7 +1294,6 @@
       "snapshot_production_run_id": "27502029137-1",
       "manifest_object_key": "snapshots/2026-06-14/27502029137-1/_snapshot.manifest.json",
       "consumed_object_keys": [
-        "snapshots/latest.json",
         "snapshots/2026-06-14/27502029137-1/_snapshot.manifest.json",
         "snapshots/2026-06-14/27502029137-1/bioactivities.jsonl.gz"
       ],
@@ -1302,7 +1303,7 @@
       "schema_version": "rk16c-bioactivity-proj-v1",
       "expected_row_count": 475112,
       "observed_row_count": null,
-      "build_commit": "55d8f8ce5f00df0502d7b667bae426b28f29e171",
+      "build_commit": "abf2a3118dc80e8a730e0b94d2c038b55bbf7681",
       "local_materialization_path": null,
       "materialization_timestamp": null,
       "verification_status": "EXPECTED_ONLY"
@@ -1321,9 +1322,9 @@
       ]
     },
     "partition_policy": "P0/P1/P2",
-    "run_started_at": "2026-06-15T10:48:16.350Z",
-    "run_ended_at": "2026-06-15T10:52:59.002Z",
-    "peak_heap_bytes": 44016240,
+    "run_started_at": "2026-06-15T12:08:32.607Z",
+    "run_ended_at": "2026-06-15T12:13:29.493Z",
+    "peak_heap_bytes": 37763872,
     "temp_disk_bytes": 5538153,
     "output_hashes": {
       "cell_count": 12

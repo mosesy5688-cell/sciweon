@@ -10,6 +10,12 @@ This spike MAY eliminate / propose / tighten. It may NOT raise any section-17
 hard cap, lock production config, or authorize family implementation. A
 "candidate" here is a CANDIDATE, never a ratified production decision.
 
+> Corrected read set (M1): a production-scale read consumes EXACTLY the two
+> snapshot-namespace keys — `snapshots/<id>/_snapshot.manifest.json` and
+> `snapshots/<id>/bioactivities.jsonl.gz`. The mutable `snapshots/latest.json`
+> alias is FORBIDDEN and appears in NO read path. The full run is gated on a
+> founder-reviewed integrity lock (see the build report).
+
 ## A. Hard correctness gates (pass/fail — ANY failure => NOT a candidate)
 
 Each gate must be `true` for a cell to be eligible. A failing gate disqualifies

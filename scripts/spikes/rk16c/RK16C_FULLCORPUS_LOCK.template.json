@@ -1,0 +1,15 @@
+{
+  "_comment": "RK-16C FULL-CORPUS INTEGRITY LOCK (TEMPLATE). This file is a SHAPE-ONLY template. The real lock (RK16C_FULLCORPUS_LOCK.json) is POPULATED by the founder-gated METADATA-ONLY PREFLIGHT (HEAD/GET of the small manifest; payload pins read FROM THE MANIFEST BODY) and founder-reviewed. It is NEVER fabricated, NEVER self-proved, and contains NO credentials. The full-corpus --execute run loads + require()s a COMPLETE lock BEFORE any payload GET; any null/empty field FAILS BEFORE NETWORK.",
+  "schema_version": "rk16c-fullcorpus-lock-v1",
+  "snapshot_id": null,
+  "production_run_id": null,
+  "manifest_key": null,
+  "manifest_etag": null,
+  "manifest_byte_size": null,
+  "manifest_sha256": null,
+  "payload_key": null,
+  "payload_etag": null,
+  "payload_byte_size": null,
+  "payload_sha256": null,
+  "expected_row_count": null
+}

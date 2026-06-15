@@ -1,140 +1,176 @@
-# RK-16C FULL-CORPUS SUPPLEMENTAL SPIKE — BUILD REPORT (TEMPLATE)
+# RK-16C FULL-CORPUS SUPPLEMENTAL SPIKE — DELTA BUILD REPORT (M1-M4)
 
-**BUILD-ONLY. NO production R2 read. NO credentialed fetch. NO workflow dispatch.
-NO family registered. NO inventory / F3 / F4 / reader / live API / latest /
-wrangler change. NO activatable candidate. The 475,112-row corpus is NOT
-fetched in this phase.** A parameter-calibration spike to re-validate page-size +
-partition selection at production scale. NOT production. The BUILD phase fills
-every section it can WITHOUT a production read; the production-degree numbers are
-filled only by the founder-gated READ-ONLY RUN GATE (`--execute`).
+**BUILD-ONLY. NO production R2 read. NO metadata HEAD/GET. NO credentialed fetch.
+NO workflow dispatch. NO family registered. NO inventory / F3 / F4 / reader /
+live API / latest / wrangler change. NO activatable candidate. The 475,112-row
+corpus is NOT fetched.** This DELTA report supersedes the prior BUILD report; it
+records the 4 BLOCKING corrections (M1-M4) applied on top of PR #272 and the
+17 required delta items.
 
-## 1. Harness architecture
+## 0. Delta header
 
-- `run-fullcorpus.mjs` — entrypoint. DEFAULTS to `--dry-run` (no network).
-- `lib/r2-readonly-adapter.mjs` (H) — read-only acquisition adapter; dry-run
-  computes the plan with zero network; `--execute` is the future RUN GATE.
-- `lib/corpus-identity.mjs` (C) — identity envelope + fail-closed validator.
-- `lib/rubric.mjs` (F) — machine-checkable hard gates + metrics + tie-breaking.
-- `lib/fullcorpus-cells.mjs` (E/G glue) — one matrix cell -> correctness + metrics.
-- `lib/real-degree.mjs` (G) — degree distribution + max-degree classification.
-- `lib/repro-envelope.mjs` (D) — reproducibility recorder.
-- `lib/fixture-source.mjs` — BUILD fixture (local 2026-05-13 corpus else synthetic).
-- Reuses (by import, unmodified): existing RK-16C spike libs; A1
-  `src/worker/lib/rk16/*`; A2/A3 `scripts/factory/lib/rk16/*`; the P8R1
-  read-only guard `instrumentReadOnlyClient`; `snapshot-context.ts`;
-  `snapshot-identity.js`; `zstd-helper.js`.
+- **New head SHA: `<PM-FILLS-REAL-SHA>`** (the PM fills the real merge/commit SHA;
+  the dry-run envelope currently records the pre-correction build_commit
+  `abf2a3118dc80e8a730e0b94d2c038b55bbf7681`).
+- PR **#272 remains OPEN** (BUILD-ONLY; no merge). Production R2 UNCHANGED.
 
-## 2. Corpus identity contract (C)
+## 1. Changed-file delta (this correction round)
 
-Pinned candidate: `2026-06-14/27502029137-1`; `expected_row_count = 475112`
-(EXPECTED-ONLY until a read verifies it). Envelope fields: snapshot_id,
-snapshot_production_run_id, manifest_object_key, consumed_object_keys[],
-object_byte_size, etag, sha256, schema_version, expected_row_count,
-observed_row_count, build_commit, local_materialization_path,
-materialization_timestamp. The validator FAIL-CLOSES on ANY mismatch
-(identity / hash / schema / row-count) and NEVER auto-switches to latest.
+| File | Change |
+| --- | --- |
+| `lib/corpus-identity.mjs` | M1 — `consumedObjectKeys()` returns EXACTLY `[manifest, payload]`; `LATEST_POINTER_KEY` renamed to `FORBIDDEN_LATEST_ALIAS_KEY` (export-only, never read). |
+| `lib/exact-readonly-guard.mjs` | M2 — NEW stricter guard `instrumentExactReadOnlyClient`: ONLY HeadObject/GetObject of an allowlisted Key; throws on List/non-allowlisted-key/PUT/DELETE/COPY/multipart/latest. |
+| `lib/fullcorpus-lock.mjs` | M3 — NEW credential-free lock schema + `validateLock`/`requireLock`/`loadAndRequireLock` (`rk16c-fullcorpus-lock-v1`). |
+| `RK16C_FULLCORPUS_LOCK.template.json` | M3 — NEW template (all fields null/placeholder; comment: populated by the founder-gated metadata-only preflight, never fabricated). |
+| `lib/resource-guard.mjs` | M4 — NEW process-level memory monitor (heapUsed/heapTotal/rss/external/arrayBuffers) + temp-disk formula + free-space preflight. |
+| `lib/r2-readonly-adapter.mjs` | M1/M2/M3/M4 — dry-run = 2 keys only; replaced `executeRead` with two-stage `preflightManifest` + `executeFullRun` (lock-gated, streaming, no decompressed file); new caps. |
+| `run-fullcorpus.mjs` | M3 — `--preflight`/`--manifest-key`/`--lock` args; exact two-stage future commands; still refuses `--execute` in BUILD. |
+| `SELECTION_RUBRIC.md` | M1 — corrected read-set note (2 keys; latest forbidden; lock-gated). |
+| `tests/rk16/rk16c-fullcorpus-adapter.test.ts` | M1-M4 — rewritten suite (22 tests). |
+| `results/RK16C_FULLCORPUS_BUILD_REPORT.md` | this DELTA report. |
 
-## 3. Full 12-cell matrix definition (E)
+## 2. Proof latest.json is removed (M1)
 
-record_count_target ∈ {128, 256, 512, 1024} × partition_policy ∈ {P0_none,
-P1_is_active, P2_is_active×activity_type} = 12 comparable cells. Reuses the
-param-matrix / partitioned-sublist / projection-page / posting-directory /
-cursor / read-budget substrate. A bad combo is a RECORDED bounded failure
-(`bounded_failures > 0`, hard gates fail), NEVER silently dropped. The matrix
-reads rows from the read-only adapter's LOCAL materialized path — NEVER
-production R2 directly.
+`consumedObjectKeys()` returns EXACTLY the two snapshot-namespace keys; the
+mutable alias appears in NO read path (code, allowlist, identity envelope
+`consumed_object_keys`, dry-run plan). Proven by test
+**`M1 — snapshots/latest.json is NOT in any read path`** (both cases:
+consumed-keys and dry-run-plan assert latest is absent; `forbidden_keys`
+explicitly lists it).
 
-## 4. Pre-registered rubric (F)
+## 3. List-rejected test reference (M2)
 
-See `../SELECTION_RUBRIC.md` (versioned `rk16c-fullcorpus-rubric-v1`,
-committed BEFORE any full read) and `../lib/rubric.mjs`. Hard gates +
-comparative metrics + tie-breaking + NO-RATIFIABLE-CANDIDATE clause are defined
-there and enforced in code.
+The stricter guard `instrumentExactReadOnlyClient` permits ONLY HeadObject +
+GetObject of an allowlisted Key. Proven by:
+- **`M2 … REJECTS a ListObjectsV2 command (throws)`** — List throws, `list_attempt_count===1`.
+- **`M2 … REJECTS a HEAD/GET of a non-allowlisted key (incl. latest)`** — non-allowlisted key (incl. `snapshots/latest.json`) throws.
+- **`M2 … PASSES a HEAD/GET of an allowlisted key (mock)`** — allowlisted HEAD/GET pass.
+- **`M2 … REJECTS any PUT`** — no write reaches the store.
 
-## 5. Read-only adapter + safety boundaries (H)
+## 4. Complete EXACT object keys (NO ellipsis)
 
-- SAFE BY DEFAULT: dry-run performs NO network call.
-- Real read requires BOTH `--execute` AND a snapshot pin; otherwise THROWS.
-- Explicit object ALLOWLIST (default-deny) = exactly the 3 pinned keys.
-- The real client is wrapped by `instrumentReadOnlyClient`: only List/Head/Get
-  pass; any PUT/DELETE/COPY/latest-mutation increments a counter and THROWS
-  before reaching the store.
-- Hard caps (fail-closed): `MAX_REQUESTS = 12`, `MAX_TOTAL_BYTES = 1.5 GiB`;
-  HEAD size is checked BEFORE the GET.
-- Local destination OUTSIDE the repo (`os.tmpdir()`); atomic temp-then-rename;
-  partial-download detection (size mismatch -> throw + unlink).
-- sha256 verification before use; mismatch -> fail-closed, file removed.
-- Credential redaction in all logs; `cleanup()` command removes the dir.
+- manifest: `snapshots/2026-06-14/27502029137-1/_snapshot.manifest.json`
+- payload:  `snapshots/2026-06-14/27502029137-1/bioactivities.jsonl.gz`
+- FORBIDDEN: `snapshots/latest.json` (never read).
 
-## 6. Fixture test results (BUILD phase, filled)
+## 5. Lock schema (M3)
 
-BUILD fixture: **LOCAL 2026-05-13 corpus (corpus-grounded stand-in, 8,351 rows;
-SMALLER/OLDER than the 475k production corpus — NOT a production read)**. When
-absent (CI), a deterministic SYNTHETIC fixture is used (LABELED). The matrix ran
-**12 cells**; rubric outcome **CANDIDATE_SELECTED** with winner **rt256_P0_none**
-on this stand-in (ranking top: rt256_P0_none < rt128_P0_none < rt512_P0_none).
-This BUILD-phase winner is NOT a production decision — production-degree
-re-validation requires the READ-ONLY RUN GATE.
+`RK16C_FULLCORPUS_LOCK.json`, schema_version `rk16c-fullcorpus-lock-v1`,
+credential-free. REQUIRED fields (12): `snapshot_id`, `production_run_id`,
+`manifest_key`, `manifest_etag`, `manifest_byte_size`, `manifest_sha256`,
+`payload_key`, `payload_etag`, `payload_byte_size`, `payload_sha256`,
+`expected_row_count`, `schema_version`. Validator returns `{ok,errors[]}`;
+`require()` THROWS listing every missing/empty field; credential-shaped fields
+are rejected. Template: `RK16C_FULLCORPUS_LOCK.template.json` (all null/placeholder;
+populated by the founder-gated metadata-only preflight, NEVER fabricated).
 
-## 7. CI results (I)
+## 6. All required identity fields
 
-`tests/rk16/rk16c-fullcorpus-*.test.ts`: adapter dry-run/no-network + identity
-fail-close + read-only-guard + execute fail-closed paths; harness end-to-end on
-a small synthetic fixture; deterministic-replay (identical output hashes); rubric
-gate + NO-RATIFIABLE-CANDIDATE; real-degree classification; corpus-grounded
-tests skip-when-absent with an explicit reason. (See the build session for the
-verbatim vitest summary.)
+Identity envelope: snapshot_id, snapshot_production_run_id, manifest_object_key,
+consumed_object_keys[] (= the 2 keys), object_byte_size, etag, sha256,
+schema_version, expected_row_count, observed_row_count, build_commit,
+local_materialization_path, materialization_timestamp, verification_status. The
+validator FAIL-CLOSES on ANY mismatch and NEVER auto-switches to latest.
 
-## 8. DRY-RUN output (exact proposed production object keys + estimates)
+## 7. Fail-before-network test reference (M3)
+
+The full run loads + `require()`s a COMPLETE lock BEFORE any client/network.
+Proven by **`M3 … full run require()s a complete lock BEFORE any client
+(fail-before-network)`** — asserts `clientMade === false` (no `makeClient`,
+no HEAD/GET) for both a missing lock path and an incomplete lock file; throws
+`/FAIL BEFORE NETWORK/`.
+
+## 8. Exact PREFLIGHT + FULL-RUN commands (NO optional integrity, no brackets)
 
 ```
-snapshot_id: 2026-06-14/27502029137-1   expected_row_count: 475112
+PREFLIGHT (future gate): node scripts/spikes/rk16c/run-fullcorpus.mjs --preflight --execute --snapshot 2026-06-14/27502029137-1 --manifest-key snapshots/2026-06-14/27502029137-1/_snapshot.manifest.json
+FULL RUN  (future gate): node scripts/spikes/rk16c/run-fullcorpus.mjs --execute --lock scripts/spikes/rk16c/RK16C_FULLCORPUS_LOCK.json
+```
+
+Both are FOUNDER-GATED and NOT exercised in the BUILD phase (the runner refuses
+`--execute` here by design). PREFLIGHT is METADATA-ONLY (manifest key only,
+2 MiB cap, NO payload GET); the FULL RUN consumes the founder-reviewed lock.
+
+## 9. Process-level heap/RSS hard limits (M4)
+
+The memory monitor samples `process.memoryUsage()` —
+heapUsed/heapTotal/rss/external/arrayBuffers — at an interval (default 250 ms).
+Hard ceilings (configurable): max heapUsed = 512 MiB, max RSS = 1 GiB. On breach
+it records a BOUNDED failure (`over_heap_used_ceiling` / `over_rss_ceiling`) and
+STOPS (it does NOT crash the harness silently). The run report records PEAK
+heapUsed/heapTotal/rss/external/arrayBuffers (NOT just V8 heap). **Required Node
+old-space hard ceiling:** run with `--max-old-space-size=512`, e.g.
+`node --max-old-space-size=512 scripts/spikes/rk16c/run-fullcorpus.mjs --execute --lock …`.
+
+## 10. Temp-disk formula + free-space preflight (M4)
+
+`required_free_bytes = partial_download_slack (≈compressed) +
+verified_final_compressed (≈compressed) + decompressed_materialization (0 —
+STREAMED, never landed) + temp_index_output (64 MiB) + result_artifacts_12cell
+(12 × 8 MiB) + failure_residue (32 MiB) + cleanup_reserve (25% of the subtotal)`.
+A free-space PREFLIGHT (`diskPreflight`/`requireDiskPreflight` via
+`fs.statfsSync`) checks available disk BEFORE any network read and FAILS BEFORE
+NETWORK (or when free space is UNKNOWN) — fail-closed. The full run STREAMS the
+gzip payload and writes ONLY the verified compressed `.gz`; **no decompressed
+file is ever written to disk** (`decompressed_file_written === false`).
+
+## 11. Updated caps (M4)
+
+`MAX_REQUESTS = 8` (2 keys × HEAD+GET + slack), `MAX_OBJECTS = 2` (corrected
+2-object set), `MAX_TOTAL_BYTES = 1.5 GiB`, `MAX_MANIFEST_BYTES = 2 MiB`
+(preflight metadata cap), plus the memory ceilings (heapUsed 512 MiB / RSS 1 GiB)
+and the disk free-space ceiling from the formula above.
+
+## 12. Fixture results
+
+BUILD fixture: **LOCAL 2026-05-13 corpus (corpus-grounded stand-in, 8,351 rows;
+SMALLER/OLDER than the 475k production corpus — NOT a production read)**; CI
+falls back to a deterministic SYNTHETIC fixture (LABELED). The matrix ran **12
+cells**; rubric outcome **CANDIDATE_SELECTED**. This BUILD-phase winner is NOT a
+production decision — production-degree re-validation requires the founder-gated
+two-stage read (PREFLIGHT then lock-gated FULL RUN).
+
+## 13. CI note
+
+`npx vitest run tests/rk16` — 6 files, 54 tests, 0 failures (includes the
+rewritten `rk16c-fullcorpus-adapter.test.ts`, 22 tests). No regression in
+`tests/factory/rk16` / `tests/worker/rk16`. Corpus-grounded tests
+skip-when-absent with an explicit reason. (Verbatim summaries in the build
+session.)
+
+## 14. DRY-RUN output (regenerated — ONLY the 2 keys, no latest, no network)
+
+```
 proposed_object_keys (= allowlist):
-  snapshots/latest.json
   snapshots/2026-06-14/27502029137-1/_snapshot.manifest.json
   snapshots/2026-06-14/27502029137-1/bioactivities.jsonl.gz
-estimated_request_count: 6   (1 HEAD + 1 GET per object; no List)
-estimated_total_bytes:   62,988,288   (~60 MiB; EXPECTED-ONLY)
-hard_caps: max_requests=12  max_total_bytes=1,610,612,736
+forbidden_keys:
+  snapshots/latest.json
+estimated_request_count: 4   (1 HEAD + 1 GET per object; no List)
+estimated_object_count:  2
+estimated_total_bytes:   62,980,096   (~60 MiB; EXPECTED-ONLY)
+hard_caps: max_requests=8  max_objects=2  max_total_bytes=1,610,612,736  max_manifest_bytes=2,097,152
 within_caps: true   network_performed: false
 ```
 
-## 9. Local temp-disk requirement
+## 15. Proof production snapshot is unchanged
 
-The materialized corpus + per-cell shard/dir bytes live under `os.tmpdir()`.
-BUILD-phase fixture run used ~5.5 MB temp. A production-scale run should provision
-for the corpus object (~60 MiB compressed est.) plus per-cell substrate output.
+By CONSTRUCTION: the BUILD phase performs NO network call (dry-run only). The
+`--execute` paths route the ONLY client through `instrumentExactReadOnlyClient`,
+which permits ONLY HeadObject/GetObject of an allowlisted Key and THROWS on
+List/non-allowlisted-key/PUT/DELETE/COPY/multipart/latest — so no write, no
+latest-mutation, no republish, no discovery is reachable. The FULL RUN cannot
+even reach the network without a complete founder-reviewed lock. `put_count ==
+delete_count == list_count == write_attempt_count == 0` is asserted by tests.
 
-## 10. Estimated peak-heap ceiling
-
-Per-page parsed heap is hard-capped at the A1 4 MiB ceiling (NEVER raised); a
-cell that would exceed it is a recorded bounded failure. BUILD-phase observed
-process peak heap ≈ 44 MB on the 8,351-row stand-in.
-
-## 11. Cleanup procedure
+## 16. Cleanup procedure
 
 `node scripts/spikes/rk16c/run-fullcorpus.mjs --cleanup [--snapshot <id>]`
-removes the os.tmpdir() materialization directory. Programmatic: `cleanup()` in
-`lib/r2-readonly-adapter.mjs`.
+removes the `os.tmpdir()` materialization directory. Programmatic: `cleanup()`
+in `lib/r2-readonly-adapter.mjs`.
 
-## 12. Proof production snapshot is unchanged
+## 17. Status
 
-By CONSTRUCTION: the BUILD phase performs NO network call (dry-run only); the
-`--execute` path routes the ONLY client through `instrumentReadOnlyClient`, which
-permits ONLY List/Head/Get and THROWS on any PUT/DELETE/COPY — so no write, no
-latest-mutation, no republish is reachable. `put_count == delete_count ==
-write_attempt_count == 0` is asserted by the adapter + the read-only-guard test.
-
-## 13. The EXACT command a future READ-ONLY RUN GATE would use
-
-```
-node scripts/spikes/rk16c/run-fullcorpus.mjs --execute \
-  --snapshot 2026-06-14/27502029137-1 \
-  --expected-rows 475112 \
-  --expected-sha256 <pinned-corpus-sha256>
-```
-
-This is FOUNDER-GATED. It is NOT exercised in the BUILD phase (the runner
-refuses `--execute` here by design; the real read is `executeRead()` in
-`lib/r2-readonly-adapter.mjs`, to be invoked only under explicit founder
-authorization with a verified pin).
+PR #272 OPEN; BUILD-ONLY; production unchanged; no merge; no governance edits;
+all spike files ≤ 250 lines. The two-stage founder-gated read remains the only
+path to real production-degree numbers.
