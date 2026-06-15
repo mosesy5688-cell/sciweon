@@ -21,6 +21,7 @@ import { gunzipSync } from 'zlib';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { STRUCTURED_INVENTORY } from './snapshot-inventory.js';
 import { probeSampleShard } from './candidate-shard-probe.js';
+import { probeActivationGraph } from './rk16/activation-graph-probe.js';
 
 async function streamToBuffer(stream) {
     const chunks = [];
@@ -110,6 +111,15 @@ export async function enforceCompleteStructuredInventory({
         } else if (entry.kind === 'projection_gz') {
             await probeProjectionGz({
                 client, bucket, key: entry.derive(objectPrefix), format: entry.format, id: entry.id,
+            });
+        } else if (entry.kind === 'posting_graph') {
+            // RK-16A3: a posting/graph family. Walk ONE sample chain (manifest ->
+            // directory -> page -> projection row -> RecordLocator -> canonical
+            // record) + verify the attestation hash matches the seal. NO concrete
+            // posting_graph family is registered in production STRUCTURED_INVENTORY,
+            // so this branch is NEVER reached for a current candidate (no-op).
+            await probeActivationGraph({
+                client, bucket, objectPrefix, familyDescriptor: entry, seal,
             });
         } else {
             throw new Error(`[ACTIVATE] structured inventory entry has unknown kind (${entry.id}): ${entry.kind}`);
