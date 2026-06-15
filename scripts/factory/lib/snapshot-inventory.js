@@ -138,6 +138,12 @@ export const SATELLITE_INVENTORY = Object.freeze([
  *   'projection_gz' a single gzipped projection at `derive(prefix)`. `format`
  *                   selects the decode assertion: 'json' (gunzip -> JSON.parse the
  *                   whole text) or 'jsonl' (gunzip -> JSON.parse the first record).
+ *   'posting_graph' RK-16A3: a POSTING/GRAPH family (canonical shards + projection
+ *                   pages + posting directory); SHAPE built by
+ *                   makePostingGraphDescriptor (posting-graph-descriptor.js). NO
+ *                   concrete posting_graph family is registered here (production =
+ *                   compounds/neg/xref/search ONLY), so the activation gate's
+ *                   posting_graph branch is a NO-OP for every current candidate.
  */
 export const STRUCTURED_INVENTORY = Object.freeze([
     {

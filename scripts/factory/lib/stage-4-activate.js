@@ -4,12 +4,12 @@
  *
  * The publish state machine runs HERE after the data objects are uploaded:
  *   OBJECTS_COMPLETE  the canonical root seal is written LAST (create-only)
- *   VALIDATED         candidate re-read by its own object_prefix keys: inventory
- *                     complete, refs resolve, manifest_hash matches, a sample
- *                     shard decodes — NEVER reading snapshots/latest.json
+ *   VALIDATED         candidate re-read by its own object_prefix keys (inventory
+ *                     complete, refs resolve, manifest_hash matches, sample shard
+ *                     decodes) — NEVER reading snapshots/latest.json
  *   ACTIVATABLE       all gates pass
- *   ACTIVE            CAS swap of the v2 latest.json + post-swap probe confirms
- *                     latest points at THIS candidate
+ *   ACTIVE            CAS swap of v2 latest.json + post-swap probe confirms latest
+ *                     points at THIS candidate
  *
  * Failure isolation: latest.json is touched ONLY in swapV2Latest, AFTER the
  * candidate is VALIDATED. Any earlier failure throws before the swap (old latest
@@ -30,6 +30,7 @@ import {
 } from './candidate-satellite-inventory.js';
 import { probeCompoundSampleShard } from './candidate-shard-probe.js';
 import { enforceCompleteStructuredInventory } from './candidate-structured-inventory.js';
+import { bindPostingFamilyAttestations } from './rk16/posting-graph-descriptor.js';
 import { swapLatestPointer } from './publish-shards-and-swap.js';
 
 const LATEST_KEY = 'snapshots/latest.json';
@@ -66,19 +67,16 @@ export async function activateValidatedCandidate({
     client, bucket, identity, compoundManifest, neg = null, hasXref, hasSearch,
     satelliteKeys = [], latestKey = LATEST_KEY,
 }) {
-    // RK-17: `neg` is the shared { descriptorKey, validationProbeKey } contract
-    // (nullable when skipped) from buildNegKeyContract — descriptorKey = serving
-    // root (seal/latest/reader); validationProbeKey = a REAL per-bucket manifest.
-    // (3->4 step 5) seal LAST. satelliteKeys carries the COMPLETE satellite serving
-    // inventory (RK-15) — real F4 passes the keys it published so completeness is enforced.
+    // RK-17: `neg` = shared { descriptorKey, validationProbeKey } contract (nullable
+    // when skipped) from buildNegKeyContract. (3->4 step 5) seal LAST. satelliteKeys
+    // carries the COMPLETE satellite serving inventory (RK-15) so completeness is enforced.
     const { manifestHash } = await buildAndSealCandidate({
         client, bucket, identity, compoundManifest, neg, hasXref, hasSearch, satelliteKeys,
     });
     // (step 6+7) re-read + verify the candidate by its OWN keys (never latest).
     await validateCandidate({ client, bucket, identity, expectedHash: manifestHash });
     console.log(`[ACTIVATE] candidate ${PUBLISH_STATES.VALIDATED} -> ${PUBLISH_STATES.ACTIVATABLE}`);
-    // (step 9) CAS the v2 latest.json (default prod key; harness injects isolated).
-    const cmKey = compoundManifestKeyOf(compoundManifest, identity.objectPrefix);
+    const cmKey = compoundManifestKeyOf(compoundManifest, identity.objectPrefix); // (step 9) CAS v2 latest.json
     const latest = await swapV2Latest({
         client, bucket, identity, manifestHash, compoundsManifestKey: cmKey, neg, hasXref, latestKey,
     });
@@ -95,7 +93,7 @@ export async function activateValidatedCandidate({
  */
 export async function buildAndSealCandidate({
     client, bucket, identity, compoundManifest, neg = null, hasXref, hasSearch,
-    satelliteKeys = [],
+    satelliteKeys = [], postingFamilies = [],
 }) {
     const { snapshotId, objectPrefix, snapshotDate, runId, runAttempt, commitSha } = identity;
     // STRUCTURED required keys (compound manifest + xref + search + neg manifest):
@@ -107,10 +105,9 @@ export async function buildAndSealCandidate({
     // (validationProbeKey), NEVER the descriptor ROOT (a bare `/neg-evidence/`
     // prefix is not an object; HEAD-probing it 404s a complete candidate).
     if (neg && neg.validationProbeKey) requiredKeys.push(neg.validationProbeKey);
-    // RK-15 full-snapshot completeness: the seal ALSO declares the COMPLETE
-    // satellite serving inventory in a SEPARATE list (validateCandidate decode-
-    // probes them, not just HEADs) AND folds them into required_inventory so the
-    // seal hash binds the complete-snapshot definition (any drift changes the hash).
+    // RK-15 full-snapshot completeness: the seal declares the COMPLETE satellite
+    // serving inventory in a SEPARATE list (decode-probed by validateCandidate) AND
+    // folds it into required_inventory so the seal hash binds the snapshot definition.
     const satelliteInventory = satelliteInventoryForSeal(satelliteKeys);
     const fullRequiredInventory = [...requiredKeys, ...satelliteInventory];
 
@@ -136,8 +133,11 @@ export async function buildAndSealCandidate({
         required_inventory: fullRequiredInventory,
         satellite_inventory: satelliteInventory,
     };
-    // The hash is computed over the seal WITHOUT the hash field (it cannot hash
-    // itself). It is then stored alongside so a verifier can recompute + compare.
+    // RK-16A3: bind posting/graph attestation hashes into the seal ONLY when a
+    // posting family is present -> current-shape candidate sealCore BYTE-IDENTICAL
+    // to before this PR (manifest_hash UNCHANGED).
+    if (postingFamilies && postingFamilies.length > 0) sealCore.posting_family_attestations = bindPostingFamilyAttestations(postingFamilies);
+    // Hash over the seal WITHOUT its own hash field; stored alongside for recompute.
     const manifestHash = canonicalManifestHash(sealCore);
     const seal = { ...sealCore, manifest_hash: manifestHash };
     const sealKey = rootSealKey(objectPrefix);
@@ -150,14 +150,13 @@ function compoundManifestKeyOf(manifest, objectPrefix) {
 }
 
 /**
- * Validate the candidate by reading ONLY its own keys (NEVER latest.json): the
- * root seal re-reads + its canonical hash matches; every STRUCTURED required-
- * inventory object exists size>0 (RK-17: a bare logical-prefix key is refused);
- * every SSoT-required SATELLITE is present + reader-decodable (SSoT-enforced,
- * independent of the seal); the compound shard decodes (NXVF); RK-16A0 every
- * STRUCTURED family is present + decodable. Throws on any gate. -> VALIDATED.
+ * Validate the candidate by reading ONLY its own keys (NEVER latest.json): seal
+ * re-reads + canonical hash matches; every STRUCTURED required-inventory object
+ * exists size>0 (RK-17: a bare logical-prefix key is refused); every SSoT-required
+ * SATELLITE present + reader-decodable; the compound shard decodes (NXVF); RK-16A0
+ * every STRUCTURED family present + decodable. Throws on any gate. -> VALIDATED.
  */
-export async function validateCandidate({ client, bucket, identity, expectedHash }) {
+export async function validateCandidate({ client, bucket, identity, expectedHash, inventory }) {
     const { objectPrefix } = identity;
     // (a) re-read the seal + recompute hash.
     const sealRes = await client.send(new GetObjectCommand({ Bucket: bucket, Key: rootSealKey(objectPrefix) }));
@@ -168,8 +167,8 @@ export async function validateCandidate({ client, bucket, identity, expectedHash
         throw new Error(`[ACTIVATE] candidate seal hash mismatch: stored=${storedHash} recomputed=${recomputed} expected=${expectedHash}`);
     }
     // (b) required STRUCTURED inventory: every declared object exists + non-empty.
-    // Satellites are in required_inventory too (seal-hash binding) but skipped
-    // here -> validated MORE strictly in (b2), which owns their errors.
+    // Satellites are in required_inventory too (seal-hash binding) but skipped here
+    // -> validated MORE strictly in (b2).
     const satelliteSet = new Set(seal.satellite_inventory ?? []);
     for (const key of seal.required_inventory ?? []) {
         if (satelliteSet.has(key)) continue; // satellites validated by (b2)
@@ -185,21 +184,22 @@ export async function validateCandidate({ client, bucket, identity, expectedHash
         if (!size || size <= 0) throw new Error(`[ACTIVATE] required candidate object is empty: ${key}`);
     }
     // (b2) RK-15 full-snapshot completeness (AUTHORITATIVE, SSoT-based): every
-    // SSoT-required satellite present + reader-decodable at object_prefix,
-    // enforced INDEPENDENT of the seal + caller satelliteKeys (any caller).
+    // SSoT-required satellite present + reader-decodable, INDEPENDENT of the seal.
     await enforceCompleteSatelliteInventory({ client, bucket, objectPrefix, seal });
     // (c)+(d) re-read the compound manifest, resolve a sample shard, decode NXVF.
     await probeCompoundSampleShard({ client, bucket, objectPrefix, seal });
-    // (e) RK-16A0: every HARD STRUCTURED family present + reader-decodable (SSoT, caller-independent); CONDITIONAL families (neg) probed only when the seal declares them; runs BEFORE the swap.
-    await enforceCompleteStructuredInventory({ client, bucket, objectPrefix, seal });
+    // (e) RK-16A0: every HARD STRUCTURED family present + reader-decodable; neg
+    // probed only when the seal declares it; BEFORE the swap. RK-16A3: `inventory`
+    // defaults inside the gate to production STRUCTURED_INVENTORY (NO posting family)
+    // -> byte-identical for a current candidate; a posting_graph family runs the graph probe.
+    await enforceCompleteStructuredInventory({ client, bucket, objectPrefix, seal, ...(inventory ? { inventory } : {}) });
     return { state: PUBLISH_STATES.VALIDATED };
 }
 
 /**
  * CAS-swap the v2 latest.json to ACTIVATE the validated candidate. Writes the
  * full reader-required v2 field-set (binds manifest_hash). On CAS failure the
- * candidate is RETAINED but NOT active and the old latest is unchanged (the
- * caller hard-fails the run).
+ * candidate is RETAINED but NOT active and the old latest is unchanged.
  */
 export async function swapV2Latest({ client, bucket, identity, manifestHash, compoundsManifestKey: cmKey, neg = null, hasXref, latestKey = LATEST_KEY }) {
     const { snapshotId, objectPrefix, snapshotDate, runId, runAttempt, commitSha } = identity;
