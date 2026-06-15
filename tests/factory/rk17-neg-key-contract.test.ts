@@ -18,8 +18,8 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-    negEvidenceDescriptorKey, negEvidenceRootKey, negManifestKey, buildNegKeyContract,
-    canonicalManifestHash,
+    negEvidenceDescriptorKey, negEvidenceRootKey, negManifestKey, negShardKey,
+    buildNegKeyContract, canonicalManifestHash,
 } from '../../scripts/factory/lib/snapshot-identity.js';
 import {
     buildAndSealCandidate, validateCandidate, activateValidatedCandidate,
@@ -35,10 +35,28 @@ function negResult(prefix: string, buckets: number[]) {
     return { manifestKeys: buckets.map(b => negManifestKey(prefix, b)), bucketCount: buckets.length };
 }
 
-/** Seed a real (non-empty) neg per-bucket manifest object into the store. */
+// A minimal but VALID NXVF V4.1 container header (matches shard-writer.js):
+// "NXVF" magic @0, version 0x41 @4, EntityCount (>0) UInt32LE @11, >=29 bytes.
+function nxvfShard(entityCount = 1) {
+    const buf = Buffer.alloc(29, 0);
+    Buffer.from([0x4e, 0x58, 0x56, 0x46]).copy(buf, 0);
+    buf.writeUInt8(0x41, 4);
+    buf.writeUInt32LE(entityCount, 11);
+    return buf;
+}
+
+/** Seed a REAL sharded neg-evidence family (per-bucket manifest declaring shard 0
+ * + a valid NXVF sample shard) so the RK-16A0 CONDITIONAL neg structured probe
+ * passes when the seal declares neg present. Returns the per-bucket manifest key
+ * (the validationProbeKey). */
 async function seedNeg(client: any, prefix: string, bucket = 0) {
     const key = negManifestKey(prefix, bucket);
-    await putCreateOnly(client, 'b', key, Buffer.from('{"bucket":0,"total_records":1}'), 'application/json');
+    const manifest = {
+        bucket, total_records: 1,
+        shard_hashes: [{ shard: 0, filename: 'shard-000.bin', sha256: 'x', size_bytes: 29 }],
+    };
+    await putCreateOnly(client, 'b', key, Buffer.from(JSON.stringify(manifest)), 'application/json');
+    await putCreateOnly(client, 'b', negShardKey(prefix, bucket, 0), nxvfShard(), 'application/octet-stream');
     return key;
 }
 
