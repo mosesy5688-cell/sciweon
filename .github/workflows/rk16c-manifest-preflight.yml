@@ -1,0 +1,144 @@
+name: RK-16C Manifest-Only Preflight (metadata-only, founder-triggered)
+
+# RK-16C MANIFEST-ONLY ONE-SHOT PREFLIGHT WORKFLOW.
+#
+# Purpose: run the RK-16C spike's METADATA-ONLY preflight against the pinned
+# production snapshot. It performs a HEAD + a small-capped GET of the EXACT
+# manifest key ONLY, extracts the payload pins FROM the manifest body, and
+# writes an UNRATIFIED candidate lock. It NEVER reads the payload
+# (bioactivities.jsonl.gz), NEVER lists/discovers, NEVER follows
+# snapshots/latest.json, and NEVER writes R2.
+#
+# === DUAL-SHA MODEL (critical) ===
+# This workflow FILE is introduced by a new commit (the PR head). But the code
+# it EXECUTES is pinned to the AUDITED RUNNER SHA below via the checkout `ref:`.
+# The workflow definition SHA (github.sha = the PR head) and the runner SHA
+# (the checked-out commit) are DIFFERENT by design. A dedicated verification
+# step FAILS the run if the checked-out commit != AUDITED_RUNNER_SHA, BEFORE
+# any credential use or R2 client construction.
+#   AUDITED_RUNNER_SHA = b0b8246e8ad77742d1aafd0720c5b4dd409d0b44
+#
+# === CANDIDATE LOCK STATUS ===
+# The artifact this run produces (RK16C_FULLCORPUS_LOCK.candidate.json) is
+# UNRATIFIED and NOT AUTHORIZED FOR PAYLOAD READ. founder_approved=false and
+# authorized_for_payload_read=false. It is an input to founder review, not a
+# usable lock. No payload GET may occur until a separate founder ratification.
+#
+# === REMOTE-ACCESS BOUNDARY (app-layer enforced) ===
+# The remote access is bounded to: HEAD + GET of the EXACT manifest key only;
+# objects touched = 1 (the manifest); manifest byte cap <= 2 MiB; total
+# requests <= 4; payload GET = 0; List = 0; writes = 0. These bounds are
+# enforced by the APPLICATION exact-readonly guard (lib exact-readonly-guard),
+# NOT necessarily by the credential layer.
+#
+# === CREDENTIAL BOUNDARY NOTE (stated honestly) ===
+# The R2 secrets referenced below (R2_ENDPOINT / R2_BUCKET / R2_ACCESS_KEY_ID /
+# R2_SECRET_ACCESS_KEY) are the EXISTING general R2 credentials -- the SAME ones
+# used by .github/workflows/p8-r1-readonly-probe.yml. The object-level
+# read-only-to-one-key restriction is enforced at the APPLICATION
+# exact-readonly guard layer (exact-readonly-guard.mjs), NOT claimed at the
+# credential layer. The credentials themselves are general R2 credentials.
+#
+# === POST-RUN REMOVAL REQUIREMENT ===
+# The candidate lock is a transient preflight artifact. After founder review,
+# the materialized candidate under scripts/spikes/rk16c/results/ must be
+# removed (the runner provides a --cleanup path); it must NOT be promoted to a
+# usable lock without explicit founder ratification.
+#
+# === TRIGGER ===
+# FOUNDER-TRIGGERED ONLY: workflow_dispatch with NO inputs. There is no
+# free-text, no selectable snapshot/key/command -- the snapshot, manifest key,
+# and command are all HARDCODED below. No push / pull_request /
+# pull_request_target / repository_dispatch / schedule / workflow_call.
+
+on:
+  workflow_dispatch:
+
+# Least privilege: read-only. No write scopes of any kind; no id-token (OIDC is
+# NOT required here -- if it ever were, that is a separate report, not added).
+permissions:
+  contents: read
+
+# Static concurrency group (no dynamic / user-input key). Serializes runs.
+concurrency:
+  group: rk16c-manifest-preflight
+  cancel-in-progress: false
+
+jobs:
+  manifest-preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Dedicated environment for FUTURE manual approval gating. The build stage
+    # does not trigger it; it is bound here so the gate can be configured later.
+    environment: rk16c-manifest-preflight
+    env:
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    steps:
+      # 1. RUN-ATTEMPT GUARD -- FIRST, before checkout / creds. A re-run (attempt
+      #    != 1) must NOT silently re-execute against production; fail closed.
+      - name: Run-attempt guard (only attempt 1 may run)
+        if: ${{ github.run_attempt != '1' }}
+        run: |
+          echo "Refusing run_attempt=${{ github.run_attempt }} (only attempt 1 is permitted). Fail-closed BEFORE checkout/creds."
+          exit 1
+
+      # 2. CHECKOUT pinned to the AUDITED RUNNER SHA (NOT PR head / main / HEAD /
+      #    a movable tag). persist-credentials:false so the git token is dropped.
+      - name: Checkout audited runner commit
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: b0b8246e8ad77742d1aafd0720c5b4dd409d0b44
+          persist-credentials: false
+
+      # 3. SHA VERIFICATION -- fail-before-network. Prove the executed code is the
+      #    audited runner SHA. Runs BEFORE any credential use / R2 client. No
+      #    secret is printed.
+      - name: Verify checked-out commit == AUDITED_RUNNER_SHA
+        env:
+          AUDITED_RUNNER_SHA: b0b8246e8ad77742d1aafd0720c5b4dd409d0b44
+          WORKFLOW_DEFINITION_SHA: ${{ github.sha }}
+        run: |
+          CHECKED_OUT_SHA="$(git rev-parse HEAD)"
+          echo "workflow_definition_sha (github.sha) = ${WORKFLOW_DEFINITION_SHA}"
+          echo "checked_out_runner_sha               = ${CHECKED_OUT_SHA}"
+          echo "expected AUDITED_RUNNER_SHA          = ${AUDITED_RUNNER_SHA}"
+          if [ "${CHECKED_OUT_SHA}" != "${AUDITED_RUNNER_SHA}" ]; then
+            echo "FAIL: checked-out commit != AUDITED_RUNNER_SHA -- refusing before any credential use or R2 client construction."
+            exit 1
+          fi
+          echo "OK: runner SHA matches the audited runner SHA."
+
+      # 4. SETUP NODE (node 24), SHA-pinned.
+      - name: Setup Node 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      # 5. Install dependencies (locked).
+      - name: Install dependencies (npm ci)
+        run: npm ci
+
+      # 6. EXACT preflight command -- hardcoded. No shell-built input, no dynamic
+      #    snapshot, no latest query. Metadata-only: manifest HEAD + capped GET;
+      #    NO payload GET. R2 secrets are referenced via env (above) -- NOT
+      #    secrets: inherit. No set -x, no env dump, no continue-on-error, no
+      #    `|| true`.
+      - name: RK-16C metadata-only preflight (manifest key ONLY, no payload)
+        run: node scripts/spikes/rk16c/run-fullcorpus.mjs --preflight --execute --snapshot 2026-06-14/27502029137-1 --manifest-key snapshots/2026-06-14/27502029137-1/_snapshot.manifest.json
+
+      # 7. UPLOAD ARTIFACT -- ONLY the UNRATIFIED candidate lock. NEVER payload
+      #    bytes / bioactivities / credentials / env dumps / raw auth headers /
+      #    unredacted exceptions. Finite retention. if:always() so a failed run
+      #    still surfaces the candidate (if one was written).
+      - name: Upload UNRATIFIED candidate lock (candidate only)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rk16c-fullcorpus-candidate-lock-UNRATIFIED
+          path: scripts/spikes/rk16c/results/RK16C_FULLCORPUS_LOCK.candidate.json
+          retention-days: 14
+          if-no-files-found: warn
