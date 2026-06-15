@@ -1,0 +1,504 @@
+{
+  "corpus_provenance": {
+    "source_path": "snapshots/2026-05-13/bioactivities.jsonl.gz",
+    "sha256": "ab4c3f1e97987323eccbcbcf90bd0196525d72f5cf59ca7b1c580f3a08164b71",
+    "record_count": 8351,
+    "note": "LOCAL 2026-05-13 snapshot (offline file, NOT production R2). Smaller + older than production (~475,112 rows) and contains NO degree-43,364 target; heavy-hitter results use a synthetic fixture."
+  },
+  "coverage": {
+    "record_count": 8351,
+    "distinct_compound_id": 294,
+    "distinct_target_id": 976,
+    "distinct_uniprot_accession": 586,
+    "rows_with_target_id": 8351,
+    "rows_with_target_object": 8006,
+    "rows_with_uniprot_accession": 2803,
+    "target_id_coverage_pct": 100,
+    "uniprot_coverage_pct": 33.56
+  },
+  "degree_distribution": {
+    "target_id": {
+      "distinct_keys": 976,
+      "max_degree": 778,
+      "top": [
+        778,
+        391,
+        345,
+        215,
+        181
+      ]
+    },
+    "compound_id": {
+      "distinct_keys": 294,
+      "max_degree": 100,
+      "top": [
+        100,
+        100,
+        100,
+        98,
+        97
+      ]
+    },
+    "uniprot_accession": {
+      "distinct_keys": 586,
+      "max_degree": 91,
+      "top": [
+        91,
+        89,
+        57,
+        45,
+        39
+      ]
+    }
+  },
+  "canonical": {
+    "record_total": 8351,
+    "entity_count": 8351,
+    "canonical_once": true,
+    "key_example": "sciweon::bioactivity::<id> e.g. sciweon::bioactivity::CHEMBL_ACT_13517848",
+    "shard_sha256": "e55f55e04f1138d50d7cad918c138e8e7136afc50b9f1377791727a6d2fc48cd"
+  },
+  "compound_axis": {
+    "axis": "compound",
+    "distinct_keys": 294,
+    "projection_rows": 8351,
+    "total_pages": 294,
+    "two_level_keys": 0,
+    "max_pages_per_key": 1,
+    "max_degree": 100
+  },
+  "target_axis": {
+    "axis": "target",
+    "distinct_keys": 976,
+    "projection_rows": 8351,
+    "total_pages": 977,
+    "two_level_keys": 0,
+    "max_pages_per_key": 2,
+    "max_degree": 778,
+    "uniprot_alias": {
+      "rows_with_uniprot_alias": 2803,
+      "distinct_uniprot_alias_keys": 586,
+      "target_keys_with_at_least_one_alias": 607,
+      "target_id_coverage_pct": 100,
+      "uniprot_coverage_pct": 33.56,
+      "note": "target_id is the REQUIRED authority (100% coverage); uniprot is an OPTIONAL alias to the same target family, NOT the authority."
+    }
+  },
+  "projection_equals_project": {
+    "rows_checked": 8351,
+    "mismatches": 0,
+    "projection_is_pure_function": true
+  },
+  "parameter_matrix": {
+    "subject": "busiest corpus target_id=CHEMBL612545 (degree 778)",
+    "parsed_heap_ceiling_bytes": 4194304,
+    "seal_on_first_of": [
+      "record_count",
+      "compressed_bytes",
+      "parsed_heap"
+    ],
+    "combos": [
+      {
+        "record_target": 128,
+        "compressed_ceiling": "256KiB",
+        "pages": 7,
+        "parsed_bytes": {
+          "avg": 79382,
+          "p50": 91393,
+          "p95": 91540,
+          "total": 555675,
+          "max": 91554
+        },
+        "compressed_bytes": {
+          "avg": 11381,
+          "p50": 13014,
+          "p95": 13146,
+          "total": 79668,
+          "max": 13207
+        },
+        "total_compressed_bytes": 79668,
+        "max_parsed_heap_bytes": 91554,
+        "within_parsed_heap_cap": true,
+        "deterministic": true
+      },
+      {
+        "record_target": 128,
+        "compressed_ceiling": "512KiB",
+        "pages": 7,
+        "parsed_bytes": {
+          "avg": 79382,
+          "p50": 91393,
+          "p95": 91540,
+          "total": 555675,
+          "max": 91554
+        },
+        "compressed_bytes": {
+          "avg": 11381,
+          "p50": 13014,
+          "p95": 13146,
+          "total": 79668,
+          "max": 13207
+        },
+        "total_compressed_bytes": 79668,
+        "max_parsed_heap_bytes": 91554,
+        "within_parsed_heap_cap": true,
+        "deterministic": true
+      },
+      {
+        "record_target": 128,
+        "compressed_ceiling": "1MiB",
+        "pages": 7,
+        "parsed_bytes": {
+          "avg": 79382,
+          "p50": 91393,
+          "p95": 91540,
+          "total": 555675,
+          "max": 91554
+        },
+        "compressed_bytes": {
+          "avg": 11381,
+          "p50": 13014,
+          "p95": 13146,
+          "total": 79668,
+          "max": 13207
+        },
+        "total_compressed_bytes": 79668,
+        "max_parsed_heap_bytes": 91554,
+        "within_parsed_heap_cap": true,
+        "deterministic": true
+      },
+      {
+        "record_target": 256,
+        "compressed_ceiling": "256KiB",
+        "pages": 4,
+        "parsed_bytes": {
+          "avg": 138918,
+          "p50": 182609,
+          "p95": 182857,
+          "total": 555672,
+          "max": 183093
+        },
+        "compressed_bytes": {
+          "avg": 22038,
+          "p50": 28629,
+          "p95": 28960,
+          "total": 88153,
+          "max": 29140
+        },
+        "total_compressed_bytes": 88153,
+        "max_parsed_heap_bytes": 183093,
+        "within_parsed_heap_cap": true,
+        "deterministic": true
+      },
+      {
+        "record_target": 256,
+        "compressed_ceiling": "512KiB",
+        "pages": 4,
+        "parsed_bytes": {
+          "avg": 138918,
+          "p50": 182609,
+          "p95": 182857,
+          "total": 555672,
+          "max": 183093
+        },
+        "compressed_bytes": {
+          "avg": 22038,
+          "p50": 28629,
+          "p95": 28960,
+          "total": 88153,
+          "max": 29140
+        },
+        "total_compressed_bytes": 88153,
+        "max_parsed_heap_bytes": 183093,
+        "within_parsed_heap_cap": true,
+        "deterministic": true
+      },
+      {
+        "record_target": 256,
+        "compressed_ceiling": "1MiB",
+        "pages": 4,
+        "parsed_bytes": {
+          "avg": 138918,
+          "p50": 182609,
+          "p95": 182857,
+          "total": 555672,
+          "max": 183093
+        },
+        "compressed_bytes": {
+          "avg": 22038,
+          "p50": 28629,
+          "p95": 28960,
+          "total": 88153,
+          "max": 29140
+        },
+        "total_compressed_bytes": 88153,
+        "max_parsed_heap_bytes": 183093,
+        "within_parsed_heap_cap": true,
+        "deterministic": true
+      },
+      {
+        "record_target": 512,
+        "compressed_ceiling": "256KiB",
+        "pages": 2,
+        "parsed_bytes": {
+          "avg": 277835,
+          "p50": 189721,
+          "p95": 189721,
+          "total": 555670,
+          "max": 365949
+        },
+        "compressed_bytes": {
+          "avg": 41665,
+          "p50": 30357,
+          "p95": 30357,
+          "total": 83329,
+          "max": 52972
+        },
+        "total_compressed_bytes": 83329,
+        "max_parsed_heap_bytes": 365949,
+        "within_parsed_heap_cap": true,
+        "deterministic": true
+      },
+      {
+        "record_target": 512,
+        "compressed_ceiling": "512KiB",
+        "pages": 2,
+        "parsed_bytes": {
+          "avg": 277835,
+          "p50": 189721,
+          "p95": 189721,
+          "total": 555670,
+          "max": 365949
+        },
+        "compressed_bytes": {
+          "avg": 41665,
+          "p50": 30357,
+          "p95": 30357,
+          "total": 83329,
+          "max": 52972
+        },
+        "total_compressed_bytes": 83329,
+        "max_parsed_heap_bytes": 365949,
+        "within_parsed_heap_cap": true,
+        "deterministic": true
+      },
+      {
+        "record_target": 512,
+        "compressed_ceiling": "1MiB",
+        "pages": 2,
+        "parsed_bytes": {
+          "avg": 277835,
+          "p50": 189721,
+          "p95": 189721,
+          "total": 555670,
+          "max": 365949
+        },
+        "compressed_bytes": {
+          "avg": 41665,
+          "p50": 30357,
+          "p95": 30357,
+          "total": 83329,
+          "max": 52972
+        },
+        "total_compressed_bytes": 83329,
+        "max_parsed_heap_bytes": 365949,
+        "within_parsed_heap_cap": true,
+        "deterministic": true
+      },
+      {
+        "record_target": 1024,
+        "compressed_ceiling": "256KiB",
+        "pages": 1,
+        "parsed_bytes": {
+          "avg": 555669,
+          "p50": 555669,
+          "p95": 555669,
+          "total": 555669,
+          "max": 555669
+        },
+        "compressed_bytes": {
+          "avg": 81450,
+          "p50": 81450,
+          "p95": 81450,
+          "total": 81450,
+          "max": 81450
+        },
+        "total_compressed_bytes": 81450,
+        "max_parsed_heap_bytes": 555669,
+        "within_parsed_heap_cap": true,
+        "deterministic": true
+      },
+      {
+        "record_target": 1024,
+        "compressed_ceiling": "512KiB",
+        "pages": 1,
+        "parsed_bytes": {
+          "avg": 555669,
+          "p50": 555669,
+          "p95": 555669,
+          "total": 555669,
+          "max": 555669
+        },
+        "compressed_bytes": {
+          "avg": 81450,
+          "p50": 81450,
+          "p95": 81450,
+          "total": 81450,
+          "max": 81450
+        },
+        "total_compressed_bytes": 81450,
+        "max_parsed_heap_bytes": 555669,
+        "within_parsed_heap_cap": true,
+        "deterministic": true
+      },
+      {
+        "record_target": 1024,
+        "compressed_ceiling": "1MiB",
+        "pages": 1,
+        "parsed_bytes": {
+          "avg": 555669,
+          "p50": 555669,
+          "p95": 555669,
+          "total": 555669,
+          "max": 555669
+        },
+        "compressed_bytes": {
+          "avg": 81450,
+          "p50": 81450,
+          "p95": 81450,
+          "total": 81450,
+          "max": 81450
+        },
+        "total_compressed_bytes": 81450,
+        "max_parsed_heap_bytes": 555669,
+        "within_parsed_heap_cap": true,
+        "deterministic": true
+      }
+    ],
+    "selected_candidate": {
+      "label": "CORPUS-GROUNDED CANDIDATE",
+      "record_count_target": 512,
+      "compressed_bytes_ceiling": 524288,
+      "parsed_heap_ceiling": 4194304,
+      "note": "derived from 2026-05-13, 8,350 rows (smaller+older than production 475,112; no degree-43,364 target). Production-scale follow-up required."
+    }
+  },
+  "heavy_hitter": {
+    "label": "SYNTHETIC / PARAMETER CANDIDATE",
+    "degree": 43364,
+    "pages": 85,
+    "two_level": true,
+    "directory_depth": 1,
+    "reason": "count",
+    "mandatory_two_level": true,
+    "list_walk_requests": 22,
+    "worst_case_single_request_reads": {
+      "control": 1,
+      "posting": 4,
+      "canonical": 0,
+      "total": 5
+    },
+    "budget_proof_ok": true,
+    "rows_traversed": 43364,
+    "full_traversal_complete": true,
+    "note": "SYNTHETIC fixture (corpus has no degree-43,364 target). A production-scale corpus-grounded heavy-hitter spike is the follow-up."
+  },
+  "partition_comparison": {
+    "subject": "busiest corpus target_id=CHEMBL612545 (degree 778)",
+    "strategies": [
+      {
+        "strategy": "P0_none",
+        "partitions": 1,
+        "total_pages": 2,
+        "bucket_sizes": [
+          778
+        ],
+        "partition_names": [
+          "all"
+        ],
+        "cursor_rounds_full_read_estimate": 1,
+        "duplicated_bytes_note": "baseline (no duplication)"
+      },
+      {
+        "strategy": "P1_is_active",
+        "partitions": 3,
+        "total_pages": 4,
+        "bucket_sizes": [
+          585,
+          159,
+          34
+        ],
+        "partition_names": [
+          "is_active=false",
+          "is_active=null",
+          "is_active=true"
+        ],
+        "cursor_rounds_full_read_estimate": 1,
+        "duplicated_bytes_note": "each partition stores its own pages; manifest grows with partition count"
+      },
+      {
+        "strategy": "P2_is_active_x_activity_type",
+        "partitions": 13,
+        "total_pages": 13,
+        "bucket_sizes": [
+          503,
+          41,
+          100,
+          15,
+          22,
+          21,
+          29,
+          18,
+          4,
+          9,
+          2,
+          7,
+          7
+        ],
+        "partition_names": [
+          "is_active=false|type=AC50",
+          "is_active=false|type=EC50",
+          "is_active=false|type=IC50",
+          "is_active=false|type=inhibition",
+          "is_active=null|type=AC50",
+          "is_active=null|type=EC50",
+          "is_active=null|type=IC50",
+          "is_active=null|type=inhibition",
+          "is_active=null|type=other",
+          "is_active=true|type=AC50",
+          "is_active=true|type=EC50",
+          "is_active=true|type=IC50",
+          "is_active=true|type=inhibition"
+        ],
+        "cursor_rounds_full_read_estimate": 4,
+        "duplicated_bytes_note": "each partition stores its own pages; manifest grows with partition count"
+      }
+    ],
+    "winner": {
+      "choice": "P0_none",
+      "label": "CORPUS-GROUNDED CANDIDATE",
+      "rationale": "At corpus scale the busiest target fits in few pages; P1/P2 add manifest + duplicated-bytes overhead without enough selectivity benefit. P1 (is_active) is the proposed follow-up to evaluate at production degree."
+    }
+  },
+  "referential_integrity": {
+    "projection_record_count": 8351,
+    "canonical_resolved_count": 8351,
+    "dangling_reference_count": 0,
+    "content_hash_mismatch_count": 0,
+    "referential_integrity_attestation_hash": "326e39abda1359c6c728288008999d36c6b1b5ac2cb9387db2fcca4d02e9a743",
+    "clean": true
+  },
+  "determinism": {
+    "canonical_shard_byte_identical": true,
+    "canonical_shard_sha256_match": true,
+    "matrix_all_deterministic": true
+  },
+  "codec": {
+    "detected_codec_impl": "wasm",
+    "native_artifact_activatable": false,
+    "native_assert_error": "[NOT-ACTIVATABLE] codec_impl=\"wasm\" — only \"rust-ffi\" produces deterministic frames; a WASM-fallback artifact is dev-diagnostic only and MUST NOT be activated.",
+    "wasm_artifact_activatable": false,
+    "wasm_assert_throws": true,
+    "note": "A WASM-fallback artifact is dev-diagnostic only; assertActivatableCodec THROWS for it. The spike does NOT relax the contract for missing native zstd."
+  }
+}
