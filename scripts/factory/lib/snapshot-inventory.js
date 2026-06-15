@@ -53,6 +53,7 @@
 import { SNAPSHOT_FILES } from './aggregated-files.js';
 import {
     compoundsManifestKey, negManifestKey, xrefIndexKey, searchProjectionKey,
+    compoundsShardKey, negShardKey,
 } from './snapshot-identity.js';
 
 /**
@@ -125,26 +126,61 @@ export const SATELLITE_INVENTORY = Object.freeze([
  * path. Declared so validateCandidate + the parity test treat them as required.
  * `key_pattern` is informational (the actual keys are derived per-bucket / from
  * the manifest at validate time, hence the `derive` reference).
+ *
+ * RK-16A0: each entry now carries per-family PROBE metadata so the activation
+ * gate (enforceCompleteStructuredInventory) can iterate this SSoT and validate
+ * EVERY structured family caller-independently — not just decode-probe the one
+ * compound shard. Two `kind`s:
+ *   'sharded'       a manifest + NXVF shard family. `derive(prefix)` is the
+ *                   per-bucket manifest key; `deriveShard(prefix,bucket,shard)`
+ *                   resolves a shard sibling. The gate GETs the manifest, asserts
+ *                   >=1 shard, then GET+decodes the sample shard (NXVF V4.1).
+ *   'projection_gz' a single gzipped projection at `derive(prefix)`. `format`
+ *                   selects the decode assertion: 'json' (gunzip -> JSON.parse the
+ *                   whole text) or 'jsonl' (gunzip -> JSON.parse the first record).
  */
 export const STRUCTURED_INVENTORY = Object.freeze([
     {
         id: 'compounds',
+        kind: 'sharded',
         key_pattern: '<prefix>compounds/bucket-NNNN/manifest.json + shard-MMM.bin',
         surface: 'compound resolve/load (sharded NXVF)',
         reader: 'src/worker/lib/compound-loader.ts + compound-bucket-router.ts (manifestKeyForCtx/shardKeyForCtx)',
         producer: 'compound-shard-publisher.js publishCompoundShards',
         derive: (prefix, bucket = 0) => compoundsManifestKey(prefix, bucket),
+        deriveShard: (prefix, bucket, shard) => compoundsShardKey(prefix, bucket, shard),
     },
     {
         id: 'neg-evidence',
+        kind: 'sharded',
+        // CONDITIONAL family: the real F4 orchestrator legitimately SKIPS neg
+        // (runShardPublishAndSwap passes neg:null on the skip path), so the gate
+        // probes neg ONLY when the candidate seal declares it present. The probe
+        // is keyed off seal.neg_evidence_manifest_key (the SERVING descriptor
+        // root, set non-null only when neg shards were actually published).
+        // compounds/xref/search carry NO conditionalOn => ALWAYS required.
+        conditionalOn: 'neg_evidence_manifest_key',
         key_pattern: '<prefix>neg-evidence/bucket-NNNN/manifest.json + shard-MMM.bin',
         surface: 'negative-evidence sharded paged read',
         reader: 'src/worker/lib/neg-evidence-loader.ts (negManifestKeyForCtx)',
         producer: 'neg-shard-publisher.js publishNegShards',
+        // neg shards are HASH-bucketed (negBucketOf) — they almost NEVER land in
+        // bucket 0, so a fixed bucket-0 derive cannot find the manifest. The real
+        // per-bucket manifest key is recorded in the seal's required_inventory by
+        // the producer (buildNegKeyContract.validationProbeKey == manifestKeys[0]);
+        // resolveManifestKey extracts THAT exact key. probeSampleShard then reads
+        // `manifest.bucket` from the manifest body to resolve the sample shard, so
+        // shard resolution stays bucket-correct independent of this derive.
+        resolveManifestKey: (seal, prefix) => (seal?.required_inventory ?? []).find(
+            k => k.startsWith(`${prefix}neg-evidence/bucket-`) && k.endsWith('/manifest.json'),
+        ) ?? null,
         derive: (prefix, bucket = 0) => negManifestKey(prefix, bucket),
+        deriveShard: (prefix, bucket, shard) => negShardKey(prefix, bucket, shard),
     },
     {
         id: 'xref-index',
+        kind: 'projection_gz',
+        format: 'json',
         key_pattern: '<prefix>xref-index.json.gz',
         surface: 'xref/routing (id->cid for 7 namespaces)',
         reader: 'src/worker/lib/xref-index-loader.ts:137 (xrefIndexKeyForCtx)',
@@ -153,6 +189,8 @@ export const STRUCTURED_INVENTORY = Object.freeze([
     },
     {
         id: 'compounds-search',
+        kind: 'projection_gz',
+        format: 'jsonl',
         key_pattern: '<prefix>compounds-search.jsonl.gz',
         surface: 'compound free-text search projection',
         reader: 'src/worker/lib/compound-search.ts:120,122 (fetchSearchCorpus, SEARCH_PROJECTION)',

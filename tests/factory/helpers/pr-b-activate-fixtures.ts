@@ -103,8 +103,14 @@ export async function publishCandidate(client: any, date: string, runId: string,
         client, bucket: 'b', jsonlPath: jsonl, snapshotDate: date,
         outputDir: path.join(dir, 'compounds', 'bucket-0000'), objectPrefix: prefix,
     });
-    await putCreateOnly(client, 'b', searchProjectionKey(prefix), Buffer.from('x'), 'application/gzip');
-    await putCreateOnly(client, 'b', xrefIndexKey(prefix), Buffer.from('y'), 'application/gzip');
+    // RK-16A0: the activation gate now GET+decode-probes these HARD-required
+    // projections (gunzip -> JSON.parse). Publish REAL gzip stand-ins, not
+    // plaintext: compounds-search.jsonl.gz = a gzipped JSONL line; xref-index.json.gz
+    // = a gzipped JSON object — matching the minimal shapes the readers expect.
+    await putCreateOnly(client, 'b', searchProjectionKey(prefix),
+        gzipSync(Buffer.from(JSON.stringify({ id: 'sciweon::compound::CID2244', name: 'aspirin' }) + '\n')), 'application/gzip');
+    await putCreateOnly(client, 'b', xrefIndexKey(prefix),
+        gzipSync(Buffer.from(JSON.stringify({ namespaces: {}, version: 1 }))), 'application/gzip');
     if (withSatellites) await publishSatellites(client, prefix);
     const identity = { snapshotId: id, objectPrefix: prefix, snapshotDate: date, runId, runAttempt: '1', commitSha: 'deadbeef' };
     return { identity, manifest: res.manifest, prefix, dir };

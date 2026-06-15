@@ -29,6 +29,7 @@ import {
     satelliteInventoryForSeal, enforceCompleteSatelliteInventory,
 } from './candidate-satellite-inventory.js';
 import { probeCompoundSampleShard } from './candidate-shard-probe.js';
+import { enforceCompleteStructuredInventory } from './candidate-structured-inventory.js';
 import { swapLatestPointer } from './publish-shards-and-swap.js';
 
 const LATEST_KEY = 'snapshots/latest.json';
@@ -149,13 +150,12 @@ function compoundManifestKeyOf(manifest, objectPrefix) {
 }
 
 /**
- * Validate the candidate by reading ONLY its own keys (NEVER latest.json):
- * the root seal re-reads + its canonical hash matches; every STRUCTURED
- * required-inventory object exists with size > 0 (RK-17: a bare logical-prefix
- * key is refused before any HEAD); every SSoT-required SATELLITE is present +
- * reader-decodable (gunzip + a parseable record), enforced against the SSoT
- * independent of the seal's self-declaration; the compound manifest re-reads +
- * a sample shard decodes (NXVF). Throws on any gate. Returns { state: VALIDATED }.
+ * Validate the candidate by reading ONLY its own keys (NEVER latest.json): the
+ * root seal re-reads + its canonical hash matches; every STRUCTURED required-
+ * inventory object exists size>0 (RK-17: a bare logical-prefix key is refused);
+ * every SSoT-required SATELLITE is present + reader-decodable (SSoT-enforced,
+ * independent of the seal); the compound shard decodes (NXVF); RK-16A0 every
+ * STRUCTURED family is present + decodable. Throws on any gate. -> VALIDATED.
  */
 export async function validateCandidate({ client, bucket, identity, expectedHash }) {
     const { objectPrefix } = identity;
@@ -168,14 +168,13 @@ export async function validateCandidate({ client, bucket, identity, expectedHash
         throw new Error(`[ACTIVATE] candidate seal hash mismatch: stored=${storedHash} recomputed=${recomputed} expected=${expectedHash}`);
     }
     // (b) required STRUCTURED inventory: every declared object exists + non-empty.
-    // Satellites are in required_inventory too (binding the seal hash) but are
-    // validated MORE strictly in (b2) — skip them here so (b2) owns their errors.
+    // Satellites are in required_inventory too (seal-hash binding) but skipped
+    // here -> validated MORE strictly in (b2), which owns their errors.
     const satelliteSet = new Set(seal.satellite_inventory ?? []);
     for (const key of seal.required_inventory ?? []) {
         if (satelliteSet.has(key)) continue; // satellites validated by (b2)
-        // RK-17 invariant (permanent): a probe key MUST be a real object. A bare
-        // logical prefix (trailing `/`, e.g. the neg descriptor root) is NOT an R2
-        // object -> HEAD would 404 a complete candidate; refuse to HEAD it.
+        // RK-17 invariant (permanent): a probe key MUST be a real object — a bare
+        // logical prefix (trailing `/`) is not an R2 object; refuse to HEAD it.
         if (key.endsWith('/')) {
             throw new Error(`[ACTIVATE] refusing to HEAD a logical-prefix key (${key}): `
                 + `a validation probe key must be a real object, not a bare prefix`);
@@ -186,12 +185,13 @@ export async function validateCandidate({ client, bucket, identity, expectedHash
         if (!size || size <= 0) throw new Error(`[ACTIVATE] required candidate object is empty: ${key}`);
     }
     // (b2) RK-15 full-snapshot completeness (AUTHORITATIVE, SSoT-based): every
-    // SSoT-required satellite must be present + reader-decodable at object_prefix,
-    // enforced INDEPENDENT of the seal's self-declared inventory AND the caller's
-    // satelliteKeys param (see candidate-satellite-inventory.js) for ANY caller.
+    // SSoT-required satellite present + reader-decodable at object_prefix,
+    // enforced INDEPENDENT of the seal + caller satelliteKeys (any caller).
     await enforceCompleteSatelliteInventory({ client, bucket, objectPrefix, seal });
     // (c)+(d) re-read the compound manifest, resolve a sample shard, decode NXVF.
     await probeCompoundSampleShard({ client, bucket, objectPrefix, seal });
+    // (e) RK-16A0: every HARD STRUCTURED family present + reader-decodable (SSoT, caller-independent); CONDITIONAL families (neg) probed only when the seal declares them; runs BEFORE the swap.
+    await enforceCompleteStructuredInventory({ client, bucket, objectPrefix, seal });
     return { state: PUBLISH_STATES.VALIDATED };
 }
 
