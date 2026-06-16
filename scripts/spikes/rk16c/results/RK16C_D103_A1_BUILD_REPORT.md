@@ -1,5 +1,11 @@
 # RK-16C D-103 A1 TWO-MANIFEST PREFLIGHT — BUILD REPORT
 
+> **D-104 SUCCESSOR-PR ADDENDUM is at the bottom of this file** (clean
+> validation PR identities, PM-PROPOSED runner SHA, complete 5-failure ledger,
+> verification taxonomy). Per D-104 §10 the runner SHA is **PM-PROPOSED**, NOT
+> "Founder-audited", until the successor gate passes. The §0 SHA below is the
+> PR #272 runner SHA (historical); the successor SHA is in the addendum.
+
 **BUILD-ONLY. NO production R2 read. NO metadata HEAD/GET against R2. NO
 credentialed fetch. NO workflow dispatch / rerun. NO env approval. NO payload
 read. NO family registered. NO carrier merge / new tag / tag move. PR #272 stays
@@ -99,3 +105,108 @@ hardening** (future root seals to directly commit `manifest.json` key + SHA-256)
 
 D-102 / D-103 / RK-16 governance artifacts: NUL=0.
 Known pre-existing repository encoding artifact remains: `tests/tools/snomed-rehydrate.test.ts`.
+
+---
+
+# D-104 SUCCESSOR VALIDATION PR — ADDENDUM
+
+Per founder **D-104** (HOLD / corrective validation): a CLEAN successor PR validates
+the corrected D-103 A1 implementation against current `main`, **code-only, with NO
+workflow file** (resolving the PR #272 conflict structurally instead of merging the
+spent carrier). The workflow carrier + its two coupled tests are a separate future
+artifact.
+
+## S0. Successor identities
+
+```
+successor branch:        feat/rk16c-fullcorpus-validation
+base (current main):     5b5d4f652bedc6f1dd65e62c90853f9db756bdb1
+PM-PROPOSED_RUNNER_SHA:  5328d3813d9494838d42be6fcff2f2c027dba749  (impl commit)
+prior PR #272 runner SHA: 7e4fa65d38e8b8b359c82070432db952b670b26f  (PM-PROPOSED, historical)
+node / npm tested:       v24.14.0 / 11.9.0   (CI runs node 22)
+```
+
+Per D-104 §10 the runner SHA is **PM-PROPOSED**, not Founder-audited, until this
+gate passes (targeted + post-fix full suite + required GitHub CI green).
+
+## S1. Code transfer (byte-identical, D-104 §5)
+
+Source = PR #272 head `eca7987` (commits `7e4fa65` runner + `d2f0ff0` workflow/report
++ `eca7987` static-test fix). Transfer = `git checkout eca7987 -- <impl files>` onto a
+branch from current main. Verified blob-OID identity (source==successor):
+
+```
+two-manifest-preflight.mjs   ba010f9b9d23   IDENTICAL
+r2-readonly-adapter.mjs      4dbe3e27a28e   IDENTICAL
+exact-readonly-guard.mjs     7fba97266698   IDENTICAL
+fullcorpus-lock.mjs          10b92c785c43   IDENTICAL
+corpus-identity.mjs          94bcbefe4a92   IDENTICAL
+preflight-control.mjs        ad0d3516f0f4   IDENTICAL
+run-fullcorpus.mjs           306255354c64   IDENTICAL
+RK16C_FULLCORPUS_LOCK.template.json 81a0780a65c6 IDENTICAL
+rk16c-two-manifest.test.ts   6c3cdc675bc4   IDENTICAL
+rk16c-fullcorpus-runner.test.ts de2575b1408c IDENTICAL
+rk16c-fullcorpus-adapter.test.ts 21b71c48b7ed IDENTICAL
+```
+
+ALL implementation files byte-identical (no main-compatibility change required).
+24 files added; **0 modified main files**. Workflow file is NOT in the diff (confirmed).
+
+**Excluded (D-104 §4/§6):** `.github/workflows/rk16c-manifest-preflight.yml`,
+`tests/rk16/rk16c-workflow-static.test.ts`, `tests/rk16/rk16c-workflow-sim.test.ts`
+(workflow-coupled → future carrier PR). P-12 NOT implemented here. No DailyMed/SNOMED
+edits. No unrelated main changes.
+
+## S2. Complete 5-failure ledger (original PR #272 full-suite run)
+
+| # | test file | test(s) | original error | classification | evidence | fixed? | rerun result | vs current main | disposition |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | rk16c-workflow-static.test.ts | check6 "checkout ref==AUDITED_RUNNER_SHA" + neg-assert "SHA-verify step env" (2 tests) | `expected 'b0b8246…' to be '7e4fa65…'` | **real defect** (D-103 repin moved SHA; test pinned old) | the static test hardcoded the consumed runner SHA | YES (#272 `eca7987`) | 20/20 pass post-fix | n/a (workflow-coupled) | **EXCLUDED from successor** (carrier PR); fixed on #272 |
+| 2 | dailymed-adapter-incremental.test.ts | 3 × `fetchIncremental …` (timeouts) | `Test timed out in 5000ms` | **environment flake** | byte-identical to main; only fails under concurrent full-suite load | no code change | **5/5 pass ×2 isolated reruns** on successor | identical file → identical on main | non-regression flake |
+| 3 | snomed-rehydrate.test.ts | (file-level, 0 tests) | `(0 test)` collection failure | **pre-existing encoding artifact** | byte-identical to main; not in successor diff; main's own CI (node 22) is green with this file | no code change | reproduces (node-24 local only) | identical to main | known pre-existing; named in NUL wording |
+
+**Sum: 5 failed TESTS (2+3+0) across 3 FILES** = original `5 failed | 3 files`. ✓
+No failure disappears through aggregation.
+
+## S3. Post-fix full-suite result (successor, D-104 §7.2)
+
+```
+command:   npx vitest run
+commit:    5328d3813d9494838d42be6fcff2f2c027dba749
+node/npm:  v24.14.0 / 11.9.0
+Test Files 1 failed | 218 passed | 1 skipped (220)
+Tests      2426 passed | 0 failed | 1 skipped (2427)
+duration   124.29s
+```
+
+**0 test failures.** The single failed FILE is `tests/tools/snomed-rehydrate.test.ts`
+("0 test" collection-level) — the known pre-existing encoding artifact (ledger #3),
+byte-identical to main, the SOLE cause of the local `exit 1` (node-24 quirk; main's CI
+on node 22 is green with this file present, proving it is not a real test failure).
+The 2 PR #272 test-failure files (workflow-static, dailymed) are absent/green here.
+Targeted: rk16c-two-manifest (21) + -runner (14) + -adapter (20) = 55 pass; CES PASS.
+
+## S4. Verification taxonomy (D-104 §9)
+
+- **CODE-GROUNDED:** object_prefix + manifest.json key derivation; manifest.json NOT
+  root-inventory-listed; payload listed exactly once; create-only co-publication
+  order; files[] satellite-projection rule. (file:line cited in §2-§7 above.)
+- **FIXTURE-VERIFIED:** two-manifest Stage1/Stage2 validation, recomputed
+  manifest_hash, set/target reconciliation, lock v2, guard (FAKE-client tests).
+- **CI-VERIFIED:** pending real GitHub required checks on the successor PR (this gate).
+- **NOT-YET-PRODUCTION-VERIFIED:** the two-manifest preflight against the real R2
+  snapshot — remains closed until a separately authorized metadata RUN gate.
+
+## S5. D-104 boundary attestation
+
+Production R2 access = 0 · new workflow dispatches = 0 · payload reads = 0 · production
+writes = 0. Old run `27556302525` / tag `rk16c-manifest-preflight-7ef1c35` /
+environment UNCHANGED. PR #272 OPEN / CONFLICTING / unmodified after the D-104 ruling.
+No workflow carrier created. No main merged into #272.
+
+```
+D-104 / RK-16 governance artifacts: NUL=0.
+
+Known pre-existing repository encoding artifact remains:
+tests/tools/snomed-rehydrate.test.ts
+```
