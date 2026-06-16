@@ -24,19 +24,32 @@ import path from 'path';
 import { createHash } from 'crypto';
 import {
     consumedObjectKeys, bioactivitiesObjectKey, manifestObjectKey,
+    fileManifestObjectKey, objectPrefixOf,
     CANDIDATE_SNAPSHOT_ID, EXPECTED_ROW_COUNT, proposeIdentity,
 } from './corpus-identity.mjs';
 import { instrumentExactReadOnlyClient } from './exact-readonly-guard.mjs';
 import { loadAndRequireLock } from './fullcorpus-lock.mjs';
 import {
+    validateRootSeal, validateFileManifest, deriveFileManifestKey,
+    normalizeSatelliteInventory, reconcileFilesWithInventory, extractBioactivitiesEntry,
+    assembleCandidateLock,
+} from './two-manifest-preflight.mjs';
+import {
     startMemoryMonitor, requireDiskPreflight, memorySample,
 } from './resource-guard.mjs';
 
 /** HARD caps — fail-closed past any (a runaway read is a defect, not a retry). */
-export const MAX_REQUESTS = 8;                  // 2 keys x (HEAD+GET) + slack
-export const MAX_OBJECTS = 2;                   // M1: exactly manifest + payload
-export const MAX_TOTAL_BYTES = 1.5 * 1024 * 1024 * 1024; // 1.5 GiB ceiling
-export const MAX_MANIFEST_BYTES = 2 * 1024 * 1024;       // preflight metadata cap (2 MiB)
+export const MAX_REQUESTS = 8;                  // <=2 metadata objects x (HEAD+GET) + slack
+export const MAX_OBJECTS = 2;                   // exactly TWO metadata objects (seal + manifest.json) / full-run: seal+payload
+export const MAX_TOTAL_BYTES = 1.5 * 1024 * 1024 * 1024; // 1.5 GiB payload ceiling
+// D-103 §9 metadata byte caps. The seal + per-file manifest are small (a handful
+// of KiB each in production); 2 MiB per object is a bounded, far-from-unlimited
+// ceiling (NOT arbitrary), and 4 MiB combined caps both reads. Cap breach FAILS
+// CLOSED before candidate-lock creation.
+export const MAX_ROOT_MANIFEST_BYTES = 2 * 1024 * 1024;  // root seal cap (2 MiB)
+export const MAX_FILE_MANIFEST_BYTES = 2 * 1024 * 1024;  // per-file manifest cap (2 MiB)
+export const MAX_METADATA_TOTAL_BYTES = MAX_ROOT_MANIFEST_BYTES + MAX_FILE_MANIFEST_BYTES; // 4 MiB
+export const MAX_MANIFEST_BYTES = MAX_ROOT_MANIFEST_BYTES; // back-compat alias (root seal cap)
 /** Per-object byte estimate for the satellite (compressed gz, EXPECTED-ONLY). */
 export const EST_BIOACTIVITIES_BYTES = 60 * 1024 * 1024; // ~60 MiB est (gz)
 export const EST_MANIFEST_BYTES = 64 * 1024;
@@ -122,11 +135,30 @@ export function cleanup(snapshotId = CANDIDATE_SNAPSHOT_ID) {
     return { removed: false, dir };
 }
 
+/** Best-effort execution provenance for the candidate lock (null off-Actions). */
+function readProvenance() {
+    const run = process.env.GITHUB_RUN_ID
+        ? `${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT || '1'}`
+        : null;
+    return {
+        workflow_run: run,
+        runner_sha: process.env.AUDITED_RUNNER_SHA || process.env.GITHUB_SHA || null,
+        workflow_sha: process.env.WORKFLOW_DEFINITION_SHA || process.env.GITHUB_SHA || null,
+    };
+}
+
 /**
- * STAGE 1 — METADATA-ONLY PREFLIGHT (future founder gate). Targets ONLY the
- * manifest key (HEAD then a small-capped GET); NEVER touches the payload. Under
- * a real gate this would emit the lock (manifest pins + payload pins read FROM
- * THE MANIFEST BODY). Refuses unless execute===true AND a snapshot pin. */
+ * STAGE 1+2 — TWO-MANIFEST METADATA-ONLY PREFLIGHT (D-103 A1). Reads EXACTLY two
+ * metadata objects under the validated immutable prefix — the root seal then the
+ * deterministic per-file manifest sibling — and NEVER the payload. Stage 1
+ * validates the seal (identity + recomputed manifest_hash + payload exactly once
+ * in satellite_inventory). The per-file manifest key is then derived from the
+ * VALIDATED object_prefix and asserted equal to the allowlisted sibling key
+ * BEFORE the second read. Stage 2 validates the per-file manifest, reconciles
+ * files[] against the satellite inventory, and extracts the bioactivities pins.
+ * Returns an assembled UNRATIFIED candidate lock. Refuses unless execute===true
+ * AND a snapshot pin AND --manifest-key === the exact seal key.
+ */
 export async function preflightManifest(opts, deps) {
     if (opts.execute !== true) {
         throw new Error('[rk16c-adapter] refusing preflight: --execute not set (default is dry-run)');
@@ -135,29 +167,76 @@ export async function preflightManifest(opts, deps) {
         throw new Error('[rk16c-adapter] refusing preflight: no snapshot pin supplied');
     }
     const snapshotId = opts.snapshot;
-    const manifestKey = opts.manifestKey || manifestObjectKey(snapshotId);
-    if (manifestKey !== manifestObjectKey(snapshotId)) {
-        throw new Error(`[rk16c-adapter] preflight manifest-key mismatch: ${manifestKey} != ${manifestObjectKey(snapshotId)} — fail-closed`);
+    const sealKey = manifestObjectKey(snapshotId);
+    const manifestKey = opts.manifestKey || sealKey;
+    if (manifestKey !== sealKey) {
+        throw new Error(`[rk16c-adapter] preflight manifest-key mismatch: ${manifestKey} != ${sealKey} — fail-closed`);
     }
-    // EXACT allowlist for preflight = the manifest key ONLY (no payload).
-    const guarded = deps.instrument(deps.makeClient(), [manifestKey]);
-    const head = await deps.headObject(guarded, deps.bucket, manifestKey);
-    if ((head.size || 0) > MAX_MANIFEST_BYTES) {
-        throw new Error(`[rk16c-adapter] manifest byte cap exceeded (HEAD ${head.size} > ${MAX_MANIFEST_BYTES}) — fail-closed BEFORE GET`);
+    const payloadKey = bioactivitiesObjectKey(snapshotId);
+    // The per-file manifest key is the deterministic sibling — derived ONLY from
+    // the pinned snapshot prefix, NEVER from caller input/List/latest. It is
+    // re-asserted against the VALIDATED seal object_prefix before Stage 2.
+    const fileManifestKey = fileManifestObjectKey(snapshotId);
+    // EXACT allowlist = the TWO metadata keys ONLY (no payload, ever).
+    const guarded = deps.instrument(deps.makeClient(), [sealKey, fileManifestKey]);
+
+    // ---- Stage 1: root seal ----
+    const sealHead = await deps.headObject(guarded, deps.bucket, sealKey);
+    if ((sealHead.size || 0) > MAX_ROOT_MANIFEST_BYTES) {
+        throw new Error(`[rk16c-adapter] root-manifest byte cap exceeded (HEAD ${sealHead.size} > ${MAX_ROOT_MANIFEST_BYTES}) — fail-closed BEFORE GET`);
     }
-    const got = await deps.getObject(guarded, deps.bucket, manifestKey);
+    const sealGot = await deps.getObject(guarded, deps.bucket, sealKey);
+    const sealSha = sha256(sealGot.body);
+    const sealFacts = validateRootSeal(sealGot.body, { snapshotId, payloadKey });
+    // FAIL BEFORE SECOND READ if the derived sibling key (from the validated
+    // object_prefix) does not equal the allowlisted/expected sibling key.
+    const derivedFileKey = deriveFileManifestKey(sealFacts.object_prefix);
+    if (derivedFileKey !== fileManifestKey) {
+        throw new Error(`[rk16c-adapter] derived per-file manifest key ${derivedFileKey} != expected ${fileManifestKey} — FAIL BEFORE SECOND METADATA READ`);
+    }
+
+    // ---- Stage 2: deterministic per-file manifest sibling ----
+    const fmHead = await deps.headObject(guarded, deps.bucket, fileManifestKey);
+    if ((fmHead.size || 0) > MAX_FILE_MANIFEST_BYTES) {
+        throw new Error(`[rk16c-adapter] per-file manifest byte cap exceeded (HEAD ${fmHead.size} > ${MAX_FILE_MANIFEST_BYTES}) — fail-closed BEFORE GET`);
+    }
+    const fmGot = await deps.getObject(guarded, deps.bucket, fileManifestKey);
+    const fmSha = sha256(fmGot.body);
+    if ((sealGot.size + fmGot.size) > MAX_METADATA_TOTAL_BYTES) {
+        throw new Error(`[rk16c-adapter] combined metadata byte cap exceeded (${sealGot.size}+${fmGot.size} > ${MAX_METADATA_TOTAL_BYTES}) — fail-closed`);
+    }
+    const fmFacts = validateFileManifest(fmGot.body, { snapshotId, objectPrefix: sealFacts.object_prefix });
+
+    // ---- reconciliation + target pins ----
+    const normSats = normalizeSatelliteInventory(sealFacts.satellite_inventory, sealFacts.object_prefix);
+    const projection = reconcileFilesWithInventory(fmFacts.files, normSats);
+    const payloadFilename = payloadKey.slice(sealFacts.object_prefix.length);
+    const pins = extractBioactivitiesEntry(projection, payloadFilename);
+
+    const candidate = assembleCandidateLock({
+        seal: sealFacts,
+        fileManifest: fmFacts,
+        payloadKey,
+        payloadFilename,
+        pins,
+        rootManifestRead: { key: sealKey, etag: sealHead.etag, byte_size: sealGot.size, sha256: sealSha },
+        fileManifestRead: { key: fileManifestKey, etag: fmHead.etag, byte_size: fmGot.size, sha256: fmSha },
+        expectedRowCount: opts.expectedRows,
+        provenance: readProvenance(),
+    });
+
     return {
         mode: 'preflight',
         network_performed: true,
         snapshot_id: snapshotId,
-        manifest_key: manifestKey,
-        manifest_etag: head.etag,
-        manifest_byte_size: got.size,
-        manifest_sha256: sha256(got.body),
-        manifest_body: got.body, // payload pins are extracted FROM here by the gate
+        root_manifest_key: sealKey,
+        file_manifest_key: fileManifestKey,
+        payload_key: payloadKey,
+        candidate,
+        requests_used: guarded.callCount,
         list_attempt_count: guarded.list_attempt_count,
         non_allowlisted_key_attempt_count: guarded.non_allowlisted_key_attempt_count,
-        note: 'METADATA-ONLY: manifest read only; NO payload GET. Lock emission is founder-gated.',
+        note: 'METADATA-ONLY (A1): two metadata objects read (seal + manifest.json); NO payload GET. Lock is UNRATIFIED + founder-gated.',
     };
 }
 
@@ -173,11 +252,15 @@ export async function executeFullRun(opts, deps) {
     }
     // FAIL BEFORE NETWORK: a complete lock is the ONLY accepted input.
     const lock = loadAndRequireLock(opts.lockPath); // throws (no client) if incomplete
+    // FAIL BEFORE NETWORK: a candidate is UNRATIFIED until the founder flips it.
+    if (lock.authorized_for_payload_read !== true) {
+        throw new Error('[rk16c-adapter] refusing full run: lock is not founder-authorized for payload read (authorized_for_payload_read !== true) — FAIL BEFORE NETWORK');
+    }
     const snapshotId = lock.snapshot_id;
     const payloadKey = lock.payload_key;
-    const allowlist = new Set([lock.manifest_key, payloadKey]);
+    const allowlist = new Set([lock.root_manifest_key, payloadKey]);
     const dir = materializationDir(snapshotId);
-    requireDiskPreflight(os.tmpdir(), { compressedBytes: lock.payload_byte_size }); // FAIL BEFORE NETWORK
+    requireDiskPreflight(os.tmpdir(), { compressedBytes: lock.payload_compressed_bytes }); // FAIL BEFORE NETWORK
     const mem = startMemoryMonitor(opts.memory || {});
 
     // Only NOW (after lock + disk preflight) may a client exist / network occur.
@@ -197,8 +280,8 @@ export async function executeFullRun(opts, deps) {
         if ((head.size || 0) > MAX_TOTAL_BYTES) {
             throw new Error(`[rk16c-adapter] byte cap exceeded (HEAD ${head.size} > ${MAX_TOTAL_BYTES}) — fail-closed BEFORE GET`);
         }
-        if (lock.payload_byte_size != null && head.size != null && head.size !== lock.payload_byte_size) {
-            throw new Error(`[rk16c-adapter] payload size != lock pin (HEAD ${head.size} != ${lock.payload_byte_size}) — fail-closed BEFORE GET`);
+        if (lock.payload_compressed_bytes != null && head.size != null && head.size !== lock.payload_compressed_bytes) {
+            throw new Error(`[rk16c-adapter] payload size != lock pin (HEAD ${head.size} != ${lock.payload_compressed_bytes}) — fail-closed BEFORE GET`);
         }
         charge();
         // STREAMING GET: hash + land the VERIFIED COMPRESSED file only; the gzip
@@ -208,8 +291,8 @@ export async function executeFullRun(opts, deps) {
             throw new Error(`[rk16c-adapter] byte cap exceeded after GET (${got.size} > ${MAX_TOTAL_BYTES}) — fail-closed`);
         }
         const downloadedSha = sha256(got.body);
-        if (lock.payload_sha256 && downloadedSha !== lock.payload_sha256) {
-            throw new Error(`[rk16c-adapter] payload sha256 != lock pin: lock=${lock.payload_sha256} got=${downloadedSha} — fail-closed, NOT used`);
+        if (lock.payload_sha256_compressed && downloadedSha !== lock.payload_sha256_compressed) {
+            throw new Error(`[rk16c-adapter] payload sha256 != lock pin: lock=${lock.payload_sha256_compressed} got=${downloadedSha} — fail-closed, NOT used`);
         }
         const localPath = atomicMaterialize(dir, 'bioactivities.jsonl.gz', got.body, head.size);
 

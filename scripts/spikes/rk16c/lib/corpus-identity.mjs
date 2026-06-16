@@ -30,6 +30,25 @@ export const FORBIDDEN_LATEST_ALIAS_KEY = 'snapshots/latest.json';
 export function manifestObjectKey(snapshotId = CANDIDATE_SNAPSHOT_ID) {
     return `snapshots/${snapshotId}/_snapshot.manifest.json`;
 }
+/** object_prefix `snapshots/<snapshot_id>/` — ALWAYS ends with `/` (producer:
+ *  snapshot-identity.js objectPrefixFor). */
+export function objectPrefixOf(snapshotId = CANDIDATE_SNAPSHOT_ID) {
+    return `snapshots/${snapshotId}/`;
+}
+/**
+ * D-103 A1: the DETERMINISTIC per-file manifest sibling key — `<prefix>manifest.json`
+ * (snapshot-builder.js writes it; snapshot-uploader.js create-only co-publishes it
+ * under the same immutable prefix). It is NOT referenced in the root seal; it is
+ * derived ONLY from the validated object_prefix, NEVER from List/latest/CLI input.
+ */
+export function fileManifestObjectKey(snapshotId = CANDIDATE_SNAPSHOT_ID) {
+    return `${objectPrefixOf(snapshotId)}manifest.json`;
+}
+/** The EXACTLY-TWO metadata objects the A1 preflight may read (seal + per-file
+ *  manifest). Order is the read order: seal first (Stage 1), manifest.json second. */
+export function metadataPreflightKeys(snapshotId = CANDIDATE_SNAPSHOT_ID) {
+    return [manifestObjectKey(snapshotId), fileManifestObjectKey(snapshotId)];
+}
 
 /**
  * The EXACT, exhaustive object allowlist for a corpus identity read. Anything

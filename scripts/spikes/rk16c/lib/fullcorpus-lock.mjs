@@ -16,24 +16,57 @@
 
 import fs from 'fs';
 
-export const LOCK_SCHEMA_VERSION = 'rk16c-fullcorpus-lock-v1';
+// D-103 candidate-lock v2 (A1 two-manifest trust anchor). The root seal does NOT
+// reference manifest.json, so the lock records the trust model EXPLICITLY and must
+// NEVER claim direct cryptographic root linkage.
+export const LOCK_SCHEMA_VERSION = 'rk16c-fullcorpus-lock-v2';
+export const TRUST_ANCHOR_MODE = 'producer-contract-derived-sibling-v1';
 export const LOCK_FILE_NAME = 'RK16C_FULLCORPUS_LOCK.json';
 
-/** Every field REQUIRED in a complete lock. NO credentials are permitted here. */
+/**
+ * Every INTEGRITY/IDENTITY field REQUIRED in a complete lock before any payload
+ * read may occur. (Provenance — created_by_workflow_run / created_from_runner_sha
+ * / created_from_workflow_sha — is recorded but null in offline/fake contexts, so
+ * it is NOT gated here.) NO credentials are permitted anywhere in a lock.
+ */
 export const REQUIRED_LOCK_FIELDS = Object.freeze([
+    // trust-anchor model
+    'trust_anchor_mode',
+    'file_manifest_key_derivation',
+    'payload_membership_anchor',
+    'file_manifest_admissibility_anchor',
+    // root-manifest (seal) identity
+    'root_manifest_key',
+    'root_manifest_etag',
+    'root_manifest_byte_size',
+    'root_manifest_sha256',
+    'root_manifest_stored_hash',
+    'root_manifest_recomputed_hash',
+    // per-file manifest identity
+    'file_manifest_key',
+    'file_manifest_etag',
+    'file_manifest_byte_size',
+    'file_manifest_sha256',
+    'file_manifest_schema_version',
+    // payload identity
+    'payload_key',
+    'payload_filename',
+    'payload_sha256_compressed',
+    'payload_compressed_bytes',
+    'expected_row_count',
+    // snapshot + execution identity
     'snapshot_id',
     'production_run_id',
-    'manifest_key',
-    'manifest_etag',
-    'manifest_byte_size',
-    'manifest_sha256',
-    'payload_key',
-    'payload_etag',
-    'payload_byte_size',
-    'payload_sha256',
-    'expected_row_count',
-    'schema_version',
+    'producer_contract_version',
+    'candidate_lock_schema',
 ]);
+
+/** SHA-256 hex fields that must match /^[0-9a-f]{64}$/ when present. */
+const SHA256_FIELDS = Object.freeze([
+    'root_manifest_sha256', 'root_manifest_stored_hash', 'root_manifest_recomputed_hash',
+    'file_manifest_sha256', 'payload_sha256_compressed',
+]);
+const SHA256_RE = /^[0-9a-f]{64}$/;
 
 /** Field names that must NEVER appear in a lock (it is credential-free). */
 const FORBIDDEN_CREDENTIAL_FIELDS = Object.freeze([
@@ -67,14 +100,31 @@ export function validateLock(lock) {
             errors.push(`required lock field missing/empty: ${field}`);
         }
     }
-    for (const intField of ['manifest_byte_size', 'payload_byte_size', 'expected_row_count']) {
+    for (const intField of ['root_manifest_byte_size', 'file_manifest_byte_size', 'payload_compressed_bytes', 'expected_row_count']) {
         if (intField in lock && lock[intField] != null && !isPositiveInt(lock[intField])) {
             errors.push(`lock field ${intField} must be a positive integer`);
         }
     }
-    if ('schema_version' in lock && lock.schema_version != null
-        && lock.schema_version !== LOCK_SCHEMA_VERSION) {
-        errors.push(`lock schema_version must be "${LOCK_SCHEMA_VERSION}" (got ${lock.schema_version})`);
+    for (const shaField of SHA256_FIELDS) {
+        if (shaField in lock && lock[shaField] != null && !SHA256_RE.test(String(lock[shaField]))) {
+            errors.push(`lock field ${shaField} must be a 64-hex sha256`);
+        }
+    }
+    if ('candidate_lock_schema' in lock && lock.candidate_lock_schema != null
+        && lock.candidate_lock_schema !== LOCK_SCHEMA_VERSION) {
+        errors.push(`lock candidate_lock_schema must be "${LOCK_SCHEMA_VERSION}" (got ${lock.candidate_lock_schema})`);
+    }
+    if ('trust_anchor_mode' in lock && lock.trust_anchor_mode != null
+        && lock.trust_anchor_mode !== TRUST_ANCHOR_MODE) {
+        errors.push(`lock trust_anchor_mode must be "${TRUST_ANCHOR_MODE}" (got ${lock.trust_anchor_mode})`);
+    }
+    // A1 honesty invariant: the seal does NOT cryptographically reference the
+    // per-file manifest. The lock MUST carry root_directly_references_file_manifest
+    // === false and MUST NOT claim direct root linkage.
+    if (!('root_directly_references_file_manifest' in lock)) {
+        errors.push('lock must record root_directly_references_file_manifest (=false)');
+    } else if (lock.root_directly_references_file_manifest !== false) {
+        errors.push('lock root_directly_references_file_manifest must be exactly false (A1 is NOT direct cryptographic root linkage)');
     }
     for (const cred of FORBIDDEN_CREDENTIAL_FIELDS) {
         if (cred in lock) errors.push(`lock must be credential-free: forbidden field ${cred}`);
