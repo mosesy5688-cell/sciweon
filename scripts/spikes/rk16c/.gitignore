@@ -1,0 +1,10 @@
+# RK-16C full-corpus spike (D) — NEVER commit a materialized corpus, restricted
+# raw data, or credentials. Materialization defaults to os.tmpdir() (outside the
+# repo); this is a defense-in-depth guard in case a future run is pointed here.
+*.jsonl.gz
+*.jsonl
+*.bin
+materialization/
+materialized/
+.materialized/
+*.partial-*
