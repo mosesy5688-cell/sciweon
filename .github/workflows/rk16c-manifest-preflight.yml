@@ -2,11 +2,15 @@ name: RK-16C Manifest-Only Preflight (metadata-only, founder-triggered)
 
 # RK-16C MANIFEST-ONLY ONE-SHOT PREFLIGHT WORKFLOW.
 #
-# Purpose: run the RK-16C spike's METADATA-ONLY preflight against the pinned
-# production snapshot. It performs a HEAD + a small-capped GET of the EXACT
-# manifest key ONLY, extracts the payload pins FROM the manifest body, and
-# writes an UNRATIFIED candidate lock. It NEVER reads the payload
-# (bioactivities.jsonl.gz), NEVER lists/discovers, NEVER follows
+# Purpose: run the RK-16C spike's METADATA-ONLY TWO-MANIFEST preflight (D-103 A1)
+# against the pinned production snapshot. It HEAD+capped-GETs EXACTLY TWO metadata
+# objects -- the root seal (_snapshot.manifest.json) then the deterministic
+# per-file manifest sibling (manifest.json) -- validates + reconciles them,
+# extracts the bioactivities pins from the per-file manifest files[] entry, and
+# writes an UNRATIFIED candidate lock. The root seal does NOT cryptographically
+# reference manifest.json (root_directly_references_file_manifest=false): this is
+# an auditable compatibility chain, NOT direct root linkage. It NEVER reads the
+# payload (bioactivities.jsonl.gz), NEVER lists/discovers, NEVER follows
 # snapshots/latest.json, and NEVER writes R2.
 #
 # === DUAL-SHA MODEL (critical) ===
@@ -16,7 +20,10 @@ name: RK-16C Manifest-Only Preflight (metadata-only, founder-triggered)
 # (the checked-out commit) are DIFFERENT by design. A dedicated verification
 # step FAILS the run if the checked-out commit != AUDITED_RUNNER_SHA, BEFORE
 # any credential use or R2 client construction.
-#   AUDITED_RUNNER_SHA = b0b8246e8ad77742d1aafd0720c5b4dd409d0b44
+#   AUDITED_RUNNER_SHA = 7e4fa65d38e8b8b359c82070432db952b670b26f
+#   (supersedes the consumed D-102 runner b0b8246...; the old run 27556302525,
+#    runner b0b8246, and tag rk16c-manifest-preflight-7ef1c35 are SPENT and must
+#    NOT be reused/moved/rerun -- D-103 §14.)
 #
 # === CANDIDATE LOCK STATUS ===
 # The artifact this run produces (RK16C_FULLCORPUS_LOCK.candidate.json) is
@@ -25,11 +32,12 @@ name: RK-16C Manifest-Only Preflight (metadata-only, founder-triggered)
 # usable lock. No payload GET may occur until a separate founder ratification.
 #
 # === REMOTE-ACCESS BOUNDARY (app-layer enforced) ===
-# The remote access is bounded to: HEAD + GET of the EXACT manifest key only;
-# objects touched = 1 (the manifest); manifest byte cap <= 2 MiB; total
-# requests <= 4; payload GET = 0; List = 0; writes = 0. These bounds are
-# enforced by the APPLICATION exact-readonly guard (lib exact-readonly-guard),
-# NOT necessarily by the credential layer.
+# The remote access is bounded to: HEAD + GET of EXACTLY TWO metadata keys (the
+# root seal + the deterministic per-file manifest sibling); objects touched = 2;
+# root-manifest byte cap <= 2 MiB; per-file manifest byte cap <= 2 MiB; combined
+# metadata byte cap <= 4 MiB; total requests <= 8; payload GET = 0; List = 0;
+# writes = 0. These bounds are enforced by the APPLICATION exact-readonly guard
+# (lib exact-readonly-guard), NOT necessarily by the credential layer.
 #
 # === CREDENTIAL BOUNDARY NOTE (stated honestly) ===
 # The R2 secrets referenced below (R2_ENDPOINT / R2_BUCKET / R2_ACCESS_KEY_ID /
@@ -90,7 +98,7 @@ jobs:
       - name: Checkout audited runner commit
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: b0b8246e8ad77742d1aafd0720c5b4dd409d0b44
+          ref: 7e4fa65d38e8b8b359c82070432db952b670b26f
           persist-credentials: false
 
       # 3. SHA VERIFICATION -- fail-before-network. Prove the executed code is the
@@ -98,7 +106,7 @@ jobs:
       #    secret is printed.
       - name: Verify checked-out commit == AUDITED_RUNNER_SHA
         env:
-          AUDITED_RUNNER_SHA: b0b8246e8ad77742d1aafd0720c5b4dd409d0b44
+          AUDITED_RUNNER_SHA: 7e4fa65d38e8b8b359c82070432db952b670b26f
           WORKFLOW_DEFINITION_SHA: ${{ github.sha }}
         run: |
           CHECKED_OUT_SHA="$(git rev-parse HEAD)"
@@ -123,11 +131,13 @@ jobs:
         run: npm ci
 
       # 6. EXACT preflight command -- hardcoded. No shell-built input, no dynamic
-      #    snapshot, no latest query. Metadata-only: manifest HEAD + capped GET;
-      #    NO payload GET. R2 secrets are referenced via env (above) -- NOT
-      #    secrets: inherit. No set -x, no env dump, no continue-on-error, no
-      #    `|| true`.
-      - name: RK-16C metadata-only preflight (manifest key ONLY, no payload)
+      #    snapshot, no latest query. Metadata-only TWO-MANIFEST: root seal +
+      #    deterministic per-file manifest sibling, each HEAD + capped GET; NO
+      #    payload GET. --manifest-key is the ROOT SEAL key; the sibling
+      #    manifest.json key is derived from the validated object_prefix (never a
+      #    CLI/latest input). R2 secrets via env (above) -- NOT secrets: inherit.
+      #    No set -x, no env dump, no continue-on-error, no `|| true`.
+      - name: RK-16C metadata-only TWO-MANIFEST preflight (seal + manifest.json, no payload)
         run: node scripts/spikes/rk16c/run-fullcorpus.mjs --preflight --execute --snapshot 2026-06-14/27502029137-1 --manifest-key snapshots/2026-06-14/27502029137-1/_snapshot.manifest.json
 
       # 7. UPLOAD ARTIFACT -- ONLY the UNRATIFIED candidate lock. NEVER payload
