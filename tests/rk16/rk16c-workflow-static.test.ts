@@ -19,7 +19,8 @@ const WF_PATH = path.resolve(HERE, '../../.github/workflows/rk16c-manifest-prefl
 const RAW = fs.readFileSync(WF_PATH, 'utf-8');
 const DOC: any = yaml.load(RAW);
 
-const AUDITED_RUNNER_SHA = 'b0b8246e8ad77742d1aafd0720c5b4dd409d0b44';
+// D-103 A1: repinned audited runner SHA (supersedes the consumed b0b8246 runner).
+const AUDITED_RUNNER_SHA = '7e4fa65d38e8b8b359c82070432db952b670b26f';
 const SNAPSHOT = '2026-06-14/27502029137-1';
 const MANIFEST_KEY = 'snapshots/2026-06-14/27502029137-1/_snapshot.manifest.json';
 const PAYLOAD_KEY = 'snapshots/2026-06-14/27502029137-1/bioactivities.jsonl.gz';
