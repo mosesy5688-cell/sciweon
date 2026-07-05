@@ -1,37 +1,17 @@
 /**
- * RK-16C FULL-CORPUS SPIKE — TWO-MANIFEST METADATA-ONLY PREFLIGHT (A1 trust anchor).
- *
- * Pure, network-free validation logic for the D-103 A1 trust chain. The root
- * seal (`<prefix>_snapshot.manifest.json`) does NOT reference or hash the
- * per-file manifest (`<prefix>manifest.json`), so this is an AUDITABLE
- * COMPATIBILITY trust chain — NOT a cryptographic root linkage. Admissibility of
- * manifest.json rests on: (1) a validated immutable snapshot prefix from the
- * seal; (2) deterministic sibling-key derivation; (3) create-only co-publication
- * by the same producer/run under the same immutable prefix; (4) the PAYLOAD key
- * appearing exactly once in the seal's satellite_inventory; (5) strict
- * manifest.files[] <-> satellite_inventory reconciliation. We NEVER claim the
- * seal authenticates manifest.json.
- *
- * Producer grounding (code, no R2):
- *   - root seal sealCore  -> scripts/factory/lib/stage-4-activate.js:114-145
- *     (object_prefix, snapshot_id, run_id, run_attempt, satellite_inventory =
- *      requiredSatelliteKeys = `<prefix><key_suffix>` payload keys, manifest_hash
- *      over sealCore WITHOUT its own hash field via canonicalManifestHash).
- *   - satellite_inventory -> scripts/factory/lib/snapshot-inventory.js:213-215.
- *   - manifest.json       -> scripts/factory/snapshot-builder.js:88-152 (top-level
- *     snapshot_id/object_prefix/schema_version/run_id + files[] each
- *     {filename:`<fname>.gz`, records, compressed_bytes, sha256_compressed, ...}).
- *   - sibling co-publish  -> scripts/factory/snapshot-uploader.js:83-101 (every
- *     top-level file create-only PUT to `<object_prefix><fname>`), orchestrated
- *     builder-then-uploader-then-seal in scripts/factory/stage-4-upload.js:151-183.
- *
- * SATELLITE PROJECTION RULE (from producer code, NOT filename guessing): a seal
- * satellite_inventory entry is the full key `<object_prefix><key_suffix>`; the
- * matching manifest.files[] entry has `filename === <key_suffix>`. So the
- * satellite-payload projection of files[] = { f in files : f.filename in
- * normalize(satellite_inventory) } where normalize strips the validated
- * object_prefix. Extra (non-satellite) files[] entries (e.g. xref-index.json.gz,
- * compounds-search.jsonl.gz) MAY exist and are NOT treated as satellites.
+ * RK-16C - TWO-MANIFEST METADATA-ONLY PREFLIGHT (D-120 A1 trust model, Option A).
+ * Pure, network-free. Reads EXACTLY two metadata objects (root seal then sibling
+ * `<prefix>manifest.json`) - NEVER the payload. THREE separate authorities:
+ *   ROOT SEAL   = identity / object_prefix / manifest_hash / compatibility ONLY; it
+ *                 does NOT attest the payload. The real F4 producer writes
+ *                 satellite_inventory=[] and required_inventory=structured-keys only,
+ *                 so the payload is in NEITHER seal field.
+ *   MEMBERSHIP  = producer SSoT requiredSatelliteKeys(objectPrefix) (factory/lib/
+ *                 snapshot-inventory.js); bioactivities.jsonl.gz IS a member.
+ *   PAYLOAD PIN = sibling manifest.files[] entry (sha256/size/records), exactly-once.
+ * Lock records this honestly (membership=required_satellite_ssot, pins=sibling_
+ * manifest_files, root_directly_references_file_manifest=false); the seal NEVER
+ * attests the payload/manifest.json.
  */
 
 import { canonicalManifestHash, SNAPSHOT_SCHEMA_VERSION } from '../../../factory/lib/snapshot-identity.js';
@@ -39,24 +19,24 @@ import { canonicalManifestHash, SNAPSHOT_SCHEMA_VERSION } from '../../../factory
 export const TRUST_ANCHOR_MODE = 'producer-contract-derived-sibling-v1';
 export const PRODUCER_CONTRACT_VERSION = `snapshot-schema-v${SNAPSHOT_SCHEMA_VERSION}`;
 export const FILE_MANIFEST_KEY_DERIVATION = 'validated_object_prefix + "manifest.json"';
-export const PAYLOAD_MEMBERSHIP_ANCHOR = 'root satellite_inventory';
-export const FILE_MANIFEST_ADMISSIBILITY_ANCHOR =
-    'deterministic sibling key + immutable create-only producer contract + inventory reconciliation';
+export const PAYLOAD_MEMBERSHIP_AUTHORITY = 'required_satellite_ssot';
+export const PAYLOAD_PIN_AUTHORITY = 'sibling_manifest_files';
+// Human-readable anchors kept for lock-schema back-compat (validateLock requires these names); values HONEST - seal does NOT attest the payload.
+export const PAYLOAD_MEMBERSHIP_ANCHOR = 'producer required-satellite SSoT (requiredSatelliteKeys); the root seal does NOT attest the payload';
+export const FILE_MANIFEST_ADMISSIBILITY_ANCHOR = 'deterministic sibling key + create-only producer co-publication; payload pins from sibling manifest.files[]';
 
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const FAIL = (msg) => { throw new Error(`[rk16c-2manifest] ${msg}`); };
 
-/** object_prefix `snapshots/<snapshot_id>/` — ALWAYS ends with `/`. Mirrors the
- *  producer objectPrefixFor (snapshot-identity.js:67-69). */
+/** object_prefix `snapshots/<snapshot_id>/` - ALWAYS ends with `/`. */
 export function deriveObjectPrefix(snapshotId) {
     if (typeof snapshotId !== 'string' || snapshotId.length === 0) {
-        FAIL('snapshot_id missing — cannot derive object_prefix');
+        FAIL('snapshot_id missing - cannot derive object_prefix');
     }
     return `snapshots/${snapshotId}/`;
 }
 
-/** The deterministic per-file manifest sibling key. NEVER from List/discovery/
- *  latest/CLI free-text — derived ONLY from a validated object_prefix. */
+/** Deterministic per-file manifest sibling key - from a validated object_prefix ONLY, NEVER from List/discovery/latest/CLI free-text. */
 export function deriveFileManifestKey(objectPrefix) {
     if (typeof objectPrefix !== 'string' || !objectPrefix.endsWith('/')) {
         FAIL(`object_prefix must end with "/" (got ${JSON.stringify(objectPrefix)})`);
@@ -64,29 +44,28 @@ export function deriveFileManifestKey(objectPrefix) {
     return `${objectPrefix}manifest.json`;
 }
 
-/** The payload's snapshot-relative filename from its full key under the prefix. */
+/** Bare snapshot-relative filename for a full key under the prefix. THROWS on prefix escape / nested path / '..'. */
 function relativeUnderPrefix(key, objectPrefix, label) {
     if (typeof key !== 'string' || !key.startsWith(objectPrefix)) {
-        FAIL(`${label} key ${JSON.stringify(key)} escapes validated object_prefix ${JSON.stringify(objectPrefix)} — fail closed`);
+        FAIL(`${label} key ${JSON.stringify(key)} escapes validated object_prefix ${JSON.stringify(objectPrefix)} - fail closed`);
     }
     const rel = key.slice(objectPrefix.length);
     if (rel.length === 0 || rel.includes('/') || rel.includes('..')) {
-        FAIL(`${label} filename ${JSON.stringify(rel)} is not a bare sibling under the prefix — fail closed`);
+        FAIL(`${label} filename ${JSON.stringify(rel)} is not a bare sibling under the prefix - fail closed`);
     }
     return rel;
 }
 
-/**
- * STAGE 1 — validate the root seal (already read). Recomputes manifest_hash over
- * sealCore (seal minus manifest_hash) and asserts stored===recomputed. Asserts
- * snapshot identity + object_prefix + that the payload key occurs EXACTLY ONCE in
- * satellite_inventory. Returns the validated facts. THROWS (fail-closed) on any
- * mismatch.
- *
- * @param {Buffer|string} sealBody  exact root-seal bytes
- * @param {object} pin  { snapshotId, payloadKey }
- */
-export function validateRootSeal(sealBody, { snapshotId, payloadKey }) {
+/** The payload's bare filename under the validated prefix (fail-closed on escape). */
+export function payloadRelativeFilename(payloadKey, objectPrefix) {
+    return relativeUnderPrefix(payloadKey, objectPrefix, 'payload');
+}
+
+/** STAGE 1 - validate the root seal (identity/object_prefix/manifest_hash ONLY; it
+ *  does NOT attest the payload): snapshot_id + object_prefix match, layout/schema
+ *  presence, manifest_hash recompute over sealCore (== stored). satellite_inventory
+ *  / required_inventory are AUDIT-only. THROWS (fail-closed) on mismatch. */
+export function validateRootSeal(sealBody, { snapshotId }) {
     const text = Buffer.isBuffer(sealBody) ? sealBody.toString('utf-8') : String(sealBody);
     let seal;
     try { seal = JSON.parse(text); }
@@ -103,7 +82,6 @@ export function validateRootSeal(sealBody, { snapshotId, payloadKey }) {
     if (seal.layout_version == null || seal.schema_version == null) {
         FAIL('root seal missing layout_version/schema_version');
     }
-    // Recompute the seal hash over sealCore (everything EXCEPT manifest_hash).
     const storedHash = seal.manifest_hash;
     if (typeof storedHash !== 'string' || !SHA256_RE.test(storedHash)) {
         FAIL(`root seal manifest_hash absent/invalid: ${JSON.stringify(storedHash)}`);
@@ -113,15 +91,6 @@ export function validateRootSeal(sealBody, { snapshotId, payloadKey }) {
     if (recomputed !== storedHash) {
         FAIL(`root seal manifest_hash mismatch: stored=${storedHash} recomputed=${recomputed}`);
     }
-    const satelliteInventory = Array.isArray(seal.satellite_inventory) ? seal.satellite_inventory : null;
-    if (!satelliteInventory) FAIL('root seal satellite_inventory absent/not an array');
-    const requiredInventory = Array.isArray(seal.required_inventory) ? seal.required_inventory : [];
-
-    // Payload membership: EXACTLY ONCE in satellite_inventory.
-    const payloadHits = satelliteInventory.filter((k) => k === payloadKey).length;
-    if (payloadHits === 0) FAIL(`payload key ${payloadKey} absent from satellite_inventory — fail closed`);
-    if (payloadHits > 1) FAIL(`payload key ${payloadKey} duplicated (${payloadHits}x) in satellite_inventory — fail closed`);
-
     return {
         snapshot_id: seal.snapshot_id,
         object_prefix: seal.object_prefix,
@@ -130,37 +99,34 @@ export function validateRootSeal(sealBody, { snapshotId, payloadKey }) {
             : (snapshotId.split('/')[1] || null),
         layout_version: seal.layout_version,
         schema_version: seal.schema_version,
-        satellite_inventory: satelliteInventory,
-        required_inventory: requiredInventory,
+        // AUDIT-only (NOT a membership authority): production seals carry [] in both.
+        satellite_inventory: Array.isArray(seal.satellite_inventory) ? seal.satellite_inventory : [],
+        required_inventory: Array.isArray(seal.required_inventory) ? seal.required_inventory : [],
         stored_hash: storedHash,
         recomputed_hash: recomputed,
     };
 }
 
-/**
- * Normalize satellite_inventory full keys -> bare snapshot-relative filenames,
- * asserting each is under the validated prefix and no two normalize to the same
- * filename. Returns the filename array.
- */
-export function normalizeSatelliteInventory(satelliteInventory, objectPrefix) {
-    const seen = new Set();
-    const out = [];
-    for (const key of satelliteInventory) {
-        const rel = relativeUnderPrefix(key, objectPrefix, 'satellite_inventory');
-        if (seen.has(rel)) FAIL(`normalized satellite filename collision: ${rel} — fail closed`);
-        seen.add(rel);
-        out.push(rel);
+/** PAYLOAD-CLASS MEMBERSHIP (pure). Fail-closed unless `payloadKey` appears EXACTLY
+ *  ONCE in `requiredSatelliteKeyList` (producer SSoT): 0 -> absent from the
+ *  required-satellite contract; >1 -> duplicated (frozen+unique in production). */
+export function assertPayloadIsRequiredSatellite(requiredSatelliteKeyList, payloadKey) {
+    if (!Array.isArray(requiredSatelliteKeyList)) {
+        FAIL('required-satellite key list is not an array - cannot assert payload membership');
     }
-    return out;
+    const hits = requiredSatelliteKeyList.filter((k) => k === payloadKey).length;
+    if (hits === 0) {
+        FAIL(`payload key ${payloadKey} absent from required-satellite contract (producer SSoT) - fail closed`);
+    }
+    if (hits > 1) {
+        FAIL(`payload key ${payloadKey} duplicated (${hits}x) in required-satellite contract - fail closed`);
+    }
+    return { member: true, occurrences: hits };
 }
 
-/**
- * STAGE 2 — validate the per-file manifest (already read from the deterministic
- * sibling key). Does NOT fabricate identity: if snapshot_id/object_prefix are
- * present they MUST match; if absent, that is recorded (admissibility then rests
- * on the sibling-key + producer contract + reconciliation). Returns
- * { files, schema_version, identity_available }. THROWS on structural failure.
- */
+/** STAGE 2 - validate the sibling per-file manifest. Present snapshot_id/
+ *  object_prefix MUST match; files[] must be bare-name entries (no path escape, no
+ *  dup). Returns { files, schema_version, production_run_id, identity_available }. */
 export function validateFileManifest(fileManifestBody, { snapshotId, objectPrefix }) {
     const text = Buffer.isBuffer(fileManifestBody) ? fileManifestBody.toString('utf-8') : String(fileManifestBody);
     let manifest;
@@ -182,16 +148,15 @@ export function validateFileManifest(fileManifestBody, { snapshotId, objectPrefi
         FAIL(`per-file manifest object_prefix mismatch: expected=${objectPrefix} manifest=${manifest.object_prefix}`);
     }
     const files = Array.isArray(manifest.files) ? manifest.files : null;
-    if (!files) FAIL('per-file manifest has no files[] array — refusing to fabricate payload pins');
-    // Every entry must be a bare sibling filename (no path escape).
+    if (!files) FAIL('per-file manifest has no files[] array - refusing to fabricate payload pins');
     const seenNames = new Set();
     for (const f of files) {
         if (!f || typeof f !== 'object') FAIL('per-file manifest files[] contains a non-object entry');
         const name = f.filename;
         if (typeof name !== 'string' || name.length === 0 || name.includes('/') || name.includes('..')) {
-            FAIL(`files[] entry filename ${JSON.stringify(name)} escapes validated object_prefix / not a bare name — fail closed`);
+            FAIL(`files[] entry filename ${JSON.stringify(name)} escapes validated object_prefix / not a bare name - fail closed`);
         }
-        if (seenNames.has(name)) FAIL(`duplicate files[] filename: ${name} — fail closed`);
+        if (seenNames.has(name)) FAIL(`duplicate files[] filename: ${name} - fail closed`);
         seenNames.add(name);
     }
     return {
@@ -202,52 +167,29 @@ export function validateFileManifest(fileManifestBody, { snapshotId, objectPrefi
     };
 }
 
-/**
- * SET-LEVEL reconciliation: every normalized satellite filename has EXACTLY ONE
- * files[] entry (the satellite-payload projection of files[] is a bijection onto
- * the normalized satellite set). Extra non-satellite files[] entries are allowed.
- * THROWS on any missing/extra/duplicate. Returns the projection (filename->entry).
- */
-export function reconcileFilesWithInventory(files, normalizedSatellites) {
-    const byName = new Map();
-    for (const f of files) {
-        // files[] filenames already de-duped by validateFileManifest.
-        byName.set(f.filename, f);
+/** PAYLOAD PIN (payload-scoped) - the single sibling files[] entry whose bare
+ *  filename === payloadFilename, pins validated. Extra (non-payload) files[]
+ *  entries are ALLOWED. Fail-closed unless the payload appears EXACTLY ONCE with a
+ *  64-hex sha256_compressed + positive-int compressed_bytes (+ records if present). */
+export function extractPayloadPin(files, payloadFilename) {
+    if (!Array.isArray(files)) FAIL('sibling manifest files[] is not an array - refusing to fabricate payload pins');
+    const matches = files.filter((f) => f && f.filename === payloadFilename);
+    if (matches.length === 0) {
+        FAIL(`payload ${payloadFilename} absent from sibling manifest.files[] - no approvable lock (refusing to fabricate payload pins)`);
     }
-    const projection = new Map();
-    for (const sat of normalizedSatellites) {
-        const entry = byName.get(sat);
-        if (!entry) {
-            FAIL(`root-declared satellite ${sat} has no entry in manifest.files[] — unreconcilable satellite projection (fail closed)`);
-        }
-        projection.set(sat, entry);
+    if (matches.length > 1) {
+        FAIL(`payload ${payloadFilename} duplicated (${matches.length}x) in sibling manifest.files[] - fail closed`);
     }
-    // Bijection check: the projection covers exactly the normalized satellite set.
-    if (projection.size !== normalizedSatellites.length) {
-        FAIL(`satellite projection size ${projection.size} != satellite_inventory size ${normalizedSatellites.length} — fail closed`);
-    }
-    return projection;
-}
-
-/**
- * TARGET-LEVEL: extract the single bioactivities files[] entry + validate its
- * pins. THROWS on missing/duplicate/invalid. `projection` is from
- * reconcileFilesWithInventory (so the target is guaranteed a satellite member).
- */
-export function extractBioactivitiesEntry(projection, payloadFilename) {
-    const entry = projection.get(payloadFilename);
-    if (!entry) {
-        FAIL(`target ${payloadFilename} not present in satellite projection — no approvable lock (refusing to fabricate payload pins)`);
-    }
+    const entry = matches[0];
     const { sha256_compressed, compressed_bytes, records } = entry;
     if (typeof sha256_compressed !== 'string' || !SHA256_RE.test(sha256_compressed)) {
-        FAIL(`target ${payloadFilename} sha256_compressed invalid: ${JSON.stringify(sha256_compressed)} — fail closed`);
+        FAIL(`payload ${payloadFilename} sha256_compressed invalid: ${JSON.stringify(sha256_compressed)} - fail closed`);
     }
     if (!Number.isInteger(compressed_bytes) || compressed_bytes <= 0) {
-        FAIL(`target ${payloadFilename} compressed_bytes invalid: ${JSON.stringify(compressed_bytes)} — fail closed`);
+        FAIL(`payload ${payloadFilename} compressed_bytes invalid: ${JSON.stringify(compressed_bytes)} - fail closed`);
     }
     if (records != null && (!Number.isInteger(records) || records <= 0)) {
-        FAIL(`target ${payloadFilename} records invalid: ${JSON.stringify(records)} — fail closed`);
+        FAIL(`payload ${payloadFilename} records invalid: ${JSON.stringify(records)} - fail closed`);
     }
     return {
         sha256_compressed,
@@ -259,12 +201,10 @@ export function extractBioactivitiesEntry(projection, payloadFilename) {
     };
 }
 
-/**
- * ASSEMBLE the candidate-lock v2 trust-anchor object from the validated facts.
- * Pure: records explicitly that the root seal does NOT reference manifest.json
- * (root_directly_references_file_manifest=false) and the trust_anchor_mode. NEVER
- * claims direct cryptographic root linkage.
- */
+/** ASSEMBLE the candidate-lock v2 (pure, UNRATIFIED / audit-input-only). Records
+ *  root_directly_references_file_manifest=false, membership authority = producer
+ *  required-satellite SSoT, pin authority = sibling manifest.files[]. NEVER claims
+ *  cryptographic root linkage. */
 export function assembleCandidateLock(parts) {
     const {
         seal, fileManifest, payloadKey, payloadFilename, pins,
@@ -272,36 +212,34 @@ export function assembleCandidateLock(parts) {
     } = parts;
     return {
         candidate_lock_schema: 'rk16c-fullcorpus-lock-v2',
-        // ---- trust-anchor model (D-103 §9) ----
+        // trust-anchor model (D-120 Option A)
         trust_anchor_mode: TRUST_ANCHOR_MODE,
         root_directly_references_file_manifest: false,
         file_manifest_key_derivation: FILE_MANIFEST_KEY_DERIVATION,
+        payload_membership_authority: PAYLOAD_MEMBERSHIP_AUTHORITY,
+        payload_pin_authority: PAYLOAD_PIN_AUTHORITY,
         payload_membership_anchor: PAYLOAD_MEMBERSHIP_ANCHOR,
         file_manifest_admissibility_anchor: FILE_MANIFEST_ADMISSIBILITY_ANCHOR,
-        // ---- root-manifest (seal) identity ----
         root_manifest_key: rootManifestRead.key,
         root_manifest_etag: rootManifestRead.etag,
         root_manifest_byte_size: rootManifestRead.byte_size,
         root_manifest_sha256: rootManifestRead.sha256,
         root_manifest_stored_hash: seal.stored_hash,
         root_manifest_recomputed_hash: seal.recomputed_hash,
-        // ---- per-file manifest identity ----
         file_manifest_key: fileManifestRead.key,
         file_manifest_etag: fileManifestRead.etag,
         file_manifest_byte_size: fileManifestRead.byte_size,
         file_manifest_sha256: fileManifestRead.sha256,
         file_manifest_schema_version: fileManifest.schema_version,
         file_manifest_identity_available: fileManifest.identity_available,
-        // ---- payload identity ----
-        payload_key: payloadKey,
+        payload_key: payloadKey, // payload_pin_authority = sibling manifest.files[]
         payload_filename: payloadFilename,
         payload_sha256_compressed: pins.sha256_compressed,
         payload_compressed_bytes: pins.compressed_bytes,
         payload_uncompressed_bytes: pins.uncompressed_bytes,
         payload_sha256_uncompressed: pins.sha256_uncompressed,
         expected_row_count: pins.records != null ? pins.records : expectedRowCount,
-        payload_schema_version: null, // not present in the producer per-payload schema; NOT fabricated
-        // ---- snapshot + execution identity ----
+        payload_schema_version: null, // not in the producer per-payload schema; NOT fabricated
         snapshot_id: seal.snapshot_id,
         production_run_id: seal.production_run_id,
         producer_contract_version: PRODUCER_CONTRACT_VERSION,
