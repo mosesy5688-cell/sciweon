@@ -26,8 +26,8 @@ name: RK-16C Two-Manifest Preflight
 # checked-out commit) are DIFFERENT by design. A verification step FAILS the run
 # if the checked-out commit != AUDITED_RUNNER_SHA, BEFORE any credential use or R2
 # client construction.
-#   AUDITED_RUNNER_SHA = 47b2672770708725b42f1b558391fc077a472848
-#   (= the PR #274 squash-merge SHA on main; supersedes the consumed b0b8246.)
+#   AUDITED_RUNNER_SHA = 7a0c2f07352e4000c457062b2e8b6488be062cb3
+#   (= the PR #277 squash-merge SHA on main; the D-120 A1 trust-model correction; supersedes the consumed 47b2672.)
 #
 # === CANDIDATE LOCK STATUS ===
 # The artifact this run produces (RK16C_FULLCORPUS_LOCK.candidate.json) is
@@ -106,7 +106,7 @@ jobs:
       - name: Checkout audited runner commit
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: 47b2672770708725b42f1b558391fc077a472848
+          ref: 7a0c2f07352e4000c457062b2e8b6488be062cb3
           persist-credentials: false
 
       # 4. SHA VERIFICATION -- fail-before-network. Prove the executed code is the
@@ -114,7 +114,7 @@ jobs:
       #    is printed.
       - name: Verify checked-out commit == AUDITED_RUNNER_SHA
         env:
-          AUDITED_RUNNER_SHA: 47b2672770708725b42f1b558391fc077a472848
+          AUDITED_RUNNER_SHA: 7a0c2f07352e4000c457062b2e8b6488be062cb3
           WORKFLOW_DEFINITION_SHA: ${{ github.sha }}
         run: |
           CHECKED_OUT_SHA="$(git rev-parse HEAD)"
