@@ -1,15 +1,18 @@
 /**
  * RK-16C FULL-CORPUS SPIKE — CLI CONTROL + METADATA-ONLY PREFLIGHT.
  *
- * Pure state-matrix selector + the wiring that lets ONLY `--preflight --execute`
- * (with a correct --manifest-key) reach the metadata-only TWO-MANIFEST
- * preflightManifest(). The full-run/payload path is CLI-UNREACHABLE: it is never
- * selectable and the full-run adapter symbol is NOT imported here. NO production
- * read, NO creds in the BUILD phase; runPreflight reads ONLY the two metadata
- * objects (root seal + deterministic per-file manifest sibling) via the injected/
- * lazy deps, validates + reconciles them, extracts the bioactivities pins from the
- * per-file manifest files[] entry, and writes an explicitly UNRATIFIED candidate
- * lock (founder_approved:false, authorized_for_payload_read:false).
+ * Pure state-matrix selector + the wiring for BOTH founder-gated remote paths:
+ *   - `--preflight --execute` (with a correct --manifest-key) -> metadata-only
+ *     TWO-MANIFEST preflightManifest();
+ *   - `--full-run --lock <path>` -> the D-129 ratified-lock-gated payload run
+ *     (runFullRun). The gated payload executor is imported LAZILY inside runFullRun
+ *     ONLY, so module-load and the dry-run / preflight / fixture paths never touch
+ *     it. Generic `--execute` (no --full-run) stays REFUSED.
+ * NO production read, NO creds in the BUILD phase; runPreflight reads ONLY the two
+ * metadata objects (root seal + deterministic per-file manifest sibling) via the
+ * injected/lazy deps, validates + reconciles them, extracts the bioactivities pins
+ * from the per-file manifest files[] entry, and writes an explicitly UNRATIFIED
+ * candidate lock (founder_approved:false, authorized_for_payload_read:false).
  */
 
 import fs from 'fs';
@@ -21,6 +24,7 @@ import { instrumentExactReadOnlyClient } from './exact-readonly-guard.mjs';
 const HERE = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
 const RESULTS_DIR = path.join(HERE, '..', 'results');
 const CANDIDATE_FILE = 'RK16C_FULLCORPUS_LOCK.candidate.json';
+const FULLRUN_ENVELOPE_FILE = 'RK16C_D129_FULLRUN_ENVELOPE.json';
 
 /**
  * PURE state-matrix selector. Maps parsed args -> exactly one action, decided
@@ -29,6 +33,12 @@ const CANDIDATE_FILE = 'RK16C_FULLCORPUS_LOCK.candidate.json';
  */
 export function selectAction(args) {
     if (args.cleanup) return { action: 'cleanup', reason: 'cleanup requested' };
+    // D-129: the ratified-lock-gated payload run is reachable ONLY with BOTH
+    // --full-run AND --lock. Generic --execute (below) stays refused.
+    if (args.fullRun) {
+        if (!args.lockPath) return { action: 'fail-closed', reason: '--full-run requires --lock <path> (absent) -> fail-closed before any client' };
+        return { action: 'full-run', reason: '--full-run --lock -> ratified-lock-gated payload run (fail-before-network on any pin mismatch)' };
+    }
     if (!args.execute && !args.preflight) {
         return { action: 'dry-run-matrix', reason: 'no flags -> BUILD fixture matrix (zero network)' };
     }
@@ -44,8 +54,10 @@ export function selectAction(args) {
         }
         return { action: 'preflight-execute', reason: '--preflight --execute with exact --manifest-key -> metadata-only preflightManifest' };
     }
-    // args.execute && !args.preflight (incl. --execute --lock, --full-run, --payload, any unknown bypass).
-    return { action: 'execute-refused', reason: 'generic --execute (would-be full run / --lock / --full-run / --payload) is CLI-UNREACHABLE; only --preflight --execute is permitted' };
+    // args.execute && !args.preflight && !args.fullRun (incl. generic --execute,
+    // --execute --lock, --payload, any unknown bypass). The ONLY payload path is
+    // --full-run --lock (handled above); generic --execute stays refused.
+    return { action: 'execute-refused', reason: 'generic --execute (would-be full run / --lock / --payload without --full-run) is CLI-UNREACHABLE; use --preflight --execute (metadata-only) or --full-run --lock (ratified-lock-gated payload run)' };
 }
 
 /**
@@ -101,4 +113,54 @@ export async function runPreflight(args, deps) {
     }, null, 2)));
     console.log(`[rk16c-fullcorpus] candidate written: ${candidatePath} (status=UNRATIFIED, NOT approved, payload NOT read)`);
     return { candidate, candidatePath };
+}
+
+/**
+ * Build the REAL deps for the gated payload run LAZILY (same as the preflight deps:
+ * the exact-readonly guard + the read-only HEAD/GET primitives). Tests inject FAKE
+ * deps instead; module-load never needs credentials / the SDK.
+ */
+async function buildRealFullRunDeps() {
+    const { makeR2Client } = await import('../../../factory/lib/r2-stage-bridge.js');
+    const { headObject, getObject } = await import('../../../verify/p8-r1-readonly-probe-lib.js');
+    return {
+        makeClient: makeR2Client,
+        instrument: instrumentExactReadOnlyClient,
+        headObject, getObject,
+        bucket: process.env.R2_BUCKET,
+    };
+}
+
+/**
+ * DISPATCH the `full-run` action to the ratified-lock-gated payload executor. The
+ * gated executor is imported LAZILY here (never at module-load) so the dry-run /
+ * preflight / fixture paths never load it. It FAILS BEFORE NETWORK on any pin
+ * mismatch or without an explicit payload-read grant; on success it writes ONLY the
+ * supplemental envelope / row-count-hash report (never a family/reader/F4 artifact).
+ * @param {object} deps FAKE in tests; REAL (lazy) by default.
+ */
+export async function runFullRun(args, deps) {
+    const { executeFullRunGated } = await import('./fullcorpus-run-gate.mjs');
+    const d = deps || (await buildRealFullRunDeps());
+    const opts = {
+        lockPath: args.lockPath,
+        authorizedForPayloadRead: args.authorizedForPayloadRead === true,
+        memory: args.memory,
+        buildCommit: args.buildCommit || null,
+    };
+    const report = await executeFullRunGated(opts, d);
+    fs.mkdirSync(RESULTS_DIR, { recursive: true });
+    const outPath = path.join(RESULTS_DIR, FULLRUN_ENVELOPE_FILE);
+    fs.writeFileSync(outPath, JSON.stringify(report, null, 2));
+    console.log('\n===== RK-16C FULL-CORPUS PAYLOAD RUN (D-129 wiring; ratified-lock-gated) =====');
+    console.log(redact(JSON.stringify({
+        output_kind: report.output_kind, network_performed: report.network_performed,
+        rows_decoded: report.rows_decoded, payload_compressed_bytes: report.payload_compressed_bytes,
+        payload_uncompressed_bytes: report.payload_uncompressed_bytes,
+        peak_memory: report.peak_memory, memory_breached: report.memory_breached,
+        decompressed_file_written: report.decompressed_file_written,
+        emitted_family_artifact: report.emitted_family_artifact,
+    }, null, 2)));
+    console.log(`[rk16c-fullcorpus] envelope written: ${outPath} (supplemental spike output only)`);
+    return { report, outPath };
 }

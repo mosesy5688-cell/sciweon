@@ -1,0 +1,153 @@
+name: RK-16C Full-Corpus Payload Run (D-129 carrier; INERT until D-134)
+
+# RK-16C FULL-CORPUS PAYLOAD RUN -- DISPATCH-ONLY CARRIER (D-129 wiring).
+#
+# BUILD-ONLY / DO NOT MERGE / DO NOT DISPATCH. This file only DELIVERS a run
+# channel for the ratified-lock-gated payload runner (run-fullcorpus.mjs
+# --full-run). It is INERT: several fail-closed guards below refuse the run until
+# the founder deliberately completes the SEPARATE D-134 gate (pins the audited
+# runner SHA + confirms the gate + grants the payload-read authorization + provisions
+# the ratified lock). Merging this PR does NOT authorize a run.
+#
+# WHAT THE RUNNER ENFORCES (app-layer, fail-before-network):
+#   node scripts/spikes/rk16c/run-fullcorpus.mjs --full-run --lock <ratified-lock>
+#     --authorized-for-payload-read
+#   - the lock FILE sha256 must equal the ratified pin (else fail-before-network);
+#   - schema / snapshot_id / payload_key / payload sha256 (compressed+uncompressed)
+#     / row-count / trust-anchor pins must all bind;
+#   - an EXPLICIT payload-read grant is required (this flag + the env below); the
+#     artifact's OWN authorized_for_payload_read is NOT trusted;
+#   - root seal + sibling manifest are reconciled BEFORE any payload GET;
+#   - exact read-only allowlist = seal + sibling + payload ONLY (no List/latest/
+#     discovery, no Put/Delete); the gzip is stream-decoded (no decompressed file).
+#
+# === DUAL-SHA MODEL ===
+# The FILE is introduced by the PR head commit; the CODE it executes is pinned to
+# the FINAL AUDITED RUNNER SHA (the D-130 squash-merge SHA), set by the founder at
+# the D-134 gate. Until then AUDITED_RUNNER_SHA is a placeholder and the run is
+# refused BEFORE checkout/creds.
+#
+# === TRIGGER ===
+# FOUNDER-TRIGGERED ONLY: workflow_dispatch. No push / pull_request / schedule /
+# repository_dispatch / workflow_call. Two typed confirmations are required.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_d134_gate:
+        description: 'Type D-134-RATIFIED to confirm the founder D-134 gate is open.'
+        required: true
+        default: ''
+      authorize_payload_read:
+        description: 'Type AUTHORIZE-PAYLOAD-READ to grant the explicit payload read.'
+        required: true
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rk16c-fullcorpus-payload-run
+  cancel-in-progress: false
+
+env:
+  # Placeholder -- the founder replaces this with the D-130 squash-merge SHA at the
+  # D-134 gate. While it is the placeholder, the SHA guard below refuses the run.
+  AUDITED_RUNNER_SHA: PENDING_D130_MERGE_SHA_SET_BY_FOUNDER_AT_D134
+  # The ratified-lock path the founder provisions on the runner at D-134 (never a
+  # repo file; the ratified lock is local-only). The lock-exists guard checks it.
+  RK16C_RATIFIED_LOCK_PATH: ''
+
+jobs:
+  payload-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: rk16c-fullcorpus-payload-run
+    steps:
+      - name: Event guard (only workflow_dispatch may run)
+        if: ${{ github.event_name != 'workflow_dispatch' }}
+        run: |
+          echo "Refusing event ${{ github.event_name }} (only workflow_dispatch). Fail-closed BEFORE checkout/creds."
+          exit 1
+
+      - name: Run-attempt guard (only attempt 1 may run)
+        if: ${{ github.run_attempt != '1' }}
+        run: |
+          echo "Refusing run_attempt=${{ github.run_attempt }} (only attempt 1). Fail-closed BEFORE checkout/creds."
+          exit 1
+
+      - name: D-134 gate + authorization confirmations (typed)
+        run: |
+          if [ "${{ github.event.inputs.confirm_d134_gate }}" != "D-134-RATIFIED" ]; then
+            echo "Refusing: confirm_d134_gate not typed exactly. Fail-closed BEFORE checkout/creds."
+            exit 1
+          fi
+          if [ "${{ github.event.inputs.authorize_payload_read }}" != "AUTHORIZE-PAYLOAD-READ" ]; then
+            echo "Refusing: authorize_payload_read not typed exactly. Fail-closed BEFORE checkout/creds."
+            exit 1
+          fi
+          echo "OK: both typed confirmations present."
+
+      - name: Audited-runner-SHA guard (INERT until the founder pins the D-130 SHA)
+        run: |
+          if [ "${AUDITED_RUNNER_SHA}" = "PENDING_D130_MERGE_SHA_SET_BY_FOUNDER_AT_D134" ]; then
+            echo "Refusing: AUDITED_RUNNER_SHA is still the placeholder. This carrier is INERT until the founder pins the D-130 merge SHA at the D-134 gate. Fail-closed BEFORE checkout/creds."
+            exit 1
+          fi
+
+      - name: Ratified-lock-path guard
+        run: |
+          if [ -z "${RK16C_RATIFIED_LOCK_PATH}" ]; then
+            echo "Refusing: RK16C_RATIFIED_LOCK_PATH is unset (no ratified lock provisioned). Fail-closed BEFORE checkout/creds."
+            exit 1
+          fi
+
+      - name: Checkout audited runner commit (SHA-pinned)
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ env.AUDITED_RUNNER_SHA }}
+          persist-credentials: false
+
+      - name: Verify checked-out commit == AUDITED_RUNNER_SHA (fail-before-network)
+        run: |
+          CHECKED_OUT_SHA="$(git rev-parse HEAD)"
+          echo "workflow_definition_sha (github.sha) = ${{ github.sha }}"
+          echo "checked_out_runner_sha               = ${CHECKED_OUT_SHA}"
+          echo "expected AUDITED_RUNNER_SHA          = ${AUDITED_RUNNER_SHA}"
+          if [ "${CHECKED_OUT_SHA}" != "${AUDITED_RUNNER_SHA}" ]; then
+            echo "FAIL: checked-out commit != AUDITED_RUNNER_SHA -- refusing before any credential use or R2 client construction."
+            exit 1
+          fi
+          echo "OK: runner SHA matches the audited runner SHA."
+
+      - name: Setup Node 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies (npm ci)
+        run: npm ci
+
+      # EXACT ratified-lock-gated payload run. The runner fails-before-network on
+      # any pin mismatch or without the explicit grant. R2 secrets via env; the
+      # object-level read-only-to-three-keys bound is app-layer (exact-readonly-guard).
+      - name: RK-16C ratified-lock-gated full-corpus payload run
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RK16C_D134_PAYLOAD_READ_AUTHORIZED: '1'
+        run: node scripts/spikes/rk16c/run-fullcorpus.mjs --full-run --lock "${RK16C_RATIFIED_LOCK_PATH}" --authorized-for-payload-read
+
+      # Upload ONLY the supplemental envelope / row-count-hash report. NEVER payload
+      # bytes / bioactivities / credentials / env dumps. Finite retention.
+      - name: Upload supplemental envelope report (report only)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rk16c-fullcorpus-payload-run-envelope
+          path: scripts/spikes/rk16c/results/RK16C_D129_FULLRUN_ENVELOPE.json
+          retention-days: 14
+          if-no-files-found: warn
