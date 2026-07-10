@@ -17,7 +17,7 @@
  */
 
 import type { Env } from '../../worker';
-import { resolveEntity } from '../lib/entity-resolver';
+import { resolveEntity, isKeggSourceIdentifier } from '../lib/entity-resolver';
 import { loadTier1 } from '../lib/compound-loader';
 import { jsonWithRights } from '../lib/source-rights-filter';
 
@@ -34,6 +34,21 @@ export async function handleXrefs(req: Request, env: Env, _ctx: ExecutionContext
         return Response.json(
             { error: 'Identifier required', detail: 'Pass ?id=<identifier> (or alias ?cid=, ?chembl_id=, ?inchi_key=).' },
             { status: 400 },
+        );
+    }
+    // RC-3A / D-132G defect B: INPUT-side rights gate BEFORE resolveEntity. A
+    // KEGG-shaped identifier would otherwise be resolved to a canonical Sciweon
+    // compound + matched_on, i.e. a KEGG -> Sciweon mapping oracle. Withhold as
+    // a rights policy (403) -- NOT resolved:false / 404 no-match / a source
+    // failure. No canonical_id / cid / matched_on / mapping is returned.
+    if (isKeggSourceIdentifier(raw)) {
+        return Response.json(
+            {
+                resolution_state: 'withheld_by_rights_policy',
+                source_family: 'kegg',
+                detail: 'Public resolution of this source identifier is unavailable.',
+            },
+            { status: 403, headers: { 'x-sciweon-rights-filter': 'rc3a-v1' } },
         );
     }
     if (!env.SCIWEON_R2) {

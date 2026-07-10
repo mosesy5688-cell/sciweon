@@ -25,6 +25,17 @@ import { fetchR2GunzippedText, fetchR2JsonText } from './r2-fetch';
 import { loadXrefKind, xrefIndexExists, type XrefKind } from './xref-index-loader';
 import { type SnapshotContext, loadSnapshotContext } from './snapshot-context';
 
+// Shared classifier for KEGG-shaped source input (the KEGG Drug id form the
+// resolver recognizes: `D#####`, optionally `KEGG:`-prefixed). SSoT for BOTH
+// the resolver's own kind detection (classifyIdentifier below) AND the public
+// input-side rights gate on /api/v1/xrefs + MCP sciweon_resolve_entity, so the
+// two never diverge into separate regexes. RC-3A / D-132G defect B.
+const KEGG_INPUT_RE = /^(?:KEGG:)?(D\d{5})$/i;
+
+export function isKeggSourceIdentifier(raw: unknown): boolean {
+    return typeof raw === 'string' && KEGG_INPUT_RE.test(raw.trim());
+}
+
 export type IdentifierKind =
     | 'pubchem_cid'
     | 'chembl_id'
@@ -71,7 +82,7 @@ export function classifyIdentifier(raw: unknown): Classified | null {
     m = s.match(/^CHEBI:(\d+)$/i);
     if (m) return { kind: 'chebi_id', normalized: `CHEBI:${m[1]}` };
 
-    m = s.match(/^(?:KEGG:)?(D\d{5})$/i);
+    m = s.match(KEGG_INPUT_RE); // same SSoT regex as isKeggSourceIdentifier
     if (m) return { kind: 'kegg_drug_id', normalized: m[1].toUpperCase() };
 
     m = s.match(/^RXCUI:(\d+)$/i);

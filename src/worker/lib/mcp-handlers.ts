@@ -16,7 +16,7 @@ import { loadNegEvidenceForCompound, NegShardError } from './neg-evidence-loader
 import { SourceLoadError } from './source-load-error';
 import { searchCompounds } from './compound-search';
 import { EVIDENCE_TYPES, isKnownEvidenceType, type EvidenceType } from './event-type-taxonomy';
-import { resolveEntity } from './entity-resolver';
+import { resolveEntity, isKeggSourceIdentifier } from './entity-resolver';
 import { aggregateRepurposingEvidence } from './repurposing-aggregator';
 import { parseUniprotId, loadTargetIndex, getTargetEntry } from './target-loader';
 import { pickTargetView, type TargetSection } from '../api/target';
@@ -125,6 +125,17 @@ export async function handleToolResolveEntity(args: Record<string, unknown>, env
     const idArg = args?.identifier;
     if (typeof idArg !== 'string' || idArg.length === 0) {
         throw new ToolError(-32602, 'Invalid params: identifier is required and must be a string');
+    }
+    // RC-3A / D-132G defect B: INPUT-side rights gate BEFORE resolveEntity, the
+    // MCP twin of the /api/v1/xrefs gate (both aliases route through here). A
+    // KEGG-shaped identifier is withheld as a typed rights-policy result -- NOT
+    // a canonical mapping, NOT no-entity-found / no-evidence / source-failure.
+    if (isKeggSourceIdentifier(idArg)) {
+        return textContent({
+            resolution_state: 'withheld_by_rights_policy',
+            source_family: 'kegg',
+            detail: 'Public resolution of this source identifier is unavailable.',
+        });
     }
     const bucket = requireR2(env);
     const resolved = await resolveEntity(bucket, idArg);
