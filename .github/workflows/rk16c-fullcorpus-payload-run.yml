@@ -33,7 +33,10 @@ name: RK-16C Full-Corpus Payload Run (D-132 un-inerted carrier; DO NOT DISPATCH 
 # workflow-definition SHA (github.sha) and the runner SHA (the checked-out commit)
 # are DIFFERENT by design. A verification step FAILS the run if the checked-out
 # commit != AUDITED_RUNNER_SHA, BEFORE any credential use or R2 client construction.
-#   AUDITED_RUNNER_SHA = b1df855cb7bacd193ee2f1e846f63efa7e23feff
+#   AUDITED_RUNNER_SHA = 1be2fbbc8e2baedfa516933d5b675019046e0aa3
+#     -- the D-132 audited execution-tree SHA, which contains the unchanged D-130
+#     payload-runner code + the byte-identical payload-gate-input lock fixture +
+#     the byte-preservation attributes.
 #
 # === COMMITTED LOCK FIXTURE (byte-identical, UNRATIFIED) ===
 # The lock file is a COMMITTED repo fixture at RK16C_RATIFIED_LOCK_PATH below. It is
@@ -73,7 +76,7 @@ concurrency:
 
 env:
   # The AUDITED RUNNER SHA the checkout `ref:` pins and the Verify step enforces.
-  AUDITED_RUNNER_SHA: b1df855cb7bacd193ee2f1e846f63efa7e23feff
+  AUDITED_RUNNER_SHA: 1be2fbbc8e2baedfa516933d5b675019046e0aa3
   # The committed byte-identical lock fixture path (a repo file in this PR).
   RK16C_RATIFIED_LOCK_PATH: scripts/spikes/rk16c/locks/RK16C_FULLCORPUS_LOCK.payload-gate-input.json
   # The required size==2781 sha256 of that committed lock fixture; the validation
@@ -110,7 +113,7 @@ jobs:
       - name: Checkout audited runner commit (SHA-pinned)
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: b1df855cb7bacd193ee2f1e846f63efa7e23feff
+          ref: 1be2fbbc8e2baedfa516933d5b675019046e0aa3
           persist-credentials: false
 
       # 4. SHA VERIFICATION -- fail-before-network. Prove the executed code is the
