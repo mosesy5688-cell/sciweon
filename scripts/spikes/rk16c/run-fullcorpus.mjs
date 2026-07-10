@@ -17,11 +17,17 @@
  *   - --preflight only    -> dry-run plan only (zero network, NO matrix)
  *   - --preflight --execute (with the exact --manifest-key for --snapshot)
  *                         -> metadata-only preflightManifest via runPreflight()
- *   - generic --execute   -> REFUSED before any client (the full-run/payload path
- *                            is CLI-UNREACHABLE; only --preflight --execute runs).
- * The full-run adapter symbol is NOT imported in this runner by design.
+ *   - --full-run --lock <path> [--authorized-for-payload-read]
+ *                         -> the D-129 ratified-lock-gated payload run via
+ *                            runFullRun() (fails BEFORE network on any pin mismatch
+ *                            or without an explicit payload-read grant).
+ *   - generic --execute   -> REFUSED before any client (only --preflight --execute
+ *                            and --full-run --lock reach a remote path).
+ * The gated payload executor is reached ONLY through runFullRun (which imports it
+ * lazily); the fixture / dry-run / preflight paths never load it.
  *
  *   PREFLIGHT (metadata-only): node scripts/spikes/rk16c/run-fullcorpus.mjs --preflight --execute --snapshot 2026-06-14/27502029137-1 --manifest-key snapshots/2026-06-14/27502029137-1/_snapshot.manifest.json
+ *   FULL RUN (future D-134 gate): node scripts/spikes/rk16c/run-fullcorpus.mjs --full-run --lock <ratified-lock.json> --authorized-for-payload-read
  */
 
 import fs from 'fs';
@@ -30,7 +36,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { computeDryRunPlan, cleanup } from './lib/r2-readonly-adapter.mjs';
 import { CANDIDATE_SNAPSHOT_ID, EXPECTED_ROW_COUNT } from './lib/corpus-identity.mjs';
-import { selectAction, runPreflight } from './lib/preflight-control.mjs';
+import { selectAction, runPreflight, runFullRun } from './lib/preflight-control.mjs';
 import { resolveFixture } from './lib/fixture-source.mjs';
 import { buildCell, RECORD_TARGETS, PARTITION_POLICIES } from './lib/fullcorpus-cells.mjs';
 import { PARTITION_STRATEGIES } from './lib/policy.mjs';
@@ -48,6 +54,8 @@ function parseArgs(argv) {
         const t = argv[i];
         if (t === '--execute') { a.execute = true; a.dryRun = false; }
         else if (t === '--preflight') a.preflight = true;
+        else if (t === '--full-run') a.fullRun = true;
+        else if (t === '--authorized-for-payload-read') a.authorizedForPayloadRead = true;
         else if (t === '--dry-run') a.dryRun = true;
         else if (t === '--cleanup') a.cleanup = true;
         else if (t === '--snapshot') a.snapshot = argv[++i];
@@ -85,15 +93,23 @@ async function main() {
     }
 
     if (action === 'execute-refused' || action === 'fail-closed') {
-        // Construct NO client; the full-run/payload path is never invoked here.
+        // Construct NO client; no remote path is invoked here.
         console.error(`\n[rk16c-fullcorpus] REFUSED (${action}): ${reason}`);
-        console.error('[rk16c-fullcorpus] The full-run/payload path is CLI-UNREACHABLE from this runner; only `--preflight --execute --manifest-key <exact key>` is permitted (metadata-only).');
+        console.error('[rk16c-fullcorpus] The ONLY remote paths are `--preflight --execute --manifest-key <exact seal key>` (metadata-only) and `--full-run --lock <ratified-lock> --authorized-for-payload-read` (ratified-lock-gated payload run, fail-before-network). Generic --execute is refused.');
         process.exit(2);
         return;
     }
 
     if (action === 'preflight-execute') {
         await runPreflight(args); // REAL deps built lazily; reaches preflightManifest only.
+        return;
+    }
+
+    if (action === 'full-run') {
+        // D-129 ratified-lock-gated payload run. REAL deps + the gated executor are
+        // built/loaded lazily inside runFullRun; it FAILS BEFORE NETWORK on any pin
+        // mismatch or without an explicit --authorized-for-payload-read grant.
+        await runFullRun(args);
         return;
     }
 
