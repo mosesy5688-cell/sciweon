@@ -21,6 +21,7 @@ import type { Env } from '../../worker';
 import { parseUniprotId, loadTargetIndex, getTargetEntry, type TargetEntry } from '../lib/target-loader';
 import { loadSnapshotContext, SnapshotContractError } from '../lib/snapshot-context';
 import { fetchR2JsonText } from '../lib/r2-fetch';
+import { jsonWithRights } from '../lib/source-rights-filter';
 
 export type TargetSection = 'drugs' | 'trials' | 'negative_evidence';
 
@@ -127,13 +128,17 @@ export async function handleTarget(req: Request, env: Env, _ctx: ExecutionContex
         );
     }
 
-    return Response.json(
+    // RC-3A: composed-route serialization boundary. negative_evidence_ids[] may
+    // contain faers NegEvidence ids whose slug encodes a MedDRA PT; the shared
+    // filter neutralizes those id slugs (all other target fields are unaffected).
+    return jsonWithRights(
         { snapshot_date: index.snapshotDate, target: pickTargetView(entry, sections) },
         {
             status: 200,
             headers: {
                 'cache-control': 'public, max-age=300, s-maxage=900',
                 'x-sciweon-schema-minor': '0.6.0',
+                'x-sciweon-rights-filter': 'rc3a-v1',
             },
         },
     );
