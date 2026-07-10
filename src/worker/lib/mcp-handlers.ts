@@ -22,6 +22,7 @@ import { parseUniprotId, loadTargetIndex, getTargetEntry } from './target-loader
 import { pickTargetView, type TargetSection } from '../api/target';
 import { loadSnapshotContext, SnapshotContractError } from './snapshot-context';
 import { fetchR2JsonText } from './r2-fetch';
+import { applySourceRightsFilter } from './source-rights-filter';
 
 export class ToolError extends Error {
     constructor(public code: number, message: string, public data?: unknown) { super(message); }
@@ -51,7 +52,11 @@ function requireCid(args: Record<string, unknown>): string {
 }
 
 function textContent(payload: unknown): unknown {
-    return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
+    // Shared source-rights containment boundary for EVERY MCP tool result
+    // (both /api/mcp and /api/v1/mcp aliases dispatch through here). Same
+    // filter the REST serializers use -- one filter, not two.
+    const { filtered } = applySourceRightsFilter(payload);
+    return { content: [{ type: 'text', text: JSON.stringify(filtered, null, 2) }] };
 }
 
 export async function handleToolSearch(args: Record<string, unknown>, env: Env): Promise<unknown> {

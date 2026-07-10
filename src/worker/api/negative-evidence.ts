@@ -16,6 +16,7 @@ import type { Env } from '../../worker';
 import { parseCompoundId } from '../lib/id-parse';
 import { loadNegEvidenceForCompound, NegShardError, DEFAULT_PAGE_LIMIT } from '../lib/neg-evidence-loader';
 import { parseEventTypeFilter } from '../lib/event-type-taxonomy';
+import { jsonWithRights } from '../lib/source-rights-filter';
 
 function parseIntParam(raw: string | null, fallback: number): number {
     if (raw === null) return fallback;
@@ -61,11 +62,16 @@ export async function handleNegativeEvidence(req: Request, env: Env, _ctx: Execu
         const response = await loadNegEvidenceForCompound(
             env.SCIWEON_R2, parsed.canonical, baseUrl, eventTypeFilter, { offset, limit },
         );
-        return Response.json(response, {
+        // RC-3A: source-rights containment applied at the serialization
+        // boundary (withholds the MedDRA PT + faers-id slug; keeps the signal).
+        // x-sciweon-schema-minor bumped 1.1 -> 1.2 as a response-version binding
+        // so a cached pre-filter body is distinguishable post-deploy.
+        return jsonWithRights(response, {
             status: 200,
             headers: {
                 'cache-control': 'public, max-age=300, s-maxage=900',
-                'x-sciweon-schema-minor': '1.1',
+                'x-sciweon-schema-minor': '1.2',
+                'x-sciweon-rights-filter': 'rc3a-v1',
             },
         });
     } catch (err) {

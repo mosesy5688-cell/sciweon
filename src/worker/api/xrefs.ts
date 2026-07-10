@@ -19,6 +19,7 @@
 import type { Env } from '../../worker';
 import { resolveEntity } from '../lib/entity-resolver';
 import { loadTier1 } from '../lib/compound-loader';
+import { jsonWithRights } from '../lib/source-rights-filter';
 
 export async function handleXrefs(req: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -60,7 +61,11 @@ export async function handleXrefs(req: Request, env: Env, _ctx: ExecutionContext
             { status: 404 },
         );
     }
-    return Response.json({
+    // RC-3A: source-rights containment applied at the serialization boundary
+    // (excludes the KEGG-provenance external_ids.kegg_drug_id; all other xrefs
+    // -- DrugBank / RxNorm / UniChem / UNII / ChEBI -- are unaffected).
+    // x-sciweon-schema-minor bumped 1.0 -> 1.1 as a response-version binding.
+    return jsonWithRights({
         resolved: true,
         canonical_id: resolved.canonical,
         matched_on: resolved.matched_on,
@@ -74,7 +79,8 @@ export async function handleXrefs(req: Request, env: Env, _ctx: ExecutionContext
         status: 200,
         headers: {
             'cache-control': 'public, max-age=300, s-maxage=900',
-            'x-sciweon-schema-minor': '1.0',
+            'x-sciweon-schema-minor': '1.1',
+            'x-sciweon-rights-filter': 'rc3a-v1',
         },
     });
 }

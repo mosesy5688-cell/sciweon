@@ -20,6 +20,7 @@ import type { Env } from '../../worker';
 import { parseCompoundId } from '../lib/id-parse';
 import { aggregateRepurposingEvidence } from '../lib/repurposing-aggregator';
 import { SourceLoadError } from '../lib/source-load-error';
+import { jsonWithRights } from '../lib/source-rights-filter';
 
 const PATH_RE = /^\/api\/v1\/compound\/([^/]+)\/repurposing-evidence$/;
 
@@ -47,11 +48,15 @@ export async function handleRepurposingEvidence(req: Request, env: Env, _ctx: Ex
     const baseUrl = `${url.protocol}//${url.host}`;
     try {
         const response = await aggregateRepurposingEvidence(env.SCIWEON_R2, parsed.canonical, baseUrl);
-        return Response.json(response, {
+        // RC-3A: composed-route serialization boundary. negative.examples[].id
+        // may be a faers NegEvidence id whose slug encodes a MedDRA PT; the
+        // shared filter neutralizes it (the fused verdict is unaffected).
+        return jsonWithRights(response, {
             status: 200,
             headers: {
                 'cache-control': 'public, max-age=300, s-maxage=900',
                 'x-sciweon-schema-minor': '1.0',
+                'x-sciweon-rights-filter': 'rc3a-v1',
             },
         });
     } catch (err) {

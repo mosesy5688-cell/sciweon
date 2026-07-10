@@ -17,6 +17,7 @@
 import type { Env } from '../../worker';
 import { parseCompoundId } from '../lib/id-parse';
 import { loadTier1, loadTier2 } from '../lib/compound-loader';
+import { jsonWithRights } from '../lib/source-rights-filter';
 
 const COMPOUND_PATH_RE = /^\/api\/v1\/compound\/([^/]+)$/;
 
@@ -57,23 +58,34 @@ export async function handleCompound(
 
     const tier1 = await loadTier1(env, cid);
     if (tier1) {
-        return Response.json(
+        // RC-3A: source-rights containment at the serialization boundary
+        // withholds compound.kegg_drug, external_ids.kegg_drug_id and the
+        // MedDRA fda_signals.faers_top_adr_terms[] on the full Tier-1 record.
+        return jsonWithRights(
             { id: canonical, compound: { ...tier1, _tier: 'T1' } },
             {
                 status: 200,
-                headers: { 'cache-control': 'public, max-age=300, s-maxage=900' },
+                headers: {
+                    'cache-control': 'public, max-age=300, s-maxage=900',
+                    'x-sciweon-rights-filter': 'rc3a-v1',
+                },
             },
         );
     }
 
     const tier2 = await loadTier2(env.SCIWEON_R2, cid);
     if (tier2) {
-        return Response.json(
+        // Tier-2 is a PubChem structural stub (no KEGG / no FAERS): the filter
+        // is a no-op here, but the boundary is wired so the route inherits it.
+        return jsonWithRights(
             { id: canonical, compound: { ...tier2, _tier: 'T2' } },
             {
                 status: 200,
                 // Tier 2 is immutable bulk data — safe to cache longer.
-                headers: { 'cache-control': 'public, max-age=3600, s-maxage=86400' },
+                headers: {
+                    'cache-control': 'public, max-age=3600, s-maxage=86400',
+                    'x-sciweon-rights-filter': 'rc3a-v1',
+                },
             },
         );
     }
