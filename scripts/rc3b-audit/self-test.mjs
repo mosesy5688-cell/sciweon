@@ -71,7 +71,10 @@ export function syntheticRunMetadata(plan) {
         // CHANGE C: the endpoint evidence is the COMPUTED 64-hex binding (== observed).
         r2_endpoint_or_account_binding: plan.endpoint_or_account_binding,
         carrier_tag: 'rc3b-p0b-carrier-synthetic',
-        workflow_run_id: 'synthetic-selftest', commit_sha: 'a'.repeat(40), tag_or_ref: 'refs/heads/rc3b-p0b-readonly-audit-harness',
+        // C1A-R1 / B4: READ-ONLY-R2 metadata is DIGITS-ONLY run id + attempt 1 +
+        // a refs/tags ref, so the offline self-test stays schema-valid.
+        workflow_run_id: '4200000042', workflow_run_attempt: 1,
+        commit_sha: 'a'.repeat(40), tag_or_ref: 'refs/tags/rc3b-p0b-carrier-synthetic',
         materialized_run_plan_sha256: plan.materialized_run_plan_sha256, template_allowlist_sha256: plan.template_allowlist_sha256,
         materialized_allowlist_sha256: plan.materialized_allowlist_sha256,
         authorized_harness_sha: 'a'.repeat(40), authorized_run_plan_sha256: 'a'.repeat(64), authorized_template_file_sha256: 'a'.repeat(64),

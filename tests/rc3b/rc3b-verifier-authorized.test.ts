@@ -7,8 +7,10 @@
  * the evidence + log + run-plan + template-policy files (never recorded-hash-only).
  */
 import { describe, it, expect } from 'vitest';
+import fs from 'fs';
 import { verifyArtifact } from '../../scripts/rc3b-audit/verify-artifact.mjs';
 import { runSelfTest } from '../../scripts/rc3b-audit/self-test.mjs';
+import { recomputeArtifactSha256 } from '../../scripts/rc3b-audit/evidence-builder.mjs';
 import { authorizedScenario, runScenario, AUTHORIZED_ALL_GREEN } from './rc3b-authorized-fixtures';
 
 describe('RC-3B-P0B authorized verifier: missing inputs are HARD FAILS (never SKIPPED)', () => {
@@ -58,5 +60,69 @@ describe('RC-3B-P0B authorized verifier: SYNTHETIC-ONLY policy fails H4.5 (negat
         for (const k of AUTHORIZED_ALL_GREEN) {
             if (k !== 'authorized_policy_scope') expect(v.checks[k]).toBe(true);
         }
+    });
+});
+
+// ---- C1A-R1 / B4: INDEPENDENT post-verifier run-identity checks ---------------
+function reseal(evPath, mutate) {
+    const ev = JSON.parse(fs.readFileSync(evPath, 'utf-8'));
+    mutate(ev.run_metadata);
+    ev.integrity_evidence.artifact_sha256 = recomputeArtifactSha256(ev);
+    fs.writeFileSync(evPath, JSON.stringify(ev, null, 2), 'utf-8');
+}
+const verifyId = (scn, r, envOver = {}) => verifyArtifact(r.evidencePath, { ...scn.env, ...envOver }, r.logPath, scn.planPath, scn.policy.path);
+
+describe('RC-3B-P0B authorized verifier: INDEPENDENT run-identity (carrier_tag / run_id / attempt / tag_or_ref)', () => {
+    it('all exact identity fields aligned -> the four identity checks PASS', async () => {
+        const scn = authorizedScenario();
+        const r = await runScenario(scn);
+        const v = await verifyId(scn, r);
+        expect(v.checks.authorized_carrier_tag).toBe(true);
+        expect(v.checks.authorized_workflow_run_id).toBe(true);
+        expect(v.checks.authorized_workflow_run_attempt).toBe(true);
+        expect(v.checks.authorized_tag_ref).toBe(true);
+        expect(v.ok).toBe(true);
+    });
+
+    it('artifact wrong carrier_tag -> authorized_carrier_tag FAIL', async () => {
+        const scn = authorizedScenario();
+        const r = await runScenario(scn);
+        reseal(r.evidencePath, (rm) => { rm.carrier_tag = 'rc3b-p0b-carrier-OTHER'; });
+        const v = await verifyId(scn, r);
+        expect(v.checks.authorized_carrier_tag).toBe(false);
+        expect(v.ok).toBe(false);
+    });
+
+    it('artifact wrong workflow_run_id -> authorized_workflow_run_id FAIL', async () => {
+        const scn = authorizedScenario();
+        const r = await runScenario(scn);
+        reseal(r.evidencePath, (rm) => { rm.workflow_run_id = '999'; });
+        const v = await verifyId(scn, r);
+        expect(v.checks.authorized_workflow_run_id).toBe(false);
+        expect(v.ok).toBe(false);
+    });
+
+    it('env wrong GITHUB_RUN_ID (artifact rm ok) -> authorized_workflow_run_id FAIL', async () => {
+        const scn = authorizedScenario();
+        const r = await runScenario(scn);
+        const v = await verifyId(scn, r, { GITHUB_RUN_ID: '777777' });
+        expect(v.checks.authorized_workflow_run_id).toBe(false);
+        expect(v.ok).toBe(false);
+    });
+
+    it('wrong workflow_run_attempt (env attempt 2) -> authorized_workflow_run_attempt FAIL', async () => {
+        const scn = authorizedScenario();
+        const r = await runScenario(scn);
+        const v = await verifyId(scn, r, { GITHUB_RUN_ATTEMPT: '2' });
+        expect(v.checks.authorized_workflow_run_attempt).toBe(false);
+        expect(v.ok).toBe(false);
+    });
+
+    it('branch tag_or_ref (not refs/tags/...) -> authorized_tag_ref FAIL', async () => {
+        const scn = authorizedScenario();
+        const r = await runScenario(scn);
+        const v = await verifyId(scn, r, { GITHUB_REF: 'refs/heads/main', GITHUB_REF_TYPE: 'branch' });
+        expect(v.checks.authorized_tag_ref).toBe(false);
+        expect(v.ok).toBe(false);
     });
 });

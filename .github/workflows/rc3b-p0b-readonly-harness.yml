@@ -73,15 +73,24 @@ jobs:
       RC3B_P0B_RUN_AUTHORIZED: ${{ vars.RC3B_P0B_RUN_AUTHORIZED }}
       RC3B_ALLOWED_BUCKETS: ${{ vars.RC3B_ALLOWED_BUCKETS }}
       RC3B_RUN_PLAN_PATH: ${{ vars.RC3B_RUN_PLAN_PATH }}
+      # Future PRODUCTION template-policy FILE path + its EXACT authorized-path anchor
+      # (C1A-R1 / B2; NOT created here). Unset -> the committed SYNTHETIC-ONLY policy.
+      RC3B_TEMPLATE_POLICY_PATH: ${{ vars.RC3B_TEMPLATE_POLICY_PATH }}
+      RC3B_AUTHORIZED_TEMPLATE_POLICY_PATH: ${{ vars.RC3B_AUTHORIZED_TEMPLATE_POLICY_PATH }}
       # Future EXTERNAL Founder authorization anchor repo VARS (NOT created here).
       RC3B_AUTHORIZED_HARNESS_SHA: ${{ vars.RC3B_AUTHORIZED_HARNESS_SHA }}
       RC3B_AUTHORIZED_RUN_PLAN_SHA256: ${{ vars.RC3B_AUTHORIZED_RUN_PLAN_SHA256 }}
       RC3B_AUTHORIZED_TEMPLATE_FILE_SHA256: ${{ vars.RC3B_AUTHORIZED_TEMPLATE_FILE_SHA256 }}
       RC3B_AUTHORIZED_RUN_PLAN_PATH: ${{ vars.RC3B_AUTHORIZED_RUN_PLAN_PATH }}
       # Future EXACT run-identity anchor repo VARS (NOT created here). GitHub itself
-      # provides GITHUB_REF_TYPE / GITHUB_REF_NAME / GITHUB_RUN_ATTEMPT / GITHUB_RUN_ID.
+      # provides GITHUB_REF / GITHUB_REF_TYPE / GITHUB_REF_NAME / GITHUB_RUN_ATTEMPT / GITHUB_RUN_ID.
       RC3B_AUTHORIZED_CARRIER_TAG: ${{ vars.RC3B_AUTHORIZED_CARRIER_TAG }}
-      RC3B_AUTHORIZED_WORKFLOW_RUN_ID: ${{ vars.RC3B_AUTHORIZED_WORKFLOW_RUN_ID }}
+      # C1A-R1 / B3: the authorized workflow run id is late-bound. It is NOT sensitive,
+      # but a repo/env VAR cannot deliver a post-dispatch value with the required
+      # timing; a dedicated ENVIRONMENT SECRET is available only AFTER the environment
+      # protection rules pass, which is exactly the post-approval late-binding channel
+      # this needs. (Future secret; NOT provisioned here.)
+      RC3B_AUTHORIZED_WORKFLOW_RUN_ID: ${{ secrets.RC3B_AUTHORIZED_WORKFLOW_RUN_ID }}
       RC3B_OUTPUT_DIR: output
     steps:
       - name: Assert dispatched commit == authorized harness SHA

@@ -26,9 +26,10 @@ import { TEMPLATE_POLICY_PATH } from './template-policy.mjs';
 import {
     assertFounderAuthorization,
     AUTHZ_HARNESS_SHA_ENV, AUTHZ_RUN_PLAN_SHA_ENV,
-    AUTHZ_TEMPLATE_FILE_SHA_ENV, AUTHZ_RUN_PLAN_PATH_ENV,
+    AUTHZ_TEMPLATE_FILE_SHA_ENV, AUTHZ_RUN_PLAN_PATH_ENV, AUTHZ_TEMPLATE_PATH_ENV,
 } from './authorization.mjs';
 import { assertRunIdentity } from './run-identity.mjs';
+import { resolveCarrierInputs } from './carrier-inputs.mjs';
 
 export const RUN_AUTHZ_ENV = 'RC3B_P0B_RUN_AUTHORIZED';
 export const RUN_PLAN_PATH_ENV = 'RC3B_RUN_PLAN_PATH';
@@ -40,7 +41,7 @@ export { TEMPLATE_POLICY_PATH };
 // External Founder authorization anchor env var NAMES (referenced, never created).
 export {
     AUTHZ_HARNESS_SHA_ENV, AUTHZ_RUN_PLAN_SHA_ENV,
-    AUTHZ_TEMPLATE_FILE_SHA_ENV, AUTHZ_RUN_PLAN_PATH_ENV,
+    AUTHZ_TEMPLATE_FILE_SHA_ENV, AUTHZ_RUN_PLAN_PATH_ENV, AUTHZ_TEMPLATE_PATH_ENV,
 };
 
 async function doSelfTest() {
@@ -83,13 +84,23 @@ async function doRun(env) {
 }
 
 async function doCheckAuthorization(env) {
-    const planPath = env[RUN_PLAN_PATH_ENV];
     try {
-        assertFounderAuthorization(env, { runPlanPath: planPath, templatePolicyPath: env.RC3B_TEMPLATE_POLICY_PATH || TEMPLATE_POLICY_PATH });
-        // CHANGE A: the preflight also asserts the EXACT run identity, so a wrong
-        // tag / ref / attempt / run-id fails BEFORE npm ci (fail-before-install).
+        // C1A-R1 / B1: PATH-SAFETY FIRST, via the ONE shared resolver, BEFORE any
+        // authorization file (plan/template) is read. A traversal / absolute-outside
+        // / symlink-escape run-plan or template path fails with `[RC3B PATH]` here,
+        // before npm ci and before any anchor hash is read.
+        const resolved = resolveCarrierInputs(env);
+        // THEN the external Founder authorization anchors + the EXACT authorized
+        // run-plan/template PATH anchors, on the RESOLVED paths only.
+        assertFounderAuthorization(env, {
+            runPlanPath: resolved.runPlanPath,
+            templatePolicyPath: resolved.templatePolicyPath,
+            rootDir: resolved.rootDir,
+        });
+        // THEN the EXACT run identity, so a wrong tag / ref / attempt / run-id fails
+        // BEFORE npm ci (fail-before-install).
         assertRunIdentity(env);
-        console.log('[RC3B-P0B AUTHZ] PASS (external Founder authorization anchors + exact run identity bound)');
+        console.log('[RC3B-P0B AUTHZ] PASS (path-safe carrier inputs + external Founder authorization anchors + exact run identity bound)');
     } catch (err) {
         console.error(String(err && err.message ? err.message : err));
         return process.exit(2);

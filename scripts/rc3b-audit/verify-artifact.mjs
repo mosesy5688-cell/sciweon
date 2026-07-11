@@ -27,8 +27,6 @@
  */
 
 import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
 import { loadEvidenceSchema } from './evidence-assembly.mjs';
 import { validateDraft07 } from './schema-validate.mjs';
@@ -39,16 +37,22 @@ import { parseLogBundle } from './log-bundle.mjs';
 import { templatePolicyCanonicalSha256 } from './template-policy.mjs';
 import { deriveEndpointBinding, resolveAccountId } from './endpoint-binding.mjs';
 import { assertSafeCarrierPath } from './path-safety.mjs';
+import { resolveCarrierRoot } from './carrier-inputs.mjs';
 
 const HEX64 = /^[0-9a-f]{64}$/;
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(HERE, '..', '..');
 
-/** Read a carrier file's bytes ONLY through a path-safety gate; null on any failure. */
+/**
+ * Read a carrier file's bytes ONLY through a path-safety gate; null on any
+ * failure. C1A-R1 / B1: read the RESOLVED, in-root path returned by
+ * assertSafeCarrierPath -- NOT the original unresolved `p` -- so the path that is
+ * safety-checked is the exact path whose bytes are hashed (a symlinked `p` cannot
+ * pass the check yet be re-read to different bytes).
+ */
 function safeFileBytes(p, rootDir) {
     if (typeof p !== 'string' || !p) return null;
-    try { assertSafeCarrierPath(p, { rootDir }); } catch { return null; }
-    try { return fs.readFileSync(p); } catch { return null; }
+    let resolved;
+    try { resolved = assertSafeCarrierPath(p, { rootDir }); } catch { return null; }
+    try { return fs.readFileSync(resolved); } catch { return null; }
 }
 
 function sha256(bytes) { return createHash('sha256').update(bytes).digest('hex'); }
@@ -68,7 +72,10 @@ export async function verifyArtifact(evidenceOrPath, env = process.env, logPath,
         : evidenceOrPath;
 
     const authorized = env.RC3B_P0B_RUN_AUTHORIZED === 'true';
-    const rootDir = env.RC3B_CARRIER_ROOT || REPO_ROOT;
+    // C1A-R1 / B1: the trusted root is anchored the SAME way as the resolver
+    // (GITHUB_WORKSPACE in CI; an unanchored override cannot expand to '/', a
+    // parent, or another checkout).
+    const rootDir = resolveCarrierRoot(env);
 
     const ie = (evidence && evidence.integrity_evidence) || {};
     const rm = (evidence && evidence.run_metadata) || {};
@@ -149,6 +156,11 @@ export async function verifyArtifact(evidenceOrPath, env = process.env, logPath,
         checks.authorized_template_file_sha256 = 'SKIPPED';
         checks.authorized_policy_scope = 'SKIPPED';
         checks.authorized_endpoint_binding = 'SKIPPED';
+        // C1A-R1 / B4: INDEPENDENT run-identity re-verification is SKIPPED offline.
+        checks.authorized_carrier_tag = 'SKIPPED';
+        checks.authorized_workflow_run_id = 'SKIPPED';
+        checks.authorized_workflow_run_attempt = 'SKIPPED';
+        checks.authorized_tag_ref = 'SKIPPED';
     } else {
         checks.authorized_commit_sha = rm.commit_sha === env.RC3B_AUTHORIZED_HARNESS_SHA
             && rm.authorized_harness_sha === env.RC3B_AUTHORIZED_HARNESS_SHA;
@@ -173,6 +185,19 @@ export async function verifyArtifact(evidenceOrPath, env = process.env, logPath,
         const acct = resolveAccountId(env);
         checks.authorized_endpoint_binding = acct != null
             && deriveEndpointBinding(acct) === rm.observed_endpoint_or_account_binding;
+
+        // C1A-R1 / B4: INDEPENDENT run-identity re-verification -- the evidence's
+        // recorded identity must agree with BOTH the authorized anchors AND the
+        // GitHub-provided dispatch context (not just the pre-network gate).
+        checks.authorized_carrier_tag = rm.carrier_tag === env.RC3B_AUTHORIZED_CARRIER_TAG
+            && rm.carrier_tag === env.GITHUB_REF_NAME;
+        checks.authorized_workflow_run_id = String(rm.workflow_run_id) === String(env.GITHUB_RUN_ID)
+            && /^[0-9]+$/.test(String(rm.workflow_run_id));
+        checks.authorized_workflow_run_attempt = rm.workflow_run_attempt === 1
+            && String(env.GITHUB_RUN_ATTEMPT) === '1';
+        checks.authorized_tag_ref = rm.tag_or_ref === env.GITHUB_REF
+            && env.GITHUB_REF_TYPE === 'tag'
+            && env.GITHUB_REF_NAME === env.RC3B_AUTHORIZED_CARRIER_TAG;
     }
 
     // H4.4: authorized mode requires EVERY check === true (any 'SKIPPED' or false

@@ -49,6 +49,7 @@ export function authorizedScenario({ policyScope = 'PRODUCTION-READONLY', mutate
     const env = {
         RC3B_P0B_RUN_AUTHORIZED: 'true',
         GITHUB_SHA: HARNESS,
+        GITHUB_REF: `refs/tags/${CARRIER_TAG}`,
         GITHUB_REF_TYPE: 'tag',
         GITHUB_REF_NAME: CARRIER_TAG,
         GITHUB_RUN_ATTEMPT: '1',
@@ -59,6 +60,8 @@ export function authorizedScenario({ policyScope = 'PRODUCTION-READONLY', mutate
         RC3B_AUTHORIZED_RUN_PLAN_SHA256: sha256File(planPath),
         RC3B_AUTHORIZED_TEMPLATE_FILE_SHA256: sha256File(policy.path),
         RC3B_AUTHORIZED_RUN_PLAN_PATH: planPath,
+        // C1A-R1 / B2: the EXACT authorized template-policy PATH anchor.
+        RC3B_AUTHORIZED_TEMPLATE_POLICY_PATH: policy.path,
         RC3B_RUN_PLAN_PATH: planPath,
         RC3B_TEMPLATE_POLICY_PATH: policy.path,
         RC3B_ALLOWED_BUCKETS: plan.bucket,
@@ -82,4 +85,7 @@ export const AUTHORIZED_ALL_GREEN = [
     'endpoint_evidence', 'log_bundle_sha256', 'log_scan_result', 'authorized_commit_sha',
     'authorized_run_plan_sha256', 'authorized_template_file_sha256', 'authorized_policy_scope',
     'authorized_endpoint_binding',
+    // C1A-R1 / B4: independent post-verifier run-identity checks.
+    'authorized_carrier_tag', 'authorized_workflow_run_id', 'authorized_workflow_run_attempt',
+    'authorized_tag_ref',
 ];

@@ -17,6 +17,7 @@
 
 import fs from 'fs';
 import { createHash } from 'crypto';
+import { assertSafeCarrierPath } from './path-safety.mjs';
 
 const HEX40 = /^[0-9a-f]{40}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -29,6 +30,10 @@ export const AUTHZ_RUN_PLAN_SHA_ENV = 'RC3B_AUTHORIZED_RUN_PLAN_SHA256';
 // non-interchangeable.
 export const AUTHZ_TEMPLATE_FILE_SHA_ENV = 'RC3B_AUTHORIZED_TEMPLATE_FILE_SHA256';
 export const AUTHZ_RUN_PLAN_PATH_ENV = 'RC3B_AUTHORIZED_RUN_PLAN_PATH';
+// The EXACT authorized template-policy FILE path (C1A-R1 / B2). "Same bytes at a
+// different path" must FAIL: the resolved actual template path must equal the
+// resolved authorized template path, IN ADDITION to the raw-file SHA anchor.
+export const AUTHZ_TEMPLATE_PATH_ENV = 'RC3B_AUTHORIZED_TEMPLATE_POLICY_PATH';
 
 /** sha256 hex of the RAW file bytes -- the EXTERNAL anchor (not the canonical hash). */
 export function sha256OfFileBytes(path) {
@@ -37,12 +42,19 @@ export function sha256OfFileBytes(path) {
 
 /**
  * @param {object} env   process.env (or an injected fake in tests)
- * @param {{runPlanPath:string, templatePolicyPath:string}} opts
+ * @param {{runPlanPath:string, templatePolicyPath:string, rootDir:string}} opts
+ *        runPlanPath / templatePolicyPath are the RESOLVED actual paths (from
+ *        resolveCarrierInputs); rootDir is the trusted carrier root used to
+ *        path-safety-resolve the authorized-path anchors before comparison.
  * @returns {{ok:true, authorized_harness_sha, authorized_run_plan_sha256, authorized_template_file_sha256}}
  * @throws {Error} message begins `[RC3B AUTHZ] MISSING_AUTHORIZATION:` on ANY failure
  */
 export function assertFounderAuthorization(env, opts) {
     const fail = (msg) => { throw new Error(`[RC3B AUTHZ] MISSING_AUTHORIZATION: ${msg}`); };
+    const anchorPath = (p, label) => {
+        try { return assertSafeCarrierPath(p, { rootDir: opts.rootDir }); }
+        catch (e) { return fail(`${label} is path-unsafe: ${e && e.message ? e.message : e}`); }
+    };
 
     if (env[RUN_AUTHORIZED_ENV] !== 'true') fail(`${RUN_AUTHORIZED_ENV} != 'true'`);
 
@@ -50,10 +62,12 @@ export function assertFounderAuthorization(env, opts) {
     const runPlanSha = env[AUTHZ_RUN_PLAN_SHA_ENV];
     const templateFileSha = env[AUTHZ_TEMPLATE_FILE_SHA_ENV];
     const authRunPlanPath = env[AUTHZ_RUN_PLAN_PATH_ENV];
+    const authTemplatePath = env[AUTHZ_TEMPLATE_PATH_ENV];
     if (!harnessSha) fail(`${AUTHZ_HARNESS_SHA_ENV} is missing/empty`);
     if (!runPlanSha) fail(`${AUTHZ_RUN_PLAN_SHA_ENV} is missing/empty`);
     if (!templateFileSha) fail(`${AUTHZ_TEMPLATE_FILE_SHA_ENV} is missing/empty`);
     if (!authRunPlanPath) fail(`${AUTHZ_RUN_PLAN_PATH_ENV} is missing/empty`);
+    if (!authTemplatePath) fail(`${AUTHZ_TEMPLATE_PATH_ENV} is missing/empty`);
 
     if (!HEX40.test(harnessSha)) fail(`${AUTHZ_HARNESS_SHA_ENV} is not a 40-char hex sha`);
     if (!HEX64.test(runPlanSha)) fail(`${AUTHZ_RUN_PLAN_SHA_ENV} is not a 64-char hex sha256`);
@@ -64,12 +78,22 @@ export function assertFounderAuthorization(env, opts) {
     if (!HEX40.test(githubSha)) fail('GITHUB_SHA is not a 40-char hex sha');
     if (githubSha !== harnessSha) fail('GITHUB_SHA != authorized harness SHA (running code is not the authorized harness)');
 
-    if (opts.runPlanPath !== authRunPlanPath) fail('actual run-plan path != authorized run-plan path');
+    // EXACT-PATH anchors: resolve BOTH the actual and the authorized paths through
+    // path-safety and compare the RESOLVED values -- so "same bytes at a DIFFERENT
+    // path" is rejected here, before the raw-file SHA comparison. The resolved
+    // actual path is also the one whose file bytes are hashed below.
+    const actualRunPlan = anchorPath(opts.runPlanPath, 'actual run-plan');
+    const authRunPlan = anchorPath(authRunPlanPath, AUTHZ_RUN_PLAN_PATH_ENV);
+    if (actualRunPlan !== authRunPlan) fail('actual run-plan path != authorized run-plan path');
 
-    const actualRunPlanSha = sha256OfFileBytes(opts.runPlanPath);
+    const actualTemplate = anchorPath(opts.templatePolicyPath, 'actual template-policy');
+    const authTemplate = anchorPath(authTemplatePath, AUTHZ_TEMPLATE_PATH_ENV);
+    if (actualTemplate !== authTemplate) fail('actual template-policy path != authorized template-policy path');
+
+    const actualRunPlanSha = sha256OfFileBytes(actualRunPlan);
     if (actualRunPlanSha !== runPlanSha) fail(`run-plan file-bytes sha256 ${actualRunPlanSha} != authorized ${runPlanSha}`);
 
-    const actualTemplateSha = sha256OfFileBytes(opts.templatePolicyPath);
+    const actualTemplateSha = sha256OfFileBytes(actualTemplate);
     if (actualTemplateSha !== templateFileSha) fail(`template-policy file-bytes sha256 ${actualTemplateSha} != authorized ${templateFileSha}`);
 
     return {

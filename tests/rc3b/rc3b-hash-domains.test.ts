@@ -25,6 +25,10 @@ const OK = { allowedBuckets: SYNTHETIC_ALLOWED_BUCKETS };
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rc3b-hashdom-'));
 const runPlanPath = path.join(dir, 'run-plan.json');
 fs.writeFileSync(runPlanPath, JSON.stringify({ synthetic: true }), 'utf-8');
+// A byte-identical copy of the committed policy INSIDE the carrier root (so the
+// single rootDir path-anchor holds for both run-plan and template).
+const templatePath = path.join(dir, 'template-policy.json');
+fs.copyFileSync(TEMPLATE_POLICY_PATH, templatePath);
 const HARNESS = 'a'.repeat(40);
 
 function authEnv(over = {}) {
@@ -34,11 +38,12 @@ function authEnv(over = {}) {
         RC3B_AUTHORIZED_RUN_PLAN_SHA256: sha256OfFileBytes(runPlanPath),
         RC3B_AUTHORIZED_TEMPLATE_FILE_SHA256: FILE,
         RC3B_AUTHORIZED_RUN_PLAN_PATH: runPlanPath,
+        RC3B_AUTHORIZED_TEMPLATE_POLICY_PATH: templatePath,
         GITHUB_SHA: HARNESS,
         ...over,
     };
 }
-const OPTS = { runPlanPath, templatePolicyPath: TEMPLATE_POLICY_PATH };
+const OPTS = { runPlanPath, templatePolicyPath: templatePath, rootDir: dir };
 function reseal(plan) {
     plan.materialized_allowlist_sha256 = allowlistSha256(plan);
     plan.materialized_run_plan_sha256 = runPlanSha256(plan);
@@ -65,8 +70,12 @@ describe('RC-3B-P0B template hash domains', () => {
     it('a raw template FILE tamper (one extra byte) fails authorization', () => {
         const tampered = path.join(dir, 'tampered-template.json');
         fs.writeFileSync(tampered, Buffer.concat([fs.readFileSync(TEMPLATE_POLICY_PATH), Buffer.from(' ')]));
-        expect(() => assertFounderAuthorization(authEnv(), { runPlanPath, templatePolicyPath: tampered }))
-            .toThrow(/MISSING_AUTHORIZATION/);
+        // Anchor the path to the tampered file too, so the PATH check passes and the
+        // failure is proven to be the RAW-BYTE domain (tampered sha != FILE anchor).
+        expect(() => assertFounderAuthorization(
+            authEnv({ RC3B_AUTHORIZED_TEMPLATE_POLICY_PATH: tampered }),
+            { ...OPTS, templatePolicyPath: tampered },
+        )).toThrow(/MISSING_AUTHORIZATION/);
     });
 
     it('the plan binds the CANONICAL domain: the committed canonical passes admissibility', () => {

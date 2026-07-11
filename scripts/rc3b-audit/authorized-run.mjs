@@ -18,13 +18,12 @@
 
 import fs from 'fs/promises';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { assertFounderAuthorization } from './authorization.mjs';
-import { TEMPLATE_POLICY_PATH, loadTemplatePolicy } from './template-policy.mjs';
+import { loadTemplatePolicy } from './template-policy.mjs';
 import { loadRunManifest, validateRunManifest } from './run-manifest.mjs';
 import { assertEndpointBinding } from './endpoint-binding.mjs';
 import { assertRunIdentity } from './run-identity.mjs';
-import { assertSafeCarrierPath } from './path-safety.mjs';
+import { resolveCarrierInputs } from './carrier-inputs.mjs';
 import { makeMinimalReadOnlyS3Client } from './client-factory.mjs';
 import { runReadOnlyAudit } from './harness.mjs';
 import { buildEvidenceFromRun } from './evidence-assembly.mjs';
@@ -41,9 +40,6 @@ export const CARRIER_ROOT_ENV = 'RC3B_CARRIER_ROOT';
 export const EVIDENCE_NAME = 'rc3b-p0b-readonly-evidence.json';
 export const STRUCTURAL_LOG_NAME = 'rc3b-p0b-structural-log.jsonl';
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(HERE, '..', '..');
-
 /**
  * @param {object} env   process.env (or an injected fake in tests)
  * @param {{clientOverride?, now?, outDir?}} opts
@@ -51,18 +47,22 @@ const REPO_ROOT = path.resolve(HERE, '..', '..');
  *                    | {inert:true, reason:string}>}
  */
 export async function runAuthorizedAudit(env, opts = {}) {
-    const runPlanPath = env[RUN_PLAN_PATH_ENV];
     const allowedBuckets = (env[ALLOWED_BUCKETS_ENV] || '').split(',').map((s) => s.trim()).filter(Boolean);
-    const templatePolicyPath = env[TEMPLATE_POLICY_PATH_ENV] || TEMPLATE_POLICY_PATH;
-    const carrierRoot = opts.carrierRoot || env[CARRIER_ROOT_ENV] || REPO_ROOT;
 
-    // 0. PATH SAFETY (CHANGE E): the run-plan + template-policy paths must resolve
-    //    INSIDE the trusted carrier root -- BEFORE any read of those files.
-    assertSafeCarrierPath(runPlanPath, { rootDir: carrierRoot });
-    assertSafeCarrierPath(templatePolicyPath, { rootDir: carrierRoot });
+    // 0. PATH SAFETY (C1A-R1 / B1): the ONE shared resolver returns the RESOLVED,
+    //    real, in-root run-plan + template-policy paths, anchored to the exact
+    //    trusted checkout root -- BEFORE any read of those files. The SAME resolved
+    //    paths are then fed to authorization + plan/policy loads (no re-read of an
+    //    unresolved value).
+    const resolved = resolveCarrierInputs(env, opts);
+    const runPlanPath = resolved.runPlanPath;
+    const templatePolicyPath = resolved.templatePolicyPath;
 
-    // 1. EXTERNAL raw-file authorization anchors (incl. template FILE sha256).
-    const authz = assertFounderAuthorization(env, { runPlanPath, templatePolicyPath });
+    // 1. EXTERNAL raw-file authorization anchors (incl. template FILE sha256) +
+    //    the EXACT authorized run-plan/template PATH anchors (resolved-path equality).
+    const authz = assertFounderAuthorization(env, {
+        runPlanPath, templatePolicyPath, rootDir: resolved.rootDir,
+    });
 
     // 1b. EXACT run-identity binding (CHANGE A): tag / ref-name / sha / attempt==1 /
     //     run-id -- all BEFORE the client (fail-before-client). A second independent
@@ -97,9 +97,13 @@ export async function runAuthorizedAudit(env, opts = {}) {
         // NOT the plan label or a raw account id.
         r2_endpoint_or_account_binding: binding.observed_endpoint_or_account_binding,
         carrier_tag: identity.carrier_tag,
-        workflow_run_id: env.GITHUB_RUN_ID ? `${env.GITHUB_RUN_ID}-${env.GITHUB_RUN_ATTEMPT || '1'}` : 'local',
+        // C1A-R1 / B4: DIGITS-ONLY run id (no `-attempt` suffix), the attempt as a
+        // separate integer (must be 1), and the exact tag ref -- so the post-verifier
+        // can INDEPENDENTLY re-check run identity (run id / attempt / tag_or_ref).
+        workflow_run_id: String(env.GITHUB_RUN_ID),
+        workflow_run_attempt: Number(env.GITHUB_RUN_ATTEMPT || 1),
         commit_sha: env.GITHUB_SHA || '',
-        tag_or_ref: env.GITHUB_REF || 'local',
+        tag_or_ref: env.GITHUB_REF,
         materialized_run_plan_sha256: plan.materialized_run_plan_sha256,
         template_allowlist_sha256: plan.template_allowlist_sha256,
         materialized_allowlist_sha256: plan.materialized_allowlist_sha256,
