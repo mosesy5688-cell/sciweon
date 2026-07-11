@@ -24,7 +24,10 @@ const HEX64 = /^[0-9a-f]{64}$/;
 export const RUN_AUTHORIZED_ENV = 'RC3B_P0B_RUN_AUTHORIZED';
 export const AUTHZ_HARNESS_SHA_ENV = 'RC3B_AUTHORIZED_HARNESS_SHA';
 export const AUTHZ_RUN_PLAN_SHA_ENV = 'RC3B_AUTHORIZED_RUN_PLAN_SHA256';
-export const AUTHZ_TEMPLATE_SHA_ENV = 'RC3B_AUTHORIZED_TEMPLATE_SHA256';
+// The EXTERNAL anchor is the RAW template-policy FILE bytes sha256 (NOT the
+// canonical/semantic hash). Named ..._FILE_SHA256 to keep the two hash domains
+// non-interchangeable.
+export const AUTHZ_TEMPLATE_FILE_SHA_ENV = 'RC3B_AUTHORIZED_TEMPLATE_FILE_SHA256';
 export const AUTHZ_RUN_PLAN_PATH_ENV = 'RC3B_AUTHORIZED_RUN_PLAN_PATH';
 
 /** sha256 hex of the RAW file bytes -- the EXTERNAL anchor (not the canonical hash). */
@@ -35,7 +38,7 @@ export function sha256OfFileBytes(path) {
 /**
  * @param {object} env   process.env (or an injected fake in tests)
  * @param {{runPlanPath:string, templatePolicyPath:string}} opts
- * @returns {{ok:true, authorized_harness_sha, authorized_run_plan_sha256, authorized_template_sha256}}
+ * @returns {{ok:true, authorized_harness_sha, authorized_run_plan_sha256, authorized_template_file_sha256}}
  * @throws {Error} message begins `[RC3B AUTHZ] MISSING_AUTHORIZATION:` on ANY failure
  */
 export function assertFounderAuthorization(env, opts) {
@@ -45,16 +48,16 @@ export function assertFounderAuthorization(env, opts) {
 
     const harnessSha = env[AUTHZ_HARNESS_SHA_ENV];
     const runPlanSha = env[AUTHZ_RUN_PLAN_SHA_ENV];
-    const templateSha = env[AUTHZ_TEMPLATE_SHA_ENV];
+    const templateFileSha = env[AUTHZ_TEMPLATE_FILE_SHA_ENV];
     const authRunPlanPath = env[AUTHZ_RUN_PLAN_PATH_ENV];
     if (!harnessSha) fail(`${AUTHZ_HARNESS_SHA_ENV} is missing/empty`);
     if (!runPlanSha) fail(`${AUTHZ_RUN_PLAN_SHA_ENV} is missing/empty`);
-    if (!templateSha) fail(`${AUTHZ_TEMPLATE_SHA_ENV} is missing/empty`);
+    if (!templateFileSha) fail(`${AUTHZ_TEMPLATE_FILE_SHA_ENV} is missing/empty`);
     if (!authRunPlanPath) fail(`${AUTHZ_RUN_PLAN_PATH_ENV} is missing/empty`);
 
     if (!HEX40.test(harnessSha)) fail(`${AUTHZ_HARNESS_SHA_ENV} is not a 40-char hex sha`);
     if (!HEX64.test(runPlanSha)) fail(`${AUTHZ_RUN_PLAN_SHA_ENV} is not a 64-char hex sha256`);
-    if (!HEX64.test(templateSha)) fail(`${AUTHZ_TEMPLATE_SHA_ENV} is not a 64-char hex sha256`);
+    if (!HEX64.test(templateFileSha)) fail(`${AUTHZ_TEMPLATE_FILE_SHA_ENV} is not a 64-char hex sha256`);
 
     const githubSha = env.GITHUB_SHA;
     if (!githubSha) fail('GITHUB_SHA is absent');
@@ -67,12 +70,12 @@ export function assertFounderAuthorization(env, opts) {
     if (actualRunPlanSha !== runPlanSha) fail(`run-plan file-bytes sha256 ${actualRunPlanSha} != authorized ${runPlanSha}`);
 
     const actualTemplateSha = sha256OfFileBytes(opts.templatePolicyPath);
-    if (actualTemplateSha !== templateSha) fail(`template-policy file-bytes sha256 ${actualTemplateSha} != authorized ${templateSha}`);
+    if (actualTemplateSha !== templateFileSha) fail(`template-policy file-bytes sha256 ${actualTemplateSha} != authorized ${templateFileSha}`);
 
     return {
         ok: true,
         authorized_harness_sha: harnessSha,
         authorized_run_plan_sha256: runPlanSha,
-        authorized_template_sha256: templateSha,
+        authorized_template_file_sha256: templateFileSha,
     };
 }

@@ -12,13 +12,18 @@
 
 import { validateRunManifest } from './run-manifest.mjs';
 import { allowlistSha256, runPlanSha256 } from './manifest-hash.mjs';
-import { templatePolicySha256 } from './template-policy.mjs';
+import { templatePolicyCanonicalSha256 } from './template-policy.mjs';
+import { deriveEndpointBinding } from './endpoint-binding.mjs';
 import { runReadOnlyAudit } from './harness.mjs';
 import { buildEvidenceFromRun } from './evidence-assembly.mjs';
 import { runLeakScan } from './leak-scanner.mjs';
 
 export const SYNTHETIC_BUCKET = 'rc3b-synthetic-bucket';
 export const SYNTHETIC_ALLOWED_BUCKETS = Object.freeze([SYNTHETIC_BUCKET]);
+// The synthetic account id whose derived endpoint binding the fixture/template
+// carry; assertEndpointBinding(env, plan) passes when R2_ACCOUNT_ID == this.
+export const SYNTHETIC_ACCOUNT_ID = 'synthetic-account-id';
+export const SYNTHETIC_ENDPOINT_BINDING = deriveEndpointBinding(SYNTHETIC_ACCOUNT_ID);
 const PREFIX = 'synthetic/prefix/';
 const MANIFEST_KEY = `${PREFIX}manifest.json`;
 const PAYLOAD_KEY = `${PREFIX}data.jsonl.gz`;
@@ -35,15 +40,15 @@ export function manifestBodyBuffer() {
 export function syntheticRunManifest() {
     const plan = {
         plan_version: '0.1.0',
-        bucket: SYNTHETIC_BUCKET, endpoint_or_account_binding: 'synthetic-account',
+        bucket: SYNTHETIC_BUCKET, endpoint_or_account_binding: SYNTHETIC_ENDPOINT_BINDING,
         exact_prefixes: [PREFIX], structural_keys: [MANIFEST_KEY], class_c_head_keys: [PAYLOAD_KEY],
         class_x_targets: [{ key: SHARD_KEY, offset: 0, length: 64, object_class: 'NXVF_SHARD' }],
         object_class_map: { [MANIFEST_KEY]: 'STRUCTURAL_JSON', [PAYLOAD_KEY]: 'MONOLITHIC_GZIP', [SHARD_KEY]: 'NXVF_SHARD' },
         allowed_object_classes: ['STRUCTURAL_JSON', 'NXVF_SHARD', 'MONOLITHIC_GZIP', 'PAYLOAD_JSONL'],
         snapshot_ids: ['2026-01-01/1-1'], caps: {},
         record_spec_ref: 'rc3b-p0b-record-spec-v0',
-        authorized_binding: { account_binding: 'synthetic-account' },
-        template_allowlist_sha256: templatePolicySha256(),
+        authorized_binding: { account_binding: SYNTHETIC_ACCOUNT_ID },
+        template_allowlist_sha256: templatePolicyCanonicalSha256(),
     };
     plan.materialized_allowlist_sha256 = allowlistSha256(plan);
     plan.materialized_run_plan_sha256 = runPlanSha256(plan);
@@ -66,7 +71,10 @@ export function syntheticRunMetadata(plan) {
         workflow_run_id: 'synthetic-selftest', commit_sha: 'a'.repeat(40), tag_or_ref: 'refs/heads/rc3b-p0b-readonly-audit-harness',
         materialized_run_plan_sha256: plan.materialized_run_plan_sha256, template_allowlist_sha256: plan.template_allowlist_sha256,
         materialized_allowlist_sha256: plan.materialized_allowlist_sha256,
-        authorized_harness_sha: 'a'.repeat(40), authorized_run_plan_sha256: 'a'.repeat(64), authorized_template_sha256: 'a'.repeat(64),
+        authorized_harness_sha: 'a'.repeat(40), authorized_run_plan_sha256: 'a'.repeat(64), authorized_template_file_sha256: 'a'.repeat(64),
+        authorized_endpoint_or_account_binding: plan.endpoint_or_account_binding,
+        observed_endpoint_or_account_binding: plan.endpoint_or_account_binding,
+        endpoint_binding_match: 'PASS',
         mode: 'READ-ONLY-R2', status: 'PARTIAL',
     };
 }

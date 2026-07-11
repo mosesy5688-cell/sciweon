@@ -24,7 +24,12 @@ describe('RC-3B-P0B verify-artifact: clean artifact', () => {
         expect(r.checks.network_calls_after_stop).toBe(true);
         expect(r.checks.authorized_commit_sha).toBe('SKIPPED');
         expect(r.checks.authorized_run_plan_sha256).toBe('SKIPPED');
-        expect(r.checks.authorized_template_sha256).toBe('SKIPPED');
+        expect(r.checks.authorized_template_file_sha256).toBe('SKIPPED');
+        expect(r.checks.authorized_endpoint_binding).toBe('SKIPPED');
+        expect(r.checks.template_policy_canonical_sha256).toBe(true);
+        expect(r.checks.endpoint_binding_match).toBe(true);
+        expect(r.checks.log_bundle_sha256).toBe('SKIPPED');
+        expect(r.checks.log_scan_result).toBe('SKIPPED');
     });
 });
 

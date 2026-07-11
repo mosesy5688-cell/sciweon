@@ -8,6 +8,13 @@
  * prefix + suffix, class matches). "Merely an exact string in the plan" is not
  * enough -- an op that matches no family makes the plan INADMISSIBLE
  * (fail-before-network). This module is PURE (fs + crypto only).
+ *
+ * SYNTHETIC-ONLY: the committed template-policy.json is scoped
+ * "policy_scope": "SYNTHETIC-ONLY" (hash-bound). A PRODUCTION run requires a
+ * SEPARATELY audited carrier under its OWN gate -- the exact production template
+ * policy + materialized run plan + post-merge harness SHA binding + BOTH the
+ * raw-file and canonical hashes + the exact account/endpoint binding + per-run
+ * caps. No production policy is defined here.
  */
 
 import fs from 'fs';
@@ -36,6 +43,7 @@ function canonicalFamily(f) {
 export function canonicalTemplatePolicy(tp) {
     return {
         template_policy_version: tp.template_policy_version,
+        policy_scope: tp.policy_scope ?? null,
         bucket_allowlist: [...(tp.bucket_allowlist || [])].sort(),
         endpoint_or_account_binding_allowlist: [...(tp.endpoint_or_account_binding_allowlist || [])].sort(),
         families: [...(tp.families || [])]
@@ -44,10 +52,25 @@ export function canonicalTemplatePolicy(tp) {
     };
 }
 
-export function templatePolicySha256(tp = loadTemplatePolicy()) {
+/**
+ * CANONICAL (semantic) template-policy hash = sha256 of the sorted projection.
+ * This is the SEMANTIC policy identity bound in the plan as
+ * `template_allowlist_sha256`. It is a DIFFERENT domain from the raw-file hash
+ * below and the two are NEVER cross-compared.
+ */
+export function templatePolicyCanonicalSha256(tp = loadTemplatePolicy()) {
     return createHash('sha256')
         .update(Buffer.from(JSON.stringify(canonicalTemplatePolicy(tp)), 'utf-8'))
         .digest('hex');
+}
+
+/**
+ * RAW-FILE template-policy hash = sha256 of the EXACT committed policy bytes.
+ * This is the EXTERNAL Founder anchor (`authorized_template_file_sha256`). It is
+ * a DIFFERENT value from the canonical hash and lives in a DIFFERENT field.
+ */
+export function templatePolicyFileSha256(policyPath = TEMPLATE_POLICY_PATH) {
+    return createHash('sha256').update(fs.readFileSync(policyPath)).digest('hex');
 }
 
 /**

@@ -82,7 +82,9 @@ describe('RC-3B-P0B: Draft-07 schema validation', () => {
         expect(ev.operation_evidence.network_calls_after_stop).toBe(0);
         expect(ev.run_metadata.authorized_harness_sha).toMatch(/^[0-9a-f]{40}$/);
         expect(ev.run_metadata.authorized_run_plan_sha256).toMatch(/^[0-9a-f]{64}$/);
-        expect(ev.run_metadata.authorized_template_sha256).toMatch(/^[0-9a-f]{64}$/);
+        expect(ev.run_metadata.authorized_template_file_sha256).toMatch(/^[0-9a-f]{64}$/);
+        expect(ev.run_metadata.endpoint_binding_match).toBe('PASS');
+        expect(ev.run_metadata.observed_endpoint_or_account_binding).toMatch(/^[0-9a-f]{64}$/);
     });
 
     it('a run_metadata missing an authorized_* field is rejected by the schema', async () => {

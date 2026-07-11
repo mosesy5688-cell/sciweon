@@ -19,9 +19,21 @@ import { makeReadOnlyR2Client } from './readonly-client.mjs';
 import { loadTemplatePolicy } from './template-policy.mjs';
 import { StructuralLogger } from './logger.mjs';
 
-function reasonCodeFor(err) {
-    if (err instanceof RunStoppedError) return 'CAP_REACHED';
+/**
+ * Map a thrown error to a follow-up reason_code. An INTEGRITY_ANOMALY (a provider
+ * that violated an invariant: LIST over-return, GET-META/Range over-return or
+ * body-size mismatch, actual-bytes > reserved) is thrown as a CapExceededError
+ * carrying `(reason=INTEGRITY_ANOMALY)`, so its MESSAGE is checked FIRST -- ahead
+ * of both the RunStoppedError and CapExceededError->CAP_REACHED branches -- so it
+ * is never mislabeled CAP_REACHED. CAP_REACHED stays ONLY for real configured cap
+ * exhaustion (page/key/byte/object/range-count/get-meta caps, single-range-too-
+ * large, get-meta-object-too-large) which surface as RunStoppedError or a
+ * CAP_REACHED-tagged CapExceededError.
+ */
+export function reasonCodeFor(err) {
     const m = String(err && err.message);
+    if (/INTEGRITY_ANOMALY/i.test(m)) return 'INTEGRITY_ANOMALY';
+    if (err instanceof RunStoppedError) return 'CAP_REACHED';
     if (/FORMAT_NOT_SEEKABLE|not seekable|no arbitrary/i.test(m)) return 'FORMAT_NOT_SEEKABLE';
     if (/UNRESOLVED_PLACEHOLDER|placeholder/i.test(m)) return 'PREFIX_NOT_AUTHORIZED';
     if (/OUT_OF_ALLOWLIST|not an exact/i.test(m)) return 'PREFIX_NOT_AUTHORIZED';

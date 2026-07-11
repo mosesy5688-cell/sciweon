@@ -23,7 +23,7 @@ function goodEnv() {
         RC3B_P0B_RUN_AUTHORIZED: 'true',
         RC3B_AUTHORIZED_HARNESS_SHA: HARNESS,
         RC3B_AUTHORIZED_RUN_PLAN_SHA256: sha256OfFileBytes(runPlanPath),
-        RC3B_AUTHORIZED_TEMPLATE_SHA256: sha256OfFileBytes(TEMPLATE_POLICY_PATH),
+        RC3B_AUTHORIZED_TEMPLATE_FILE_SHA256: sha256OfFileBytes(TEMPLATE_POLICY_PATH),
         RC3B_AUTHORIZED_RUN_PLAN_PATH: runPlanPath,
         GITHUB_SHA: HARNESS,
     };
@@ -36,7 +36,7 @@ describe('RC-3B-P0B authorization: PASS only when fully bound', () => {
         expect(r.ok).toBe(true);
         expect(r.authorized_harness_sha).toBe(HARNESS);
         expect(r.authorized_run_plan_sha256).toMatch(/^[0-9a-f]{64}$/);
-        expect(r.authorized_template_sha256).toBe(sha256OfFileBytes(TEMPLATE_POLICY_PATH));
+        expect(r.authorized_template_file_sha256).toBe(sha256OfFileBytes(TEMPLATE_POLICY_PATH));
     });
 });
 
@@ -65,7 +65,7 @@ describe('RC-3B-P0B authorization: MISSING_AUTHORIZATION on every gap', () => {
         expect(() => assertFounderAuthorization({ ...goodEnv(), RC3B_AUTHORIZED_RUN_PLAN_SHA256: 'a'.repeat(64) }, OPTS)).toThrow(M);
     });
     it('template file bytes hash mismatch', () => {
-        expect(() => assertFounderAuthorization({ ...goodEnv(), RC3B_AUTHORIZED_TEMPLATE_SHA256: 'a'.repeat(64) }, OPTS)).toThrow(M);
+        expect(() => assertFounderAuthorization({ ...goodEnv(), RC3B_AUTHORIZED_TEMPLATE_FILE_SHA256: 'a'.repeat(64) }, OPTS)).toThrow(M);
     });
 });
 

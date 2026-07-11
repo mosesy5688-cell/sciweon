@@ -1,7 +1,7 @@
 {
   "plan_version": "0.1.0",
   "bucket": "rc3b-synthetic-bucket",
-  "endpoint_or_account_binding": "synthetic-account",
+  "endpoint_or_account_binding": "edee4904aff9b74973006d26043a8c93922b3f6279473d5d94acb6c82cd4340b",
   "exact_prefixes": [
     "synthetic/prefix/"
   ],
@@ -36,9 +36,9 @@
   "caps": {},
   "record_spec_ref": "rc3b-p0b-record-spec-v0",
   "authorized_binding": {
-    "account_binding": "synthetic-account"
+    "account_binding": "synthetic-account-id"
   },
-  "template_allowlist_sha256": "d391454a232106f0035090d8edf63f4d5b9ab62ea3880066d4cc3c25644caccd",
+  "template_allowlist_sha256": "1d822ff35d2673e8df39bf119b8918d0405c6790f1881bad36c2c38ec2b4d872",
   "materialized_allowlist_sha256": "a10ddc3d0df37680c7a1ad7e23d0cd89d9eb3f660440b432474daba1cd80909c",
-  "materialized_run_plan_sha256": "5910c743432537c186830f44a42e49b54bdede06f97615f8a80b40d56a1d35ba"
+  "materialized_run_plan_sha256": "19eb4f37ba57980dc16ea75b49683bec6777e1473f88b54d0d4f89c27b3073d1"
 }

@@ -10,7 +10,7 @@
     "run_metadata": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["bucket", "r2_endpoint_or_account_id", "workflow_run_id", "commit_sha", "tag_or_ref", "materialized_run_plan_sha256", "template_allowlist_sha256", "materialized_allowlist_sha256", "authorized_harness_sha", "authorized_run_plan_sha256", "authorized_template_sha256", "mode", "status", "stop_reasons", "partial"],
+      "required": ["bucket", "r2_endpoint_or_account_id", "workflow_run_id", "commit_sha", "tag_or_ref", "materialized_run_plan_sha256", "template_allowlist_sha256", "materialized_allowlist_sha256", "authorized_harness_sha", "authorized_run_plan_sha256", "authorized_template_file_sha256", "authorized_endpoint_or_account_binding", "observed_endpoint_or_account_binding", "endpoint_binding_match", "mode", "status", "stop_reasons", "partial"],
       "properties": {
         "bucket": {"type": "string"},
         "r2_endpoint_or_account_id": {"type": "string"},
@@ -22,7 +22,10 @@
         "materialized_allowlist_sha256": {"type": "string"},
         "authorized_harness_sha": {"type": "string"},
         "authorized_run_plan_sha256": {"type": "string"},
-        "authorized_template_sha256": {"type": "string"},
+        "authorized_template_file_sha256": {"type": "string"},
+        "authorized_endpoint_or_account_binding": {"type": "string"},
+        "observed_endpoint_or_account_binding": {"type": "string"},
+        "endpoint_binding_match": {"type": "string", "enum": ["PASS"]},
         "mode": {"type": "string", "enum": ["LOCAL-PLAN-MODE", "READ-ONLY-R2"]},
         "status": {"type": "string", "enum": ["PLANNED", "AUTHORIZED", "IN-PROGRESS", "PM-AUDITED-GO", "MERGE-PENDING", "CODE-LANDED", "RUNTIME-OBSERVED", "VERIFIED", "CLOSED", "FAILED-OPEN", "HELD", "PARTIAL", "STOPPED"]},
         "stop_reasons": {"type": "array", "items": {"type": "string", "enum": ["NONE", "CAP_REACHED", "OUT_OF_ALLOWLIST", "MUTATION_ATTEMPT", "UNRESOLVED_PLACEHOLDER", "INTEGRITY_ANOMALY", "MISSING_AUTHORIZATION", "FORMAT_NOT_SEEKABLE", "OPERATOR_ABORT"]}},
@@ -39,7 +42,9 @@
               "materialized_allowlist_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
               "authorized_harness_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
               "authorized_run_plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-              "authorized_template_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+              "authorized_template_file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "authorized_endpoint_or_account_binding": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "observed_endpoint_or_account_binding": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
             }
           }
         }
@@ -129,7 +134,7 @@
         "required": ["item_ref", "reason_code", "proposed_next_gate"],
         "properties": {
           "item_ref": {"type": "string", "description": "an object key / prefix / content-unit id -- a locator, not content"},
-          "reason_code": {"type": "string", "enum": ["PREFIX_NOT_AUTHORIZED", "OBJECT_NOT_FOUND", "FORMAT_NOT_SEEKABLE", "CAP_REACHED", "MANIFEST_MISSING", "MANIFEST_CONTRADICTION", "RIGHTS_UNRESOLVED", "PROVENANCE_UNRESOLVED", "NEEDS_SEPARATE_RUN", "OTHER_SANITIZED"]},
+          "reason_code": {"type": "string", "enum": ["PREFIX_NOT_AUTHORIZED", "OBJECT_NOT_FOUND", "FORMAT_NOT_SEEKABLE", "CAP_REACHED", "INTEGRITY_ANOMALY", "MANIFEST_MISSING", "MANIFEST_CONTRADICTION", "RIGHTS_UNRESOLVED", "PROVENANCE_UNRESOLVED", "NEEDS_SEPARATE_RUN", "OTHER_SANITIZED"]},
           "proposed_next_gate": {"type": "string"},
           "detail_sanitized": {"type": "string", "description": "OPTIONAL; must be sanitized and MUST NOT originate from payload text"}
         }

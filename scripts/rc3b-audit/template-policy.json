@@ -1,7 +1,8 @@
 {
   "template_policy_version": "0.1.0",
+  "policy_scope": "SYNTHETIC-ONLY",
   "bucket_allowlist": ["rc3b-synthetic-bucket"],
-  "endpoint_or_account_binding_allowlist": ["synthetic-account"],
+  "endpoint_or_account_binding_allowlist": ["edee4904aff9b74973006d26043a8c93922b3f6279473d5d94acb6c82cd4340b"],
   "families": [
     {
       "family_id": "synthetic-structural-manifest",

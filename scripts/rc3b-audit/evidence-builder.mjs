@@ -11,6 +11,7 @@
  */
 
 import { createHash } from 'crypto';
+import { logBundleSha256 } from './log-bundle.mjs';
 
 // The committed canonical field-path allowlist (locators of shape, not content).
 export const FIELD_PATH_ALLOWLIST = Object.freeze([
@@ -92,13 +93,14 @@ export function buildInventoryRecord(spec) {
  * @returns {object} the finalized, schema-shaped evidence artifact
  */
 export function assembleAndFinalize(a) {
-    const logBundle = (a.logLines || []).join('\n');
     const evidence = {
         run_metadata: a.run_metadata,
         operation_evidence: a.operation_evidence,
         integrity_evidence: {
             artifact_sha256: '0'.repeat(64),
-            log_bundle_sha256: sha256Hex(logBundle),
+            // Hash over the SAME bytes serializeLogBundle writes to the log file,
+            // so an external verifier can rehash the file and compare.
+            log_bundle_sha256: logBundleSha256(a.logLines || []),
             leak_scanner_name: a.scanResult.leak_scanner_name,
             leak_scanner_version: a.scanResult.leak_scanner_version,
             leak_policy_sha256: a.scanResult.leak_policy_sha256,

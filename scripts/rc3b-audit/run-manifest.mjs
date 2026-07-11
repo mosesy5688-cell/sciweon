@@ -18,7 +18,7 @@ import {
 } from './format-policy.mjs';
 import { scanForPlaceholders } from './placeholder-scan.mjs';
 import { allowlistSha256, runPlanSha256 } from './manifest-hash.mjs';
-import { loadTemplatePolicy, templatePolicySha256, matchFamily } from './template-policy.mjs';
+import { loadTemplatePolicy, templatePolicyCanonicalSha256, matchFamily } from './template-policy.mjs';
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const REQUIRED_FIELDS = [
@@ -87,7 +87,7 @@ function checkClasses(plan, errors) {
  * matching no family makes the plan INADMISSIBLE.
  */
 function checkTemplate(plan, tp, errors) {
-    if (plan.template_allowlist_sha256 !== templatePolicySha256(tp)) {
+    if (plan.template_allowlist_sha256 !== templatePolicyCanonicalSha256(tp)) {
         errors.push('template_allowlist_sha256 does not match committed template policy');
     }
     const buckets = tp.bucket_allowlist || [];

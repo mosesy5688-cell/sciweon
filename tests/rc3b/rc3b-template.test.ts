@@ -6,18 +6,28 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-    loadTemplatePolicy, templatePolicySha256, matchFamily,
+    loadTemplatePolicy, templatePolicyCanonicalSha256, templatePolicyFileSha256, matchFamily,
     assertBucketAndEndpoint, isTemplateDerived, canonicalTemplatePolicy,
 } from '../../scripts/rc3b-audit/template-policy.mjs';
+import { deriveEndpointBinding } from '../../scripts/rc3b-audit/endpoint-binding.mjs';
 
 const PREFIX = 'synthetic/prefix/';
+const SYNTH_BINDING = deriveEndpointBinding('synthetic-account-id');
 
 describe('RC-3B-P0B template policy: stable hash', () => {
-    it('templatePolicySha256 is HEX64 and stable across calls', () => {
-        const a = templatePolicySha256();
-        const b = templatePolicySha256(loadTemplatePolicy());
+    it('templatePolicyCanonicalSha256 is HEX64 and stable across calls', () => {
+        const a = templatePolicyCanonicalSha256();
+        const b = templatePolicyCanonicalSha256(loadTemplatePolicy());
         expect(a).toMatch(/^[0-9a-f]{64}$/);
         expect(a).toBe(b);
+    });
+
+    it('the RAW-file hash and the CANONICAL hash are DIFFERENT values (separate domains)', () => {
+        const file = templatePolicyFileSha256();
+        const canonical = templatePolicyCanonicalSha256();
+        expect(file).toMatch(/^[0-9a-f]{64}$/);
+        expect(canonical).toMatch(/^[0-9a-f]{64}$/);
+        expect(file).not.toBe(canonical);
     });
 
     it('canonicalTemplatePolicy sorts families + suffixes deterministically', () => {
@@ -55,8 +65,8 @@ describe('RC-3B-P0B template policy: matchFamily', () => {
 describe('RC-3B-P0B template policy: bucket/endpoint + helpers', () => {
     const tp = loadTemplatePolicy();
     it('assertBucketAndEndpoint accepts the allowlisted pair and rejects others', () => {
-        expect(() => assertBucketAndEndpoint(tp, { bucket: 'rc3b-synthetic-bucket', endpoint: 'synthetic-account' })).not.toThrow();
-        expect(() => assertBucketAndEndpoint(tp, { bucket: 'evil-bucket', endpoint: 'synthetic-account' })).toThrow(/bucket/);
+        expect(() => assertBucketAndEndpoint(tp, { bucket: 'rc3b-synthetic-bucket', endpoint: SYNTH_BINDING })).not.toThrow();
+        expect(() => assertBucketAndEndpoint(tp, { bucket: 'evil-bucket', endpoint: SYNTH_BINDING })).toThrow(/bucket/);
         expect(() => assertBucketAndEndpoint(tp, { bucket: 'rc3b-synthetic-bucket', endpoint: 'evil-account' })).toThrow(/endpoint/);
     });
     it('isTemplateDerived reports the governed operations', () => {
