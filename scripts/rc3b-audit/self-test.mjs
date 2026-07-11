@@ -67,7 +67,10 @@ export function syntheticRecordSpecs() {
 
 export function syntheticRunMetadata(plan) {
     return {
-        bucket: plan.bucket, r2_endpoint_or_account_id: plan.endpoint_or_account_binding,
+        bucket: plan.bucket,
+        // CHANGE C: the endpoint evidence is the COMPUTED 64-hex binding (== observed).
+        r2_endpoint_or_account_binding: plan.endpoint_or_account_binding,
+        carrier_tag: 'rc3b-p0b-carrier-synthetic',
         workflow_run_id: 'synthetic-selftest', commit_sha: 'a'.repeat(40), tag_or_ref: 'refs/heads/rc3b-p0b-readonly-audit-harness',
         materialized_run_plan_sha256: plan.materialized_run_plan_sha256, template_allowlist_sha256: plan.template_allowlist_sha256,
         materialized_allowlist_sha256: plan.materialized_allowlist_sha256,

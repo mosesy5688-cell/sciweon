@@ -20,7 +20,9 @@ export const CMD = { ListObjectsV2Command, HeadObjectCommand, GetObjectCommand }
  * A permissive synthetic template policy so the anti-spoof / family path is
  * EXERCISED in client tests without pinning to the committed synthetic prefix.
  * (key_prefix '' matches any key; GET_META still requires a STRUCTURAL_JSON
- * suffix + class, so a spoofed .gz/.zst/.bin never matches.)
+ * suffix + class, so a spoofed .gz/.zst/.bin never matches.) CHANGE D: every
+ * NON-LIST family carries an EXPLICIT object_class (a null object_class may match
+ * only LIST); the CLASS-C HEAD family is MONOLITHIC_GZIP-scoped.
  */
 export const SYNTH_TEMPLATE_POLICY = {
     template_policy_version: '0.1.0-test',
@@ -29,7 +31,7 @@ export const SYNTH_TEMPLATE_POLICY = {
     families: [
         { family_id: 'test-structural', operation: 'GET_META', object_class: 'STRUCTURAL_JSON', key_prefix: '', key_suffixes: ['.json', '.manifest.json'] },
         { family_id: 'test-list', operation: 'LIST', object_class: null, key_prefix: '', key_suffixes: [] },
-        { family_id: 'test-head', operation: 'HEAD', object_class: null, key_prefix: '', key_suffixes: ['.jsonl.gz', '.gz', '.zst', '.zstd', '.jsonl', '.bin', '.json'] },
+        { family_id: 'test-head', operation: 'HEAD', object_class: 'MONOLITHIC_GZIP', key_prefix: '', key_suffixes: ['.jsonl.gz', '.gz'] },
         { family_id: 'test-range', operation: 'RANGE', object_class: 'NXVF_SHARD', key_prefix: '', key_suffixes: ['.bin'] },
     ],
 };

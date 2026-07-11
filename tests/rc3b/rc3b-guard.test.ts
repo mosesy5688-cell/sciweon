@@ -86,12 +86,12 @@ describe('RC-3B-P0B guard: a boundary-ignoring client would leak (guard is load-
 
 describe('RC-3B-P0B: object-cap pre-network reservation + post-STOP counter semantics', () => {
     it('reserveObject throws BEFORE network when the next unique object exceeds the cap', async () => {
-        const plan = basePlan({ class_c_head_keys: ['a', 'b'] });
+        const plan = basePlan({ class_c_head_keys: ['p/a.gz', 'p/b.gz'] });
         const { rc, calls, budget } = buildClient(plan, { caps: { MAX_OBJECTS_TOUCHED_PER_RUN: 1 }, responder: stdResponder() });
-        await rc.headExactKey('a');
+        await rc.headExactKey('p/a.gz');
         expect(calls.length).toBe(1);
-        await expect(rc.headExactKey('b')).rejects.toThrow(/object cap reached|CAP_REACHED|STOPPED/);
-        expect(calls.length).toBe(1); // 'b' never reached the network
+        await expect(rc.headExactKey('p/b.gz')).rejects.toThrow(/object cap reached|CAP_REACHED|STOPPED/);
+        expect(calls.length).toBe(1); // 'p/b.gz' never reached the network
         expect(budget.stopped).toBe(true);
         expect(budget.objectsTouched).toBe(1);
     });

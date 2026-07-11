@@ -28,6 +28,7 @@ import {
     AUTHZ_HARNESS_SHA_ENV, AUTHZ_RUN_PLAN_SHA_ENV,
     AUTHZ_TEMPLATE_FILE_SHA_ENV, AUTHZ_RUN_PLAN_PATH_ENV,
 } from './authorization.mjs';
+import { assertRunIdentity } from './run-identity.mjs';
 
 export const RUN_AUTHZ_ENV = 'RC3B_P0B_RUN_AUTHORIZED';
 export const RUN_PLAN_PATH_ENV = 'RC3B_RUN_PLAN_PATH';
@@ -84,17 +85,20 @@ async function doRun(env) {
 async function doCheckAuthorization(env) {
     const planPath = env[RUN_PLAN_PATH_ENV];
     try {
-        assertFounderAuthorization(env, { runPlanPath: planPath, templatePolicyPath: TEMPLATE_POLICY_PATH });
-        console.log('[RC3B-P0B AUTHZ] PASS (external Founder authorization anchors present + bound)');
+        assertFounderAuthorization(env, { runPlanPath: planPath, templatePolicyPath: env.RC3B_TEMPLATE_POLICY_PATH || TEMPLATE_POLICY_PATH });
+        // CHANGE A: the preflight also asserts the EXACT run identity, so a wrong
+        // tag / ref / attempt / run-id fails BEFORE npm ci (fail-before-install).
+        assertRunIdentity(env);
+        console.log('[RC3B-P0B AUTHZ] PASS (external Founder authorization anchors + exact run identity bound)');
     } catch (err) {
         console.error(String(err && err.message ? err.message : err));
         return process.exit(2);
     }
 }
 
-async function doVerifyArtifact(evidencePath, logPath, env) {
-    if (!evidencePath) { console.error('[RC3B-P0B VERIFY-ARTIFACT] usage: --verify-artifact <evidence.json> [structural-log.jsonl]'); return process.exit(1); }
-    const r = await verifyArtifact(evidencePath, env, logPath);
+async function doVerifyArtifact(evidencePath, logPath, runPlanPath, templatePolicyPath, env) {
+    if (!evidencePath) { console.error('[RC3B-P0B VERIFY-ARTIFACT] usage: --verify-artifact <evidence.json> [structural-log.jsonl] [run-plan.json] [template-policy.json]'); return process.exit(1); }
+    const r = await verifyArtifact(evidencePath, env, logPath, runPlanPath, templatePolicyPath);
     console.log(`[RC3B-P0B VERIFY-ARTIFACT] ok=${r.ok} checks=${JSON.stringify(r.checks)}`);
     if (!r.ok) { if (r.errors && r.errors.length) console.error(`[RC3B-P0B VERIFY-ARTIFACT] errors=${JSON.stringify(r.errors)}`); process.exit(1); }
 }
@@ -106,12 +110,11 @@ async function main() {
     if (args.has('--check-authorization')) return doCheckAuthorization(process.env);
     if (args.has('--verify-artifact')) {
         const i = argv.indexOf('--verify-artifact');
-        const evidenceArg = argv[i + 1];
-        const logArg = argv[i + 2] && !argv[i + 2].startsWith('--') ? argv[i + 2] : undefined;
-        return doVerifyArtifact(evidenceArg, logArg, process.env);
+        const pos = (n) => (argv[i + n] && !argv[i + n].startsWith('--') ? argv[i + n] : undefined);
+        return doVerifyArtifact(pos(1), pos(2), pos(3), pos(4), process.env);
     }
     if (args.has('--run')) return doRun(process.env);
-    console.log('[RC3B-P0B] usage: run.mjs --self-test | --check-authorization | --verify-artifact <evidence.json> [structural-log.jsonl] | --run   (default: no-op). Build-only; --run is inert without full authorization.');
+    console.log('[RC3B-P0B] usage: run.mjs --self-test | --check-authorization | --verify-artifact <evidence.json> [structural-log.jsonl] [run-plan.json] [template-policy.json] | --run   (default: no-op). Build-only; --run is inert without full authorization.');
 }
 
 main().catch((err) => { console.error(`[RC3B-P0B] UNHANDLED: ${String(err?.stack ?? err)}`); process.exit(1); });

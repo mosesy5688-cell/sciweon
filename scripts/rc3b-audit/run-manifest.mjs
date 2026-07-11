@@ -18,7 +18,9 @@ import {
 } from './format-policy.mjs';
 import { scanForPlaceholders } from './placeholder-scan.mjs';
 import { allowlistSha256, runPlanSha256 } from './manifest-hash.mjs';
-import { loadTemplatePolicy, templatePolicyCanonicalSha256, matchFamily } from './template-policy.mjs';
+import {
+    loadTemplatePolicy, templatePolicyCanonicalSha256, matchFamily, nullObjectClassNonListFamilies,
+} from './template-policy.mjs';
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const REQUIRED_FIELDS = [
@@ -87,6 +89,11 @@ function checkClasses(plan, errors) {
  * matching no family makes the plan INADMISSIBLE.
  */
 function checkTemplate(plan, tp, errors) {
+    // CHANGE D: a NON-LIST family carrying a null/absent object_class is INVALID
+    // (no object_class:null HEAD/GET_META/RANGE bypass) -- reject the whole policy.
+    const badNull = nullObjectClassNonListFamilies(tp);
+    for (const id of badNull) errors.push(`template family ${JSON.stringify(id)} is a non-LIST family with a null object_class (invalid)`);
+
     if (plan.template_allowlist_sha256 !== templatePolicyCanonicalSha256(tp)) {
         errors.push('template_allowlist_sha256 does not match committed template policy');
     }
@@ -94,6 +101,15 @@ function checkTemplate(plan, tp, errors) {
     const endpoints = tp.endpoint_or_account_binding_allowlist || [];
     if (!buckets.includes(plan.bucket)) errors.push(`bucket ${JSON.stringify(plan.bucket)} is not in the template bucket allowlist`);
     if (!endpoints.includes(plan.endpoint_or_account_binding)) errors.push(`endpoint ${JSON.stringify(plan.endpoint_or_account_binding)} is not in the template endpoint allowlist`);
+
+    // CHANGE F: reject any exact_prefix / key under a forbidden_prefix (fail-
+    // before-network) EVEN IF a family would otherwise match it.
+    const forbidden = tp.forbidden_prefixes || [];
+    const underForbidden = (k) => forbidden.some((fp) => String(k).startsWith(fp));
+    for (const p of plan.exact_prefixes || []) if (underForbidden(p)) errors.push(`LIST prefix ${JSON.stringify(p)} is under a forbidden_prefix`);
+    for (const k of plan.structural_keys || []) if (underForbidden(k)) errors.push(`structural key ${JSON.stringify(k)} is under a forbidden_prefix`);
+    for (const k of plan.class_c_head_keys || []) if (underForbidden(k)) errors.push(`HEAD key ${JSON.stringify(k)} is under a forbidden_prefix`);
+    for (const t of plan.class_x_targets || []) if (t && underForbidden(t.key)) errors.push(`class_x target ${JSON.stringify(t.key)} is under a forbidden_prefix`);
 
     const classMap = plan.object_class_map || {};
     for (const prefix of plan.exact_prefixes || []) {

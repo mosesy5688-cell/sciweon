@@ -38,13 +38,14 @@ describe('RC-3B-P0B: payload / structural GET-META rules', () => {
 
 describe('RC-3B-P0B: cap reached -> STOP, no network after STOP', () => {
     it('head cap STOPS the run and blocks every later call before network', async () => {
-        const plan = basePlan({ class_c_head_keys: ['a', 'b'] });
+        // CLASS-C payload (MONOLITHIC_GZIP) keys, HEAD-ed via the exact HEAD family.
+        const plan = basePlan({ class_c_head_keys: ['p/a.gz', 'p/b.gz'] });
         const { rc, calls, budget } = buildClient(plan, { caps: { MAX_HEAD_REQUESTS_PER_RUN: 1 }, responder: stdResponder() });
-        await rc.headExactKey('a');
+        await rc.headExactKey('p/a.gz');
         expect(calls.length).toBe(1);
-        await expect(rc.headExactKey('b')).rejects.toThrow(/head cap reached|STOPPED/);
+        await expect(rc.headExactKey('p/b.gz')).rejects.toThrow(/head cap reached|STOPPED/);
         expect(budget.stopped).toBe(true);
-        await expect(rc.headExactKey('a')).rejects.toThrow(/STOPPED/);
+        await expect(rc.headExactKey('p/a.gz')).rejects.toThrow(/STOPPED/);
         expect(calls.length).toBe(1); // no network call after STOP
     });
 

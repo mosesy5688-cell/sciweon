@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest';
 import { validateRunManifest } from '../../scripts/rc3b-audit/run-manifest.mjs';
 import { capViolations, resolveCaps, IMMUTABLE_CAPS } from '../../scripts/rc3b-audit/caps.mjs';
 import { allowlistSha256, runPlanSha256 } from '../../scripts/rc3b-audit/manifest-hash.mjs';
+import { loadTemplatePolicy, templatePolicyCanonicalSha256 } from '../../scripts/rc3b-audit/template-policy.mjs';
 import { syntheticRunManifest, SYNTHETIC_BUCKET, SYNTHETIC_ALLOWED_BUCKETS } from '../../scripts/rc3b-audit/self-test.mjs';
 
 function reseal(plan) {
@@ -107,6 +108,25 @@ describe('RC-3B-P0B run manifest: canonical-hash mutation coverage (tamper => mi
         const r = validateRunManifest(plan, OK);
         expect(r.admissible).toBe(false);
         expect(r.errors.some((e) => /not template-derived/.test(e))).toBe(true);
+    });
+});
+
+describe('RC-3B-P0B run manifest: CHANGE D/F template-policy rejections', () => {
+    it('a policy whose non-LIST family carries object_class:null is INADMISSIBLE (CHANGE D)', () => {
+        const tp = loadTemplatePolicy();
+        const bad = { ...tp, families: tp.families.map((f) => (f.operation === 'HEAD' ? { ...f, object_class: null } : f)) };
+        const r = validateRunManifest(syntheticRunManifest(), { allowedBuckets: SYNTHETIC_ALLOWED_BUCKETS, templatePolicy: bad });
+        expect(r.admissible).toBe(false);
+        expect(r.errors.some((e) => /null object_class/.test(e))).toBe(true);
+    });
+
+    it('a key under a forbidden_prefix is INADMISSIBLE even when a family matches (CHANGE F)', () => {
+        const tp = loadTemplatePolicy();
+        const withForbidden = { ...tp, forbidden_prefixes: ['synthetic/prefix/'] };
+        const plan = reseal({ ...syntheticRunManifest(), template_allowlist_sha256: templatePolicyCanonicalSha256(withForbidden) });
+        const r = validateRunManifest(plan, { allowedBuckets: SYNTHETIC_ALLOWED_BUCKETS, templatePolicy: withForbidden });
+        expect(r.admissible).toBe(false);
+        expect(r.errors.some((e) => /forbidden_prefix/.test(e))).toBe(true);
     });
 });
 

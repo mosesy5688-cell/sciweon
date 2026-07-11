@@ -54,7 +54,7 @@ function detailToken(err) {
  * @returns {object} runResult
  */
 export async function runReadOnlyAudit(plan, rawBytes, opts = {}) {
-    const validation = validateRunManifest(plan, { allowedBuckets: opts.allowedBuckets || [] });
+    const validation = validateRunManifest(plan, { allowedBuckets: opts.allowedBuckets || [], templatePolicy: opts.templatePolicy });
     if (!validation.admissible) {
         throw new Error(`[RC3B HARNESS] run manifest INADMISSIBLE -- fail-before-network:\n - ${validation.errors.join('\n - ')}`);
     }

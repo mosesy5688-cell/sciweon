@@ -10,10 +10,11 @@
     "run_metadata": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["bucket", "r2_endpoint_or_account_id", "workflow_run_id", "commit_sha", "tag_or_ref", "materialized_run_plan_sha256", "template_allowlist_sha256", "materialized_allowlist_sha256", "authorized_harness_sha", "authorized_run_plan_sha256", "authorized_template_file_sha256", "authorized_endpoint_or_account_binding", "observed_endpoint_or_account_binding", "endpoint_binding_match", "mode", "status", "stop_reasons", "partial"],
+      "required": ["bucket", "r2_endpoint_or_account_binding", "carrier_tag", "workflow_run_id", "commit_sha", "tag_or_ref", "materialized_run_plan_sha256", "template_allowlist_sha256", "materialized_allowlist_sha256", "authorized_harness_sha", "authorized_run_plan_sha256", "authorized_template_file_sha256", "authorized_endpoint_or_account_binding", "observed_endpoint_or_account_binding", "endpoint_binding_match", "mode", "status", "stop_reasons", "partial"],
       "properties": {
         "bucket": {"type": "string"},
-        "r2_endpoint_or_account_id": {"type": "string"},
+        "r2_endpoint_or_account_binding": {"type": "string"},
+        "carrier_tag": {"type": "string"},
         "workflow_run_id": {"type": "string"},
         "commit_sha": {"type": "string"},
         "tag_or_ref": {"type": "string"},
@@ -36,6 +37,8 @@
           "if": {"properties": {"mode": {"const": "READ-ONLY-R2"}}},
           "then": {
             "properties": {
+              "r2_endpoint_or_account_binding": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "carrier_tag": {"type": "string", "minLength": 1},
               "workflow_run_id": {"type": "string", "minLength": 1},
               "commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
               "materialized_run_plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},

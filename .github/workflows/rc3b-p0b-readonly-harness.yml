@@ -78,6 +78,10 @@ jobs:
       RC3B_AUTHORIZED_RUN_PLAN_SHA256: ${{ vars.RC3B_AUTHORIZED_RUN_PLAN_SHA256 }}
       RC3B_AUTHORIZED_TEMPLATE_FILE_SHA256: ${{ vars.RC3B_AUTHORIZED_TEMPLATE_FILE_SHA256 }}
       RC3B_AUTHORIZED_RUN_PLAN_PATH: ${{ vars.RC3B_AUTHORIZED_RUN_PLAN_PATH }}
+      # Future EXACT run-identity anchor repo VARS (NOT created here). GitHub itself
+      # provides GITHUB_REF_TYPE / GITHUB_REF_NAME / GITHUB_RUN_ATTEMPT / GITHUB_RUN_ID.
+      RC3B_AUTHORIZED_CARRIER_TAG: ${{ vars.RC3B_AUTHORIZED_CARRIER_TAG }}
+      RC3B_AUTHORIZED_WORKFLOW_RUN_ID: ${{ vars.RC3B_AUTHORIZED_WORKFLOW_RUN_ID }}
       RC3B_OUTPUT_DIR: output
     steps:
       - name: Assert dispatched commit == authorized harness SHA
@@ -99,8 +103,8 @@ jobs:
           if [ -f package-lock.json ]; then npm ci; else npm install; fi
       - name: Run READ-ONLY R2 audit (fails closed; writes evidence + structural log)
         run: node scripts/rc3b-audit/run.mjs --run
-      - name: Verify produced evidence artifact + real structural-log bundle
-        run: node scripts/rc3b-audit/run.mjs --verify-artifact output/rc3b-p0b-readonly-evidence.json output/rc3b-p0b-structural-log.jsonl
+      - name: Verify produced evidence artifact + structural-log + run-plan + template-policy (independent rehash)
+        run: node scripts/rc3b-audit/run.mjs --verify-artifact output/rc3b-p0b-readonly-evidence.json output/rc3b-p0b-structural-log.jsonl "$RC3B_RUN_PLAN_PATH" "${RC3B_TEMPLATE_POLICY_PATH:-scripts/rc3b-audit/template-policy.json}"
       - name: Validate evidence schema + leak scan (belt-and-braces)
         run: node scripts/rc3b-audit/run.mjs --self-test
       - name: Upload evidence artifact + structural log bundle

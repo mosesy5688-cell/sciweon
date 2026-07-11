@@ -8,6 +8,9 @@
 import { describe, it, expect } from 'vitest';
 import { verifyArtifact } from '../../scripts/rc3b-audit/verify-artifact.mjs';
 import { runSelfTest } from '../../scripts/rc3b-audit/self-test.mjs';
+import { validateDraft07 } from '../../scripts/rc3b-audit/schema-validate.mjs';
+import { loadEvidenceSchema } from '../../scripts/rc3b-audit/evidence-assembly.mjs';
+import { recomputeArtifactSha256 } from '../../scripts/rc3b-audit/evidence-builder.mjs';
 
 const OFFLINE = {}; // no RC3B_P0B_RUN_AUTHORIZED => authorized checks SKIPPED
 
@@ -26,10 +29,31 @@ describe('RC-3B-P0B verify-artifact: clean artifact', () => {
         expect(r.checks.authorized_run_plan_sha256).toBe('SKIPPED');
         expect(r.checks.authorized_template_file_sha256).toBe('SKIPPED');
         expect(r.checks.authorized_endpoint_binding).toBe('SKIPPED');
+        expect(r.checks.authorized_policy_scope).toBe('SKIPPED');
         expect(r.checks.template_policy_canonical_sha256).toBe(true);
         expect(r.checks.endpoint_binding_match).toBe(true);
+        expect(r.checks.endpoint_evidence).toBe(true);
         expect(r.checks.log_bundle_sha256).toBe('SKIPPED');
         expect(r.checks.log_scan_result).toBe('SKIPPED');
+    });
+});
+
+describe('RC-3B-P0B verify-artifact: CHANGE C endpoint evidence normalization', () => {
+    it('a raw (non-hex) r2_endpoint_or_account_binding is rejected by the schema', async () => {
+        const ev = (await runSelfTest()).evidence;
+        ev.run_metadata.r2_endpoint_or_account_binding = 'my-account-1234';
+        const r = validateDraft07(loadEvidenceSchema(), ev);
+        expect(r.valid).toBe(false);
+        expect(r.errors.some((e) => /r2_endpoint_or_account_binding/.test(e))).toBe(true);
+    });
+
+    it('an observed binding != the evidence binding -> endpoint_evidence fails', async () => {
+        const ev = (await runSelfTest()).evidence;
+        ev.run_metadata.r2_endpoint_or_account_binding = 'b'.repeat(64); // valid hex, but != observed
+        ev.integrity_evidence.artifact_sha256 = recomputeArtifactSha256(ev);
+        const r = await verifyArtifact(ev, OFFLINE);
+        expect(r.checks.endpoint_evidence).toBe(false);
+        expect(r.ok).toBe(false);
     });
 });
 
