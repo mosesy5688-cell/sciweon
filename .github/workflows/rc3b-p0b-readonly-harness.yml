@@ -1,0 +1,92 @@
+name: RC-3B-P0B Read-Only R2 Harness
+
+# RC-3B-P0B -- dedicated, minimal, fail-before-network READ-ONLY R2 audit
+# harness. This workflow is BUILD-ONLY and INERT: it can do nothing against R2
+# until (a) the dedicated environment `rc3b-p0b-readonly-r2` exists WITH an
+# approval protection rule, (b) READ-ONLY R2 secrets are provisioned into that
+# environment, AND (c) a Founder-authorized EXACT run plan + the enable flag are
+# set. None of those are created here. Two jobs:
+#   offline-verify  -- no secrets, no environment, NO network: recomputes the
+#                      committed run-plan hash, validates the evidence schema,
+#                      and runs the leak scan (positive + negative controls).
+#   readonly-r2-run -- gated + INERT: references the future environment + future
+#                      read-only secret NAMES and is SKIPPED unless the enable
+#                      repo variable is set, so it never touches R2 by default.
+#
+# FOUNDER-TRIGGERED ONLY: workflow_dispatch. It takes NO arbitrary path / prefix
+# / key inputs (the plan is a committed, hash-pinned file). It dispatches NOTHING
+# and mutates NOTHING.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  offline-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7 (pinned)
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b  # v4.0.3 (pinned)
+        with:
+          node-version: '22'
+      - name: Verify committed run-plan hash (self-consistency)
+        run: |
+          node --input-type=module -e "
+          import fs from 'fs';
+          import { runPlanSha256, allowlistSha256 } from './scripts/rc3b-audit/manifest-hash.mjs';
+          const p = JSON.parse(fs.readFileSync('scripts/rc3b-audit/fixtures/synthetic-run-manifest.example.json','utf-8'));
+          const rp = runPlanSha256(p), al = allowlistSha256(p);
+          if (rp !== p.materialized_run_plan_sha256) throw new Error('run-plan hash mismatch: '+rp+' != '+p.materialized_run_plan_sha256);
+          if (al !== p.materialized_allowlist_sha256) throw new Error('allowlist hash mismatch');
+          console.log('run-plan hash verified: '+rp);
+          "
+      - name: Offline self-test (schema validate + leak scan + hash consistency; NO network)
+        run: node scripts/rc3b-audit/run.mjs --self-test
+
+  readonly-r2-run:
+    needs: offline-verify
+    # INERT by default: the job is SKIPPED unless a Founder sets this repo
+    # variable. Even when enabled it requires the dedicated environment approval
+    # + provisioned read-only secrets, none of which exist in this build.
+    if: ${{ vars.RC3B_P0B_ENABLE_R2_RUN == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # DEDICATED future environment NAME (NOT created here). Its approval +
+    # read-only secrets are the gate; without the environment this cannot run.
+    environment: rc3b-p0b-readonly-r2
+    env:
+      # Future READ-ONLY secret NAMES (NOT provisioned in this build).
+      R2_ACCOUNT_ID: ${{ secrets.RC3B_R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.RC3B_R2_READONLY_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.RC3B_R2_READONLY_SECRET_ACCESS_KEY }}
+      RC3B_P0B_RUN_AUTHORIZED: ${{ vars.RC3B_P0B_RUN_AUTHORIZED }}
+      RC3B_ALLOWED_BUCKETS: ${{ vars.RC3B_ALLOWED_BUCKETS }}
+      RC3B_RUN_PLAN_PATH: ${{ vars.RC3B_RUN_PLAN_PATH }}
+      RC3B_OUTPUT_DIR: output
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7 (pinned)
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b  # v4.0.3 (pinned)
+        with:
+          node-version: '22'
+      - name: Install dependencies (lock-file enforced)
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+      - name: Run READ-ONLY R2 audit (fails closed without full authorization)
+        run: node scripts/rc3b-audit/run.mjs --run
+      - name: Validate evidence schema + leak scan (belt-and-braces)
+        run: node scripts/rc3b-audit/run.mjs --self-test
+      - name: Upload evidence artifact
+        if: always()
+        uses: actions/upload-artifact@0b2256b8c012f0828dc542b3febcab082c67f72b  # v4.3.4 (pinned)
+        with:
+          name: rc3b-p0b-readonly-evidence
+          path: output/rc3b-p0b-readonly-evidence.json
+          retention-days: 90
+          if-no-files-found: warn

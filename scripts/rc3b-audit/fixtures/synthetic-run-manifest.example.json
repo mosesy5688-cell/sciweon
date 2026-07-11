@@ -1,0 +1,39 @@
+{
+  "bucket": "rc3b-synthetic-bucket",
+  "endpoint_or_account_binding": "synthetic-account",
+  "exact_prefixes": [
+    "synthetic/prefix/"
+  ],
+  "structural_keys": [
+    "synthetic/prefix/manifest.json"
+  ],
+  "class_c_head_keys": [
+    "synthetic/prefix/data.jsonl.gz"
+  ],
+  "class_x_targets": [
+    {
+      "key": "synthetic/prefix/fused-shard-000.bin",
+      "offset": 0,
+      "length": 64,
+      "object_class": "NXVF_SHARD"
+    }
+  ],
+  "object_class_map": {
+    "synthetic/prefix/manifest.json": "STRUCTURAL_JSON",
+    "synthetic/prefix/data.jsonl.gz": "MONOLITHIC_GZIP",
+    "synthetic/prefix/fused-shard-000.bin": "NXVF_SHARD"
+  },
+  "allowed_object_classes": [
+    "STRUCTURAL_JSON",
+    "NXVF_SHARD",
+    "MONOLITHIC_GZIP",
+    "PAYLOAD_JSONL"
+  ],
+  "snapshot_ids": [
+    "2026-01-01/1-1"
+  ],
+  "caps": {},
+  "template_allowlist_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "materialized_allowlist_sha256": "a10ddc3d0df37680c7a1ad7e23d0cd89d9eb3f660440b432474daba1cd80909c",
+  "materialized_run_plan_sha256": "7d7cd3f586a21b32d1bbd911ff2980136ecee8c17157890cba1d1f6713d3fa78"
+}
