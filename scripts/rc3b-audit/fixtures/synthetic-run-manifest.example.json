@@ -1,4 +1,5 @@
 {
+  "plan_version": "0.1.0",
   "bucket": "rc3b-synthetic-bucket",
   "endpoint_or_account_binding": "synthetic-account",
   "exact_prefixes": [
@@ -33,7 +34,11 @@
     "2026-01-01/1-1"
   ],
   "caps": {},
-  "template_allowlist_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "record_spec_ref": "rc3b-p0b-record-spec-v0",
+  "authorized_binding": {
+    "account_binding": "synthetic-account"
+  },
+  "template_allowlist_sha256": "d391454a232106f0035090d8edf63f4d5b9ab62ea3880066d4cc3c25644caccd",
   "materialized_allowlist_sha256": "a10ddc3d0df37680c7a1ad7e23d0cd89d9eb3f660440b432474daba1cd80909c",
-  "materialized_run_plan_sha256": "7d7cd3f586a21b32d1bbd911ff2980136ecee8c17157890cba1d1f6713d3fa78"
+  "materialized_run_plan_sha256": "5910c743432537c186830f44a42e49b54bdede06f97615f8a80b40d56a1d35ba"
 }

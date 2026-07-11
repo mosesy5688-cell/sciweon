@@ -16,6 +16,7 @@ function reseal(plan) {
     return plan;
 }
 const OK = { allowedBuckets: SYNTHETIC_ALLOWED_BUCKETS };
+const PREFIX = 'synthetic/prefix/';
 
 describe('RC-3B-P0B run manifest: the synthetic plan is admissible + hash-consistent', () => {
     it('a clean synthetic plan validates and its hashes recompute', () => {
@@ -66,6 +67,46 @@ describe('RC-3B-P0B run manifest: rejections', () => {
         const r = validateRunManifest(plan, OK);
         expect(r.admissible).toBe(false);
         expect(r.errors.some((e) => /NXVF_SHARD/.test(e))).toBe(true);
+    });
+});
+
+describe('RC-3B-P0B run manifest: canonical-hash mutation coverage (tamper => mismatch => inadmissible)', () => {
+    const mutations = {
+        plan_version: (p) => { p.plan_version = 'x.y.z'; },
+        endpoint_or_account_binding: (p) => { p.endpoint_or_account_binding = 'synthetic-account-2'; },
+        object_class_map: (p) => { p.object_class_map = { ...p.object_class_map, [`${PREFIX}extra.json`]: 'STRUCTURAL_JSON' }; },
+        allowed_object_classes: (p) => { p.allowed_object_classes = ['STRUCTURAL_JSON']; },
+        snapshot_ids: (p) => { p.snapshot_ids = ['2099-12-31/9-9']; },
+        caps: (p) => { p.caps = { MAX_HEAD_REQUESTS_PER_RUN: 7 }; },
+        template_allowlist_sha256: (p) => { p.template_allowlist_sha256 = 'f'.repeat(64); },
+        record_spec_ref: (p) => { p.record_spec_ref = 'rc3b-p0b-record-spec-v9'; },
+        exact_prefixes: (p) => { p.exact_prefixes = [`${PREFIX}sub/`]; },
+        structural_keys: (p) => { p.structural_keys = [`${PREFIX}other.json`]; },
+        class_c_head_keys: (p) => { p.class_c_head_keys = [`${PREFIX}other.jsonl.gz`]; },
+        class_x_targets: (p) => { p.class_x_targets = [{ key: `${PREFIX}other.bin`, offset: 0, length: 64, object_class: 'NXVF_SHARD' }]; },
+    };
+    for (const [field, mutate] of Object.entries(mutations)) {
+        it(`mutating ${field} WITHOUT resealing is inadmissible (run-plan hash mismatch)`, () => {
+            const plan = syntheticRunManifest();
+            mutate(plan); // NO reseal
+            const r = validateRunManifest(plan, OK);
+            expect(r.admissible).toBe(false);
+            expect(r.errors.some((e) => /materialized_run_plan_sha256 mismatch/.test(e))).toBe(true);
+        });
+    }
+
+    it('a valid-hex template_allowlist_sha256 that != committed policy is inadmissible (even when re-sealed)', () => {
+        const plan = reseal({ ...syntheticRunManifest(), template_allowlist_sha256: 'f'.repeat(64) });
+        const r = validateRunManifest(plan, OK);
+        expect(r.admissible).toBe(false);
+        expect(r.errors.some((e) => /template_allowlist_sha256 does not match committed template policy/.test(e))).toBe(true);
+    });
+
+    it('a plan op that is not template-derived is inadmissible (even when re-sealed)', () => {
+        const plan = reseal({ ...syntheticRunManifest(), exact_prefixes: [PREFIX, 'not-a-family-prefix/'] });
+        const r = validateRunManifest(plan, OK);
+        expect(r.admissible).toBe(false);
+        expect(r.errors.some((e) => /not template-derived/.test(e))).toBe(true);
     });
 });
 

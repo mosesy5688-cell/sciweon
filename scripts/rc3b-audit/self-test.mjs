@@ -12,6 +12,7 @@
 
 import { validateRunManifest } from './run-manifest.mjs';
 import { allowlistSha256, runPlanSha256 } from './manifest-hash.mjs';
+import { templatePolicySha256 } from './template-policy.mjs';
 import { runReadOnlyAudit } from './harness.mjs';
 import { buildEvidenceFromRun } from './evidence-assembly.mjs';
 import { runLeakScan } from './leak-scanner.mjs';
@@ -33,12 +34,16 @@ export function manifestBodyBuffer() {
 
 export function syntheticRunManifest() {
     const plan = {
+        plan_version: '0.1.0',
         bucket: SYNTHETIC_BUCKET, endpoint_or_account_binding: 'synthetic-account',
         exact_prefixes: [PREFIX], structural_keys: [MANIFEST_KEY], class_c_head_keys: [PAYLOAD_KEY],
         class_x_targets: [{ key: SHARD_KEY, offset: 0, length: 64, object_class: 'NXVF_SHARD' }],
         object_class_map: { [MANIFEST_KEY]: 'STRUCTURAL_JSON', [PAYLOAD_KEY]: 'MONOLITHIC_GZIP', [SHARD_KEY]: 'NXVF_SHARD' },
         allowed_object_classes: ['STRUCTURAL_JSON', 'NXVF_SHARD', 'MONOLITHIC_GZIP', 'PAYLOAD_JSONL'],
-        snapshot_ids: ['2026-01-01/1-1'], caps: {}, template_allowlist_sha256: 'a'.repeat(64),
+        snapshot_ids: ['2026-01-01/1-1'], caps: {},
+        record_spec_ref: 'rc3b-p0b-record-spec-v0',
+        authorized_binding: { account_binding: 'synthetic-account' },
+        template_allowlist_sha256: templatePolicySha256(),
     };
     plan.materialized_allowlist_sha256 = allowlistSha256(plan);
     plan.materialized_run_plan_sha256 = runPlanSha256(plan);
@@ -60,7 +65,9 @@ export function syntheticRunMetadata(plan) {
         bucket: plan.bucket, r2_endpoint_or_account_id: plan.endpoint_or_account_binding,
         workflow_run_id: 'synthetic-selftest', commit_sha: 'a'.repeat(40), tag_or_ref: 'refs/heads/rc3b-p0b-readonly-audit-harness',
         materialized_run_plan_sha256: plan.materialized_run_plan_sha256, template_allowlist_sha256: plan.template_allowlist_sha256,
-        materialized_allowlist_sha256: plan.materialized_allowlist_sha256, mode: 'READ-ONLY-R2', status: 'PARTIAL',
+        materialized_allowlist_sha256: plan.materialized_allowlist_sha256,
+        authorized_harness_sha: 'a'.repeat(40), authorized_run_plan_sha256: 'a'.repeat(64), authorized_template_sha256: 'a'.repeat(64),
+        mode: 'READ-ONLY-R2', status: 'PARTIAL',
     };
 }
 
@@ -79,8 +86,8 @@ export function makeSyntheticFakeClient() {
                 if (i.Key === SHARD_KEY) return { ETag: '"s"', ContentLength: 4096 };
             }
             if (ctor === 'GetObjectCommand') {
-                if (i.Key === MANIFEST_KEY && !i.Range) return { ETag: '"m"', Body: manifest };
-                if (i.Key === SHARD_KEY && i.Range) return { ETag: '"s"', Body: shard };
+                if (i.Key === MANIFEST_KEY && !i.Range) return { ETag: '"m"', ContentLength: manifest.length, Body: manifest };
+                if (i.Key === SHARD_KEY && i.Range) return { ETag: '"s"', ContentRange: 'bytes 0-63/4096', ContentLength: 64, Body: shard };
             }
             throw new Error(`synthetic fake: unhandled ${ctor} ${i.Key || i.Prefix} range=${i.Range || ''}`);
         },

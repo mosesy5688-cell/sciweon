@@ -35,6 +35,10 @@ export class Budget {
             rangeRequests: 0, bytesGetMeta: 0, bytesRange: 0, rejectedBeforeNetwork: 0,
         };
         this.touched = new Set();
+        // Per-request reserved byte amount (upper bound), reconciled to ACTUAL
+        // bytes received by commitGetMetaActualBytes / commitRangeActualBytes.
+        this._pendingGetMetaBytes = 0;
+        this._pendingRangeBytes = 0;
     }
 
     // ---- stop / reject bookkeeping ------------------------------------------
@@ -52,9 +56,14 @@ export class Budget {
         return this;
     }
 
-    /** Reject the current request BEFORE network; never reaches the store. */
+    /**
+     * Reject the current request BEFORE network; never reaches the store. An
+     * INTEGRITY_ANOMALY also STOPS the run (a provider that violated an invariant
+     * is not trusted for any further network call).
+     */
     reject(code, message) {
         this.noteRejection(code);
+        if (this._reason(code) === 'INTEGRITY_ANOMALY') this.stop('INTEGRITY_ANOMALY');
         throw new CapExceededError(`[RC3B BUDGET] ${message} (reason=${this._reason(code)})`);
     }
 
@@ -91,6 +100,11 @@ export class Budget {
         }
     }
 
+    /** Exact remaining LIST-key budget (never negative). */
+    remainingListKeys() {
+        return Math.max(0, this.caps.MAX_LIST_KEYS_PER_RUN - this.counters.listKeys);
+    }
+
     reserveHead() {
         this.ensureRunning();
         if (this.counters.headRequests + 1 > this.caps.MAX_HEAD_REQUESTS_PER_RUN) {
@@ -115,7 +129,22 @@ export class Budget {
         }
         this._reserveTotalBytes(objectBytes);
         this.counters.getMetaRequests += 1;
-        this.counters.bytesGetMeta += objectBytes;
+        this.counters.bytesGetMeta += objectBytes; // reserved (upper bound)
+        this._pendingGetMetaBytes = objectBytes;
+    }
+
+    /**
+     * Reconcile the GET-META byte counter from the RESERVED upper bound down to
+     * the ACTUAL bytes received. Actual > reserved is an integrity anomaly (the
+     * body exceeded the HEAD-declared size) -> STOP.
+     */
+    commitGetMetaActualBytes(actualBytes) {
+        const reserved = this._pendingGetMetaBytes;
+        this._pendingGetMetaBytes = 0;
+        if (actualBytes > reserved) {
+            this.reject('INTEGRITY_ANOMALY', `get-meta actual bytes ${actualBytes} exceed reserved ${reserved}`);
+        }
+        this.counters.bytesGetMeta += (actualBytes - reserved); // adjust down to actual
     }
 
     reserveRange(length) {
@@ -129,7 +158,22 @@ export class Budget {
         }
         this._reserveTotalBytes(length);
         this.counters.rangeRequests += 1;
-        this.counters.bytesRange += length;
+        this.counters.bytesRange += length; // reserved (upper bound)
+        this._pendingRangeBytes = length;
+    }
+
+    /**
+     * Reconcile the Range byte counter from the RESERVED upper bound down to the
+     * ACTUAL bytes received. Actual > reserved is an integrity anomaly (the
+     * provider returned more than the requested Range) -> STOP.
+     */
+    commitRangeActualBytes(actualBytes) {
+        const reserved = this._pendingRangeBytes;
+        this._pendingRangeBytes = 0;
+        if (actualBytes > reserved) {
+            this.reject('INTEGRITY_ANOMALY', `range actual bytes ${actualBytes} exceed reserved ${reserved}`);
+        }
+        this.counters.bytesRange += (actualBytes - reserved); // adjust down to actual
     }
 
     _reserveTotalBytes(n) {
@@ -140,12 +184,21 @@ export class Budget {
         }
     }
 
-    touchObject(key) {
-        this.touched.add(key);
-        if (this.touched.size > this.caps.MAX_OBJECTS_TOUCHED_PER_RUN) {
+    /**
+     * Reserve a unique object slot BEFORE any network call. If touching a NEW
+     * key would exceed the object cap, STOP the run and throw (fail-before-network)
+     * -- the object is never contacted. Re-touching an already-touched key is free.
+     */
+    reserveObject(key) {
+        if (!this.touched.has(key) && this.touched.size + 1 > this.caps.MAX_OBJECTS_TOUCHED_PER_RUN) {
             this.stop('CAP_REACHED');
+            this.reject('CAP_REACHED', `object cap reached (${this.caps.MAX_OBJECTS_TOUCHED_PER_RUN}) -- refusing a new object before network`);
         }
+        this.touched.add(key);
     }
+
+    /** Back-compat alias; identical fail-before-network reservation semantics. */
+    touchObject(key) { return this.reserveObject(key); }
 
     get partial() { return this.stopped; }
     get objectsTouched() { return this.touched.size; }

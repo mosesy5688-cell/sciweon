@@ -16,6 +16,7 @@
 import { Budget, RunStoppedError, CapExceededError } from './budget.mjs';
 import { validateRunManifest } from './run-manifest.mjs';
 import { makeReadOnlyR2Client } from './readonly-client.mjs';
+import { loadTemplatePolicy } from './template-policy.mjs';
 import { StructuralLogger } from './logger.mjs';
 
 function reasonCodeFor(err) {
@@ -52,7 +53,8 @@ export async function runReadOnlyAudit(plan, rawBytes, opts = {}) {
 
     const budget = new Budget(plan.caps || {}, opts.now);
     const logger = new StructuralLogger();
-    const client = makeReadOnlyR2Client(rawClient, plan, budget);
+    const templatePolicy = opts.templatePolicy || loadTemplatePolicy();
+    const client = makeReadOnlyR2Client(rawClient, plan, budget, templatePolicy);
     const observations = [];
     const followup = [];
 

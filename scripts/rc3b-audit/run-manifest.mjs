@@ -12,16 +12,20 @@
 
 import fs from 'fs';
 import { capViolations } from './caps.mjs';
-import { OBJECT_CLASSES, isRangeReadableClass } from './format-policy.mjs';
+import {
+    OBJECT_CLASSES, isRangeReadableClass, inferClassFromKey,
+    classifyStructuralTarget, classifyRangeTarget,
+} from './format-policy.mjs';
 import { scanForPlaceholders } from './placeholder-scan.mjs';
 import { allowlistSha256, runPlanSha256 } from './manifest-hash.mjs';
+import { loadTemplatePolicy, templatePolicySha256, matchFamily } from './template-policy.mjs';
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const REQUIRED_FIELDS = [
-    'bucket', 'endpoint_or_account_binding', 'exact_prefixes', 'structural_keys',
-    'class_x_targets', 'class_c_head_keys', 'allowed_object_classes', 'caps',
-    'snapshot_ids', 'template_allowlist_sha256', 'materialized_allowlist_sha256',
-    'materialized_run_plan_sha256',
+    'plan_version', 'bucket', 'endpoint_or_account_binding', 'exact_prefixes',
+    'structural_keys', 'class_x_targets', 'class_c_head_keys', 'object_class_map',
+    'allowed_object_classes', 'caps', 'snapshot_ids', 'template_allowlist_sha256',
+    'materialized_allowlist_sha256', 'materialized_run_plan_sha256',
 ];
 
 export function loadRunManifest(path) {
@@ -30,6 +34,8 @@ export function loadRunManifest(path) {
     return { plan, rawBytes: raw };
 }
 
+function isPlainObject(v) { return typeof v === 'object' && v !== null && !Array.isArray(v); }
+
 function checkStructure(plan, errors) {
     for (const f of REQUIRED_FIELDS) {
         if (!(f in plan)) errors.push(`missing required field: ${f}`);
@@ -37,9 +43,12 @@ function checkStructure(plan, errors) {
     for (const f of ['exact_prefixes', 'structural_keys', 'class_x_targets', 'class_c_head_keys', 'allowed_object_classes', 'snapshot_ids']) {
         if (f in plan && !Array.isArray(plan[f])) errors.push(`field ${f} must be an array`);
     }
-    if ('caps' in plan && (typeof plan.caps !== 'object' || plan.caps === null || Array.isArray(plan.caps))) {
-        errors.push('field caps must be an object');
-    }
+    if ('caps' in plan && !isPlainObject(plan.caps)) errors.push('field caps must be an object');
+    if ('object_class_map' in plan && !isPlainObject(plan.object_class_map)) errors.push('field object_class_map must be an object');
+    if ('plan_version' in plan && (typeof plan.plan_version !== 'string' || !plan.plan_version)) errors.push('field plan_version must be a non-empty string');
+    // OPTIONAL fields: validate type only when present.
+    if ('record_spec_ref' in plan && typeof plan.record_spec_ref !== 'string') errors.push('optional field record_spec_ref must be a string');
+    if ('authorized_binding' in plan && !isPlainObject(plan.authorized_binding)) errors.push('optional field authorized_binding must be an object');
 }
 
 function checkHashes(plan, errors) {
@@ -72,8 +81,47 @@ function checkClasses(plan, errors) {
 }
 
 /**
+ * Prove EVERY materialized operation is a legal instantiation of a committed
+ * template family (right operation, allowlisted bucket/endpoint, family prefix +
+ * suffix, class). "Merely an exact string in the plan" is insufficient; an op
+ * matching no family makes the plan INADMISSIBLE.
+ */
+function checkTemplate(plan, tp, errors) {
+    if (plan.template_allowlist_sha256 !== templatePolicySha256(tp)) {
+        errors.push('template_allowlist_sha256 does not match committed template policy');
+    }
+    const buckets = tp.bucket_allowlist || [];
+    const endpoints = tp.endpoint_or_account_binding_allowlist || [];
+    if (!buckets.includes(plan.bucket)) errors.push(`bucket ${JSON.stringify(plan.bucket)} is not in the template bucket allowlist`);
+    if (!endpoints.includes(plan.endpoint_or_account_binding)) errors.push(`endpoint ${JSON.stringify(plan.endpoint_or_account_binding)} is not in the template endpoint allowlist`);
+
+    const classMap = plan.object_class_map || {};
+    for (const prefix of plan.exact_prefixes || []) {
+        if (!matchFamily(tp, { operation: 'LIST', prefix })) errors.push(`LIST prefix ${JSON.stringify(prefix)} is not template-derived`);
+    }
+    for (const key of plan.structural_keys || []) {
+        const declared = classMap[key] || inferClassFromKey(key);
+        const eff = classifyStructuralTarget(key, declared).effectiveClass;
+        if (eff !== 'STRUCTURAL_JSON' || !matchFamily(tp, { operation: 'GET_META', key, effectiveClass: 'STRUCTURAL_JSON' })) {
+            errors.push(`structural key ${JSON.stringify(key)} is not a GET_META template-derived STRUCTURAL_JSON family instantiation`);
+        }
+    }
+    for (const key of plan.class_c_head_keys || []) {
+        const eff = classMap[key] || inferClassFromKey(key);
+        if (!matchFamily(tp, { operation: 'HEAD', key, effectiveClass: eff })) errors.push(`HEAD key ${JSON.stringify(key)} is not template-derived`);
+    }
+    for (const t of plan.class_x_targets || []) {
+        const declared = (t && t.object_class) || (t && classMap[t.key]) || (t && inferClassFromKey(t.key));
+        const eff = classifyRangeTarget(t ? t.key : '', declared).effectiveClass;
+        if (eff !== 'NXVF_SHARD' || !t || !matchFamily(tp, { operation: 'RANGE', key: t.key, effectiveClass: 'NXVF_SHARD' })) {
+            errors.push(`class_x target ${JSON.stringify(t && t.key)} is not a RANGE template-derived NXVF_SHARD family instantiation`);
+        }
+    }
+}
+
+/**
  * @param {object} plan  parsed run manifest
- * @param {{allowedBuckets:string[]}} opts  committed bucket allowlist (external)
+ * @param {{allowedBuckets:string[], templatePolicy?:object}} opts  committed bucket allowlist (external)
  * @returns {{admissible:boolean, errors:string[]}}
  */
 export function validateRunManifest(plan, opts = {}) {
@@ -103,6 +151,9 @@ export function validateRunManifest(plan, opts = {}) {
 
     checkClasses(plan, errors);
     checkHashes(plan, errors);
+
+    const tp = opts.templatePolicy || loadTemplatePolicy();
+    checkTemplate(plan, tp, errors);
 
     return { admissible: errors.length === 0, errors };
 }

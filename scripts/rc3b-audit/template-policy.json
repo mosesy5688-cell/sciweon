@@ -1,0 +1,35 @@
+{
+  "template_policy_version": "0.1.0",
+  "bucket_allowlist": ["rc3b-synthetic-bucket"],
+  "endpoint_or_account_binding_allowlist": ["synthetic-account"],
+  "families": [
+    {
+      "family_id": "synthetic-structural-manifest",
+      "operation": "GET_META",
+      "object_class": "STRUCTURAL_JSON",
+      "key_prefix": "synthetic/prefix/",
+      "key_suffixes": [".json", ".manifest.json"]
+    },
+    {
+      "family_id": "synthetic-list",
+      "operation": "LIST",
+      "object_class": null,
+      "key_prefix": "synthetic/prefix/",
+      "key_suffixes": []
+    },
+    {
+      "family_id": "synthetic-payload-head",
+      "operation": "HEAD",
+      "object_class": null,
+      "key_prefix": "synthetic/prefix/",
+      "key_suffixes": [".jsonl.gz", ".gz", ".zst", ".zstd", ".jsonl", ".bin", ".json"]
+    },
+    {
+      "family_id": "synthetic-nxvf-range",
+      "operation": "RANGE",
+      "object_class": "NXVF_SHARD",
+      "key_prefix": "synthetic/prefix/",
+      "key_suffixes": [".bin"]
+    }
+  ]
+}

@@ -91,3 +91,24 @@ export function classifyRangeTarget(key, declaredClass) {
     }
     return { ok: true, reason: 'nxvf locator-bound range', effectiveClass: 'NXVF_SHARD' };
 }
+
+/**
+ * Decide whether a structural GET-META of `key` (declared as `declaredClass`) is
+ * permitted. It is permitted ONLY when BOTH the declared class AND the key-suffix
+ * inference say STRUCTURAL_JSON. A key whose suffix infers gzip/zstd/bin/jsonl or
+ * unknown -- even one DECLARED STRUCTURAL_JSON via a free object_class_map -- is
+ * NOT structural (anti-spoof). Returns { ok, reason, effectiveClass }.
+ */
+export function classifyStructuralTarget(key, declaredClass) {
+    const inferred = inferClassFromKey(key);
+    if (!OBJECT_CLASSES.includes(declaredClass)) {
+        return { ok: false, reason: `unknown declared class ${declaredClass}`, effectiveClass: inferred };
+    }
+    if (declaredClass !== 'STRUCTURAL_JSON') {
+        return { ok: false, reason: `declared class ${declaredClass} is not STRUCTURAL_JSON`, effectiveClass: inferred };
+    }
+    if (inferred !== 'STRUCTURAL_JSON') {
+        return { ok: false, reason: `key suffix infers ${inferred}, not structural -- object class cannot be spoofed`, effectiveClass: inferred };
+    }
+    return { ok: true, reason: 'structural json', effectiveClass: 'STRUCTURAL_JSON' };
+}

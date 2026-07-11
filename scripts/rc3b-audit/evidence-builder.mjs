@@ -33,6 +33,7 @@ export function buildOperationEvidence(budget, counters) {
         bytes_get_meta: c.bytesGetMeta,
         bytes_range: c.bytesRange,
         rejected_before_network: c.rejectedBeforeNetwork,
+        attempts_after_stop: counters ? counters.attempts_after_stop : 0,
         network_calls_after_stop: counters ? counters.network_calls_after_stop : 0,
         unexpected_command_count: counters ? counters.unexpected_command_count : 0,
     };

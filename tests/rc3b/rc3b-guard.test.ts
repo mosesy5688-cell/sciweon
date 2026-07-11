@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'vitest';
 import { PutObjectCommand, DeleteObjectCommand, HeadObjectCommand, GetObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { Budget } from '../../scripts/rc3b-audit/budget.mjs';
-import { buildGuard } from './rc3b-fixtures';
+import { buildGuard, buildClient, basePlan, stdResponder } from './rc3b-fixtures';
 
 class GetBucketAclCommand { constructor(input) { this.input = input; } }
 
@@ -56,13 +56,15 @@ describe('RC-3B-P0B guard: bucket + key allowlist (default-deny)', () => {
 });
 
 describe('RC-3B-P0B guard: no network call after STOP', () => {
-    it('once the budget is STOPPED, even an allowlisted read is refused (0 net, counter bumped)', async () => {
+    it('once the budget is STOPPED, an allowlisted read is refused: an ATTEMPT, not a network call', async () => {
         const budget = new Budget({});
         budget.stop('CAP_REACHED');
         const { guard, calls } = buildGuard({ exactKeys: ['allowed'], budget });
         await expect(guard.send(new GetObjectCommand({ Bucket: 'rc3b-synthetic-bucket', Key: 'allowed' }))).rejects.toThrow(/STOPPED/);
         expect(calls.length).toBe(0);
-        expect(guard.network_calls_after_stop).toBe(1);
+        // The refusal is counted as an ATTEMPT; no actual network call occurred.
+        expect(guard.attempts_after_stop).toBe(1);
+        expect(guard.network_calls_after_stop).toBe(0);
     });
 });
 
@@ -79,5 +81,28 @@ describe('RC-3B-P0B guard: a boundary-ignoring client would leak (guard is load-
         await expect(guard.send(new PutObjectCommand({ Bucket: 'rc3b-synthetic-bucket', Key: 'k', Body: 'x' }))).rejects.toThrow(/MUTATION/);
         expect(calls.length).toBe(0);            // guard blocked it: test FAILS if the boundary is ignored
         expect(guard.write_attempt_count).toBe(1);
+    });
+});
+
+describe('RC-3B-P0B: object-cap pre-network reservation + post-STOP counter semantics', () => {
+    it('reserveObject throws BEFORE network when the next unique object exceeds the cap', async () => {
+        const plan = basePlan({ class_c_head_keys: ['a', 'b'] });
+        const { rc, calls, budget } = buildClient(plan, { caps: { MAX_OBJECTS_TOUCHED_PER_RUN: 1 }, responder: stdResponder() });
+        await rc.headExactKey('a');
+        expect(calls.length).toBe(1);
+        await expect(rc.headExactKey('b')).rejects.toThrow(/object cap reached|CAP_REACHED|STOPPED/);
+        expect(calls.length).toBe(1); // 'b' never reached the network
+        expect(budget.stopped).toBe(true);
+        expect(budget.objectsTouched).toBe(1);
+    });
+
+    it('after a STOP, an attempted send bumps attempts_after_stop and leaves network_calls_after_stop === 0', async () => {
+        const budget = new Budget({});
+        budget.stop('CAP_REACHED');
+        const { guard } = buildGuard({ exactKeys: ['allowed'], budget });
+        await expect(guard.send(new HeadObjectCommand({ Bucket: 'rc3b-synthetic-bucket', Key: 'allowed' }))).rejects.toThrow(/STOPPED/);
+        await expect(guard.send(new GetObjectCommand({ Bucket: 'rc3b-synthetic-bucket', Key: 'allowed' }))).rejects.toThrow(/STOPPED/);
+        expect(guard.attempts_after_stop).toBe(2);
+        expect(guard.network_calls_after_stop).toBe(0);
     });
 });

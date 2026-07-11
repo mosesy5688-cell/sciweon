@@ -39,7 +39,11 @@ export function instrumentStructuralReadOnlyClient(realClient, cfg) {
     const log = [];
     const state = {
         list: 0, head: 0, get: 0, mutation: 0, unexpected: 0,
-        nonAllowlisted: 0, outOfBucket: 0, afterStop: 0, writeAttempt: 0,
+        nonAllowlisted: 0, outOfBucket: 0, writeAttempt: 0,
+        // attemptsAfterStop: sends REFUSED after a STOP (not network calls).
+        // networkCallsAfterStop: ACTUAL realClient.send calls after STOP -- 0 by
+        // construction (a stopped budget is refused BEFORE realClient.send).
+        attemptsAfterStop: 0, networkCallsAfterStop: 0,
     };
     const refuse = (msg) => { throw new Error(`[RC3B COMMAND GUARD] ${msg}`); };
 
@@ -53,14 +57,17 @@ export function instrumentStructuralReadOnlyClient(realClient, cfg) {
         get unexpected_command_count() { return state.unexpected; },
         get non_allowlisted_count() { return state.nonAllowlisted; },
         get out_of_bucket_count() { return state.outOfBucket; },
-        get network_calls_after_stop() { return state.afterStop; },
+        get attempts_after_stop() { return state.attemptsAfterStop; },
+        get network_calls_after_stop() { return state.networkCallsAfterStop; },
         get write_attempt_count() { return state.writeAttempt; },
         async send(command, ...rest) {
             const ctor = command?.constructor?.name ?? 'UnknownCommand';
             const input = command?.input ?? {};
 
             if (budget && budget.stopped) {
-                state.afterStop += 1;
+                // A refused post-STOP send is an ATTEMPT, not a network call: we
+                // refuse BEFORE realClient.send, so networkCallsAfterStop stays 0.
+                state.attemptsAfterStop += 1;
                 refuse(`refusing ${ctor} -- the run is STOPPED; no network call after STOP`);
             }
             if (MUTATION_COMMANDS.has(ctor)) {

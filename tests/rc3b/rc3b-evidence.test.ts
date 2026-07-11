@@ -76,6 +76,23 @@ describe('RC-3B-P0B: Draft-07 schema validation', () => {
         expect(r.errors).toEqual([]);
     });
 
+    it('the self-test artifact carries the new attempts_after_stop + authorized_* fields', async () => {
+        const ev = await validEvidence();
+        expect(ev.operation_evidence.attempts_after_stop).toBe(0);
+        expect(ev.operation_evidence.network_calls_after_stop).toBe(0);
+        expect(ev.run_metadata.authorized_harness_sha).toMatch(/^[0-9a-f]{40}$/);
+        expect(ev.run_metadata.authorized_run_plan_sha256).toMatch(/^[0-9a-f]{64}$/);
+        expect(ev.run_metadata.authorized_template_sha256).toMatch(/^[0-9a-f]{64}$/);
+    });
+
+    it('a run_metadata missing an authorized_* field is rejected by the schema', async () => {
+        const ev = await validEvidence();
+        delete ev.run_metadata.authorized_harness_sha;
+        const r = validateDraft07(loadEvidenceSchema(), ev);
+        expect(r.valid).toBe(false);
+        expect(r.errors.some((e) => /authorized_harness_sha/.test(e))).toBe(true);
+    });
+
     it('an artifact with a nonzero network_calls_after_stop is rejected (const 0)', async () => {
         const ev = await validEvidence();
         ev.operation_evidence.network_calls_after_stop = 1;

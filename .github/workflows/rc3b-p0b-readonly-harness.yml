@@ -34,16 +34,22 @@ jobs:
       - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b  # v4.0.3 (pinned)
         with:
           node-version: '22'
-      - name: Verify committed run-plan hash (self-consistency)
+      - name: Verify committed run-plan hash + template binding + template-derivation (no network)
         run: |
           node --input-type=module -e "
           import fs from 'fs';
           import { runPlanSha256, allowlistSha256 } from './scripts/rc3b-audit/manifest-hash.mjs';
+          import { templatePolicySha256, loadTemplatePolicy } from './scripts/rc3b-audit/template-policy.mjs';
+          import { validateRunManifest } from './scripts/rc3b-audit/run-manifest.mjs';
           const p = JSON.parse(fs.readFileSync('scripts/rc3b-audit/fixtures/synthetic-run-manifest.example.json','utf-8'));
           const rp = runPlanSha256(p), al = allowlistSha256(p);
           if (rp !== p.materialized_run_plan_sha256) throw new Error('run-plan hash mismatch: '+rp+' != '+p.materialized_run_plan_sha256);
           if (al !== p.materialized_allowlist_sha256) throw new Error('allowlist hash mismatch');
-          console.log('run-plan hash verified: '+rp);
+          const tp = loadTemplatePolicy();
+          if (p.template_allowlist_sha256 !== templatePolicySha256(tp)) throw new Error('template_allowlist_sha256 != committed template policy');
+          const v = validateRunManifest(p, { allowedBuckets: tp.bucket_allowlist });
+          if (!v.admissible) throw new Error('fixture is inadmissible / not template-derived: '+v.errors.join('; '));
+          console.log('run-plan hash + template binding + template-derivation verified: '+rp);
           "
       - name: Offline self-test (schema validate + leak scan + hash consistency; NO network)
         run: node scripts/rc3b-audit/run.mjs --self-test
@@ -67,19 +73,34 @@ jobs:
       RC3B_P0B_RUN_AUTHORIZED: ${{ vars.RC3B_P0B_RUN_AUTHORIZED }}
       RC3B_ALLOWED_BUCKETS: ${{ vars.RC3B_ALLOWED_BUCKETS }}
       RC3B_RUN_PLAN_PATH: ${{ vars.RC3B_RUN_PLAN_PATH }}
+      # Future EXTERNAL Founder authorization anchor repo VARS (NOT created here).
+      RC3B_AUTHORIZED_HARNESS_SHA: ${{ vars.RC3B_AUTHORIZED_HARNESS_SHA }}
+      RC3B_AUTHORIZED_RUN_PLAN_SHA256: ${{ vars.RC3B_AUTHORIZED_RUN_PLAN_SHA256 }}
+      RC3B_AUTHORIZED_TEMPLATE_SHA256: ${{ vars.RC3B_AUTHORIZED_TEMPLATE_SHA256 }}
+      RC3B_AUTHORIZED_RUN_PLAN_PATH: ${{ vars.RC3B_AUTHORIZED_RUN_PLAN_PATH }}
       RC3B_OUTPUT_DIR: output
     steps:
+      - name: Assert dispatched commit == authorized harness SHA
+        run: |
+          if [ "$GITHUB_SHA" != "$RC3B_AUTHORIZED_HARNESS_SHA" ]; then
+            echo "dispatched commit $GITHUB_SHA != authorized harness SHA $RC3B_AUTHORIZED_HARNESS_SHA" >&2
+            exit 1
+          fi
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7 (pinned)
         with:
           persist-credentials: false
       - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b  # v4.0.3 (pinned)
         with:
           node-version: '22'
+      - name: Preflight Founder authorization anchors (fail before install/client)
+        run: node scripts/rc3b-audit/run.mjs --check-authorization
       - name: Install dependencies (lock-file enforced)
         run: |
           if [ -f package-lock.json ]; then npm ci; else npm install; fi
       - name: Run READ-ONLY R2 audit (fails closed without full authorization)
         run: node scripts/rc3b-audit/run.mjs --run
+      - name: Verify produced evidence artifact (real-artifact post-validation)
+        run: node scripts/rc3b-audit/run.mjs --verify-artifact output/rc3b-p0b-readonly-evidence.json
       - name: Validate evidence schema + leak scan (belt-and-braces)
         run: node scripts/rc3b-audit/run.mjs --self-test
       - name: Upload evidence artifact

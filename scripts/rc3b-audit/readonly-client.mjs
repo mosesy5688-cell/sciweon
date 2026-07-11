@@ -19,12 +19,22 @@
 import { ListObjectsV2Command, HeadObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { instrumentStructuralReadOnlyClient } from './command-guard.mjs';
 import { findPlaceholder } from './placeholder-scan.mjs';
-import { classifyRangeTarget, inferClassFromKey, isPayloadClass } from './format-policy.mjs';
-import { streamToBuffer, structuralFacts, sampleFacts } from './shape-facts.mjs';
+import { classifyRangeTarget, classifyStructuralTarget, inferClassFromKey, isPayloadClass } from './format-policy.mjs';
+import { matchFamily } from './template-policy.mjs';
+import { collectBounded, ResponseBoundExceeded, verifyContentRange } from './bounded-collector.mjs';
+import { structuralFacts, sampleFacts } from './shape-facts.mjs';
 
 function targetKeyOf(t) { return `${t.key}|${t.offset}|${t.length}`; }
 
-export function makeReadOnlyR2Client(rawClient, plan, budget) {
+/**
+ * @param {object} rawClient   an S3/R2 client with .send (or a fake in tests)
+ * @param {object} plan        the validated run manifest
+ * @param {object} budget      the per-run Budget
+ * @param {object|null} templatePolicy  the committed template policy (harness
+ *   passes the loaded policy). When null, the template-family GET-META check is
+ *   SKIPPED, but the declared/suffix anti-spoof cross-check is ALWAYS enforced.
+ */
+export function makeReadOnlyR2Client(rawClient, plan, budget, templatePolicy = null) {
     const bucket = plan.bucket;
     const exactPrefixes = new Set(plan.exact_prefixes || []);
     const structuralKeys = new Set(plan.structural_keys || []);
@@ -52,14 +62,25 @@ export function makeReadOnlyR2Client(rawClient, plan, budget) {
         const keys = [];
         let token; let pages = 0; let stoppedByCap = false;
         do {
+            // Enforce the EXACT remaining LIST-key budget BEFORE any network: if
+            // no key budget remains, STOP without sending; clamp MaxKeys to it.
+            const remaining = budget.remainingListKeys();
+            if (remaining <= 0) { budget.stop('CAP_REACHED'); stoppedByCap = true; break; }
             budget.reserveListPage();
             pages += 1;
+            const maxKeys = Math.min(1000, remaining);
             const r = await guarded.send(new ListObjectsV2Command({
-                Bucket: bucket, Prefix: prefix, MaxKeys: 1000, ContinuationToken: token,
+                Bucket: bucket, Prefix: prefix, MaxKeys: maxKeys, ContinuationToken: token,
             }));
             const contents = r.Contents || [];
-            for (const o of contents) keys.push({ key: o.Key, size: o.Size ?? 0, etag: o.ETag ?? null });
-            budget.addListKeys(contents.length);
+            if (contents.length > maxKeys) {
+                // Provider returned MORE than requested: integrity anomaly. STOP
+                // and emit NONE of these keys.
+                budget.reject('INTEGRITY_ANOMALY', `LIST returned more keys (${contents.length}) than requested MaxKeys (${maxKeys})`);
+            }
+            const emitted = contents.slice(0, remaining); // never beyond remaining
+            for (const o of emitted) keys.push({ key: o.Key, size: o.Size ?? 0, etag: o.ETag ?? null });
+            budget.addListKeys(emitted.length);
             if (budget.stopped) { stoppedByCap = true; break; }
             token = r.IsTruncated ? r.NextContinuationToken : undefined;
         } while (token);
@@ -72,7 +93,7 @@ export function makeReadOnlyR2Client(rawClient, plan, budget) {
         }
         noPlaceholder(key, 'head key');
         budget.reserveHead();
-        budget.touchObject(key);
+        budget.reserveObject(key);
         const r = await guarded.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
         return { key, etag: r.ETag ?? null, content_length: r.ContentLength ?? 0 };
     }
@@ -82,20 +103,53 @@ export function makeReadOnlyR2Client(rawClient, plan, budget) {
             budget.reject('OUT_OF_ALLOWLIST', `key ${JSON.stringify(key)} is not an exact structural key`);
         }
         noPlaceholder(key, 'structural key');
-        const cls = classOf(key);
-        if (isPayloadClass(cls)) {
-            budget.reject('FORMAT_NOT_SEEKABLE', `payload-class key ${JSON.stringify(key)} (${cls}) has no Range -- a no-Range GET on payload is forbidden`);
+        const declaredClass = classMap[key] || inferClassFromKey(key);
+        // A no-Range GET on a payload/monolithic class is forbidden.
+        if (isPayloadClass(declaredClass)) {
+            budget.reject('FORMAT_NOT_SEEKABLE', `payload-class key ${JSON.stringify(key)} (${declaredClass}) has no Range -- a no-Range GET on payload is forbidden`);
+        }
+        // Anti-spoof: declared AND suffix-inferred must BOTH be STRUCTURAL_JSON;
+        // a .gz/.zst/.bin/unknown key declared STRUCTURAL_JSON is refused.
+        const verdict = classifyStructuralTarget(key, declaredClass);
+        if (!verdict.ok) {
+            budget.reject('FORMAT_NOT_SEEKABLE', `structural GET-META refused for ${JSON.stringify(key)}: ${verdict.reason}`);
+        }
+        if (inferClassFromKey(key) !== 'STRUCTURAL_JSON') {
+            budget.reject('FORMAT_NOT_SEEKABLE', `structural GET-META refused for ${JSON.stringify(key)}: suffix does not infer STRUCTURAL_JSON`);
+        }
+        // The template policy (when provided) must permit this key as a GET_META
+        // CLASS-S instantiation. The effective class is DERIVED here, never the
+        // free object_class_map override.
+        if (templatePolicy) {
+            const fam = matchFamily(templatePolicy, { operation: 'GET_META', key, effectiveClass: 'STRUCTURAL_JSON' });
+            if (!fam) {
+                budget.reject('FORMAT_NOT_SEEKABLE', `structural key ${JSON.stringify(key)} is not a GET_META template-derived family instantiation`);
+            }
         }
         // HEAD first so we know the size BEFORE any body GET.
         budget.reserveHead();
-        budget.touchObject(key);
+        budget.reserveObject(key);
         const head = await guarded.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
         const size = head.ContentLength ?? 0;
         // Rejects (before body GET) if the object is larger than the GET-META cap.
         budget.reserveGetMeta(size);
+        const expected = size;
+        const limit = Math.min(expected, budget.caps.MAX_GET_META_OBJECT_BYTES);
         const got = await guarded.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
-        const buf = await streamToBuffer(got.Body);
-        return { key, object_class: cls, etag: got.ETag ?? head.ETag ?? null, ...structuralFacts(buf) };
+        let buf;
+        try {
+            buf = await collectBounded(got.Body, limit);
+        } catch (e) {
+            if (e instanceof ResponseBoundExceeded) {
+                budget.reject('INTEGRITY_ANOMALY', `GET-META body for ${JSON.stringify(key)} exceeded expected/cap`);
+            }
+            throw e;
+        }
+        if (buf.length !== expected || buf.length > budget.caps.MAX_GET_META_OBJECT_BYTES) {
+            budget.reject('INTEGRITY_ANOMALY', `GET-META body for ${JSON.stringify(key)} was ${buf.length} bytes, expected ${expected} (<= ${budget.caps.MAX_GET_META_OBJECT_BYTES})`);
+        }
+        budget.commitGetMetaActualBytes(buf.length);
+        return { key, object_class: verdict.effectiveClass, etag: got.ETag ?? head.ETag ?? null, ...structuralFacts(buf) };
     }
 
     async function readLocatorBoundRange(key, offset, length) {
@@ -110,12 +164,33 @@ export function makeReadOnlyR2Client(rawClient, plan, budget) {
             budget.reject('FORMAT_NOT_SEEKABLE', `range refused for ${JSON.stringify(key)}: ${verdict.reason}`);
         }
         budget.reserveRange(length); // rejects oversize single range; stops on cap
-        budget.touchObject(key);
+        budget.reserveObject(key);
         const end = offset + length - 1;
         const got = await guarded.send(new GetObjectCommand({
             Bucket: bucket, Key: key, Range: `bytes=${offset}-${end}`,
         }));
-        const buf = await streamToBuffer(got.Body);
+        // Verify the Range was honored BEFORE parsing/hashing the body: an exact
+        // Content-Range and a ContentLength within the request. A provider that
+        // ignored the Range (returned the full object) or mis-ranged is refused.
+        if (!verifyContentRange(got.ContentRange, offset, length)) {
+            budget.reject('INTEGRITY_ANOMALY', `range for ${JSON.stringify(key)} has missing/wrong Content-Range ${JSON.stringify(got.ContentRange ?? null)} (expected bytes ${offset}-${end}/<total>)`);
+        }
+        if (got.ContentLength != null && got.ContentLength > length) {
+            budget.reject('INTEGRITY_ANOMALY', `range for ${JSON.stringify(key)} reported ContentLength ${got.ContentLength} > requested ${length}`);
+        }
+        let buf;
+        try {
+            buf = await collectBounded(got.Body, length);
+        } catch (e) {
+            if (e instanceof ResponseBoundExceeded) {
+                budget.reject('INTEGRITY_ANOMALY', `range body for ${JSON.stringify(key)} exceeded the requested length ${length} (provider ignored Range?)`);
+            }
+            throw e;
+        }
+        if (buf.length > length || buf.length > budget.caps.MAX_SINGLE_RANGE_BYTES) {
+            budget.reject('INTEGRITY_ANOMALY', `range body for ${JSON.stringify(key)} was ${buf.length} bytes, exceeds requested ${length} / cap ${budget.caps.MAX_SINGLE_RANGE_BYTES}`);
+        }
+        budget.commitRangeActualBytes(buf.length);
         return {
             key, offset, length, object_class: verdict.effectiveClass, etag: got.ETag ?? null,
             ...sampleFacts(buf, budget.caps.MAX_DECODED_BYTES_PER_SAMPLE),
@@ -125,6 +200,7 @@ export function makeReadOnlyR2Client(rawClient, plan, budget) {
     // Read-only COUNTERS snapshot (NOT the guard itself -- no send is exposed).
     const guardCounters = () => ({
         network_calls_after_stop: guarded.network_calls_after_stop,
+        attempts_after_stop: guarded.attempts_after_stop,
         unexpected_command_count: guarded.unexpected_command_count,
         mutation_attempt_count: guarded.mutation_attempt_count,
         non_allowlisted_count: guarded.non_allowlisted_count,

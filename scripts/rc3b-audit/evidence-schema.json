@@ -10,7 +10,7 @@
     "run_metadata": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["bucket", "r2_endpoint_or_account_id", "workflow_run_id", "commit_sha", "tag_or_ref", "materialized_run_plan_sha256", "template_allowlist_sha256", "materialized_allowlist_sha256", "mode", "status", "stop_reasons", "partial"],
+      "required": ["bucket", "r2_endpoint_or_account_id", "workflow_run_id", "commit_sha", "tag_or_ref", "materialized_run_plan_sha256", "template_allowlist_sha256", "materialized_allowlist_sha256", "authorized_harness_sha", "authorized_run_plan_sha256", "authorized_template_sha256", "mode", "status", "stop_reasons", "partial"],
       "properties": {
         "bucket": {"type": "string"},
         "r2_endpoint_or_account_id": {"type": "string"},
@@ -20,6 +20,9 @@
         "materialized_run_plan_sha256": {"type": "string"},
         "template_allowlist_sha256": {"type": "string"},
         "materialized_allowlist_sha256": {"type": "string"},
+        "authorized_harness_sha": {"type": "string"},
+        "authorized_run_plan_sha256": {"type": "string"},
+        "authorized_template_sha256": {"type": "string"},
         "mode": {"type": "string", "enum": ["LOCAL-PLAN-MODE", "READ-ONLY-R2"]},
         "status": {"type": "string", "enum": ["PLANNED", "AUTHORIZED", "IN-PROGRESS", "PM-AUDITED-GO", "MERGE-PENDING", "CODE-LANDED", "RUNTIME-OBSERVED", "VERIFIED", "CLOSED", "FAILED-OPEN", "HELD", "PARTIAL", "STOPPED"]},
         "stop_reasons": {"type": "array", "items": {"type": "string", "enum": ["NONE", "CAP_REACHED", "OUT_OF_ALLOWLIST", "MUTATION_ATTEMPT", "UNRESOLVED_PLACEHOLDER", "INTEGRITY_ANOMALY", "MISSING_AUTHORIZATION", "FORMAT_NOT_SEEKABLE", "OPERATOR_ABORT"]}},
@@ -33,7 +36,10 @@
               "workflow_run_id": {"type": "string", "minLength": 1},
               "commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
               "materialized_run_plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-              "materialized_allowlist_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+              "materialized_allowlist_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "authorized_harness_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+              "authorized_run_plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "authorized_template_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
             }
           }
         }
@@ -42,7 +48,7 @@
     "operation_evidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["list_pages", "list_keys_returned", "head_requests", "get_meta_requests", "range_requests", "bytes_get_meta", "bytes_range", "rejected_before_network", "network_calls_after_stop", "unexpected_command_count"],
+      "required": ["list_pages", "list_keys_returned", "head_requests", "get_meta_requests", "range_requests", "bytes_get_meta", "bytes_range", "rejected_before_network", "attempts_after_stop", "network_calls_after_stop", "unexpected_command_count"],
       "properties": {
         "list_pages": {"type": "integer", "minimum": 0},
         "list_keys_returned": {"type": "integer", "minimum": 0},
@@ -52,6 +58,7 @@
         "bytes_get_meta": {"type": "integer", "minimum": 0},
         "bytes_range": {"type": "integer", "minimum": 0},
         "rejected_before_network": {"type": "integer", "minimum": 0},
+        "attempts_after_stop": {"type": "integer", "minimum": 0},
         "network_calls_after_stop": {"type": "integer", "const": 0},
         "unexpected_command_count": {"type": "integer", "const": 0}
       }

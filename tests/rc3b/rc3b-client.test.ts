@@ -132,3 +132,68 @@ describe('RC-3B-P0B: compressed-format Range policy', () => {
         expect(out.shape_signature_sha256).toMatch(/^[0-9a-f]{64}$/);
     });
 });
+
+describe('RC-3B-P0B: structural-class anti-spoofing (object_class_map cannot lie)', () => {
+    for (const key of ['p/x.gz', 'p/x.zst', 'p/x.bin', 'p/x.dat']) {
+        it(`${key} DECLARED STRUCTURAL_JSON is refused before network (0 calls)`, async () => {
+            const plan = basePlan({ structural_keys: [key], object_class_map: { [key]: 'STRUCTURAL_JSON' } });
+            const { rc, calls, budget } = buildClient(plan, { responder: stdResponder() });
+            await expect(rc.getStructuralMetadata(key)).rejects.toThrow(/FORMAT_NOT_SEEKABLE|spoof|structural|forbidden/);
+            expect(calls.length).toBe(0);
+            expect(budget.counters.rejectedBeforeNetwork).toBe(1);
+        });
+    }
+
+    it('a real manifest.json is accepted: exactly HEAD + one GET', async () => {
+        const plan = basePlan({ structural_keys: ['p/manifest.json'], object_class_map: { 'p/manifest.json': 'STRUCTURAL_JSON' } });
+        const { rc, calls } = buildClient(plan, { responder: stdResponder() });
+        const out = await rc.getStructuralMetadata('p/manifest.json');
+        expect(calls.map((c) => c.ctor)).toEqual(['HeadObjectCommand', 'GetObjectCommand']);
+        expect(out.object_class).toBe('STRUCTURAL_JSON');
+    });
+});
+
+describe('RC-3B-P0B: exact LIST-key cap (clamp MaxKeys, stop at the exact budget)', () => {
+    const truncating = (ctor, i) => {
+        if (ctor === 'ListObjectsV2Command') {
+            const contents = Array.from({ length: i.MaxKeys }, (_, n) => ({ Key: `data/k${n}`, Size: 1, ETag: '"e"' }));
+            return { IsTruncated: true, NextContinuationToken: 't', Contents: contents };
+        }
+        return {};
+    };
+
+    it('MAX_LIST_KEYS_PER_RUN=1 clamps MaxKeys to 1 and stops after 1 key', async () => {
+        const plan = basePlan({ exact_prefixes: ['data/'] });
+        const { rc, calls, budget } = buildClient(plan, { caps: { MAX_LIST_KEYS_PER_RUN: 1 }, responder: truncating });
+        const r = await rc.listExactPrefix('data/');
+        expect(r.keys.length).toBe(1);
+        expect(calls.length).toBe(1);
+        expect(calls[0].maxKeys).toBe(1);
+        expect(budget.stopped).toBe(true);
+    });
+
+    it('MAX_LIST_KEYS_PER_RUN=10 clamps MaxKeys to 10 and stops at 10 keys', async () => {
+        const plan = basePlan({ exact_prefixes: ['data/'] });
+        const { rc, calls, budget } = buildClient(plan, { caps: { MAX_LIST_KEYS_PER_RUN: 10 }, responder: truncating });
+        const r = await rc.listExactPrefix('data/');
+        expect(r.keys.length).toBe(10);
+        expect(calls[0].maxKeys).toBe(10);
+        expect(budget.stopped).toBe(true);
+    });
+
+    it('a provider returning MORE than requested MaxKeys -> INTEGRITY_ANOMALY, keys NOT emitted, STOPPED', async () => {
+        const plan = basePlan({ exact_prefixes: ['data/'] });
+        const overReturn = (ctor, i) => {
+            if (ctor === 'ListObjectsV2Command') {
+                const contents = Array.from({ length: i.MaxKeys + 1 }, (_, n) => ({ Key: `data/k${n}`, Size: 1, ETag: '"e"' }));
+                return { IsTruncated: true, NextContinuationToken: 't', Contents: contents };
+            }
+            return {};
+        };
+        const { rc, calls, budget } = buildClient(plan, { responder: overReturn });
+        await expect(rc.listExactPrefix('data/')).rejects.toThrow(/INTEGRITY_ANOMALY|more keys/);
+        expect(calls.length).toBe(1);
+        expect(budget.stopped).toBe(true);
+        expect(budget.counters.listKeys).toBe(0); // none emitted
+    });
+});
