@@ -1,0 +1,144 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "RC3B_EVIDENCE_SCHEMA_v0.1",
+  "title": "RC-3B Phase-0 restricted-source physical-residence evidence artifact",
+  "description": "LOCAL governance/design artifact (governance tree), not repo. Revised under RC-3B-P0A-R1 (A9). The artifact is a MACHINE STRUCTURE that CANNOT express a restricted value: there is no free-text field anywhere; every object sets additionalProperties=false and only controlled, enumerated, or hash fields are permitted. Physical evidence and rights evidence are SEPARATE dimensions. A bounded byte sample is never copied as a value; only committed-allowlist field paths, a shape-signature hash, and byte counts may be recorded. Authorized by RC-3B-P0A (LOCAL PLAN-MODE). Grants no R2 access.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_metadata", "operation_evidence", "integrity_evidence", "inventory_records", "followup_queue"],
+  "properties": {
+    "run_metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bucket", "r2_endpoint_or_account_id", "workflow_run_id", "commit_sha", "tag_or_ref", "materialized_run_plan_sha256", "template_allowlist_sha256", "materialized_allowlist_sha256", "authorized_harness_sha", "authorized_run_plan_sha256", "authorized_template_file_sha256", "authorized_endpoint_or_account_binding", "observed_endpoint_or_account_binding", "endpoint_binding_match", "mode", "status", "stop_reasons", "partial"],
+      "properties": {
+        "bucket": {"type": "string"},
+        "r2_endpoint_or_account_id": {"type": "string"},
+        "workflow_run_id": {"type": "string"},
+        "commit_sha": {"type": "string"},
+        "tag_or_ref": {"type": "string"},
+        "materialized_run_plan_sha256": {"type": "string"},
+        "template_allowlist_sha256": {"type": "string"},
+        "materialized_allowlist_sha256": {"type": "string"},
+        "authorized_harness_sha": {"type": "string"},
+        "authorized_run_plan_sha256": {"type": "string"},
+        "authorized_template_file_sha256": {"type": "string"},
+        "authorized_endpoint_or_account_binding": {"type": "string"},
+        "observed_endpoint_or_account_binding": {"type": "string"},
+        "endpoint_binding_match": {"type": "string", "enum": ["PASS"]},
+        "mode": {"type": "string", "enum": ["LOCAL-PLAN-MODE", "READ-ONLY-R2"]},
+        "status": {"type": "string", "enum": ["PLANNED", "AUTHORIZED", "IN-PROGRESS", "PM-AUDITED-GO", "MERGE-PENDING", "CODE-LANDED", "RUNTIME-OBSERVED", "VERIFIED", "CLOSED", "FAILED-OPEN", "HELD", "PARTIAL", "STOPPED"]},
+        "stop_reasons": {"type": "array", "items": {"type": "string", "enum": ["NONE", "CAP_REACHED", "OUT_OF_ALLOWLIST", "MUTATION_ATTEMPT", "UNRESOLVED_PLACEHOLDER", "INTEGRITY_ANOMALY", "MISSING_AUTHORIZATION", "FORMAT_NOT_SEEKABLE", "OPERATOR_ABORT"]}},
+        "partial": {"type": "boolean"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"mode": {"const": "READ-ONLY-R2"}}},
+          "then": {
+            "properties": {
+              "workflow_run_id": {"type": "string", "minLength": 1},
+              "commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+              "materialized_run_plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "materialized_allowlist_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "authorized_harness_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+              "authorized_run_plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "authorized_template_file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "authorized_endpoint_or_account_binding": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "observed_endpoint_or_account_binding": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            }
+          }
+        }
+      ]
+    },
+    "operation_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["list_pages", "list_keys_returned", "head_requests", "get_meta_requests", "range_requests", "bytes_get_meta", "bytes_range", "rejected_before_network", "attempts_after_stop", "network_calls_after_stop", "unexpected_command_count"],
+      "properties": {
+        "list_pages": {"type": "integer", "minimum": 0},
+        "list_keys_returned": {"type": "integer", "minimum": 0},
+        "head_requests": {"type": "integer", "minimum": 0},
+        "get_meta_requests": {"type": "integer", "minimum": 0},
+        "range_requests": {"type": "integer", "minimum": 0},
+        "bytes_get_meta": {"type": "integer", "minimum": 0},
+        "bytes_range": {"type": "integer", "minimum": 0},
+        "rejected_before_network": {"type": "integer", "minimum": 0},
+        "attempts_after_stop": {"type": "integer", "minimum": 0},
+        "network_calls_after_stop": {"type": "integer", "const": 0},
+        "unexpected_command_count": {"type": "integer", "const": 0}
+      }
+    },
+    "integrity_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_sha256", "log_bundle_sha256", "leak_scanner_name", "leak_scanner_version", "leak_policy_sha256", "artifact_scan_result", "log_scan_result", "forbidden_property_scan_result"],
+      "properties": {
+        "artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "log_bundle_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "leak_scanner_name": {"type": "string"},
+        "leak_scanner_version": {"type": "string"},
+        "leak_policy_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "artifact_scan_result": {"type": "string", "const": "PASS"},
+        "log_scan_result": {"type": "string", "const": "PASS"},
+        "forbidden_property_scan_result": {"type": "string", "const": "PASS"}
+      }
+    },
+    "inventory_records": {
+      "type": "array",
+      "description": "one record per rights-bearing content unit per observed object; physical and rights evidence are separate dimensions",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_family", "content_class", "field_group", "actual_ingested_distribution", "snapshot_id", "object_key", "object_type", "active_or_historical", "backup_or_export", "physical_presence", "served_reference", "byte_or_record_count", "hash_or_etag", "physical_evidence_classes", "rights_evidence_class", "rights_class", "territory_scope", "recommended_disposition"],
+        "properties": {
+          "source_family": {"type": "string"},
+          "content_class": {"type": "string"},
+          "field_group": {"type": "string"},
+          "actual_ingested_distribution": {"type": "string"},
+          "snapshot_id": {"type": "string"},
+          "object_key": {"type": "string"},
+          "object_type": {"type": "string", "enum": ["snapshot-payload", "shard", "shard-manifest", "projection-index", "aggregate", "root-seal", "builder-manifest", "backup", "export", "artifact", "cache", "cursor", "other", "unknown"]},
+          "active_or_historical": {"type": "string", "enum": ["active-latest", "historical", "unknown"]},
+          "backup_or_export": {"type": "string", "enum": ["none", "backup", "export", "artifact", "unknown"]},
+          "physical_presence": {"type": "string", "enum": ["R2_OBJECT_PRESENT", "MANIFEST_BOUND", "NOT_FOUND_WITHIN_EXACT_ALLOWLIST", "UNVERIFIED"]},
+          "served_reference": {"type": "string", "enum": ["served", "served-withheld-by-rc3a", "not-served", "unknown"]},
+          "byte_or_record_count": {"type": "integer", "minimum": -1, "description": "-1 = unknown/not-counted"},
+          "hash_or_etag": {"type": "string"},
+          "physical_evidence_classes": {"type": "array", "minItems": 1, "items": {"type": "string", "enum": ["R2-OBSERVED", "MANIFEST-OBSERVED", "CODE-GROUNDED", "TARGETED-BYTE-SAMPLED", "NOT-FOUND-WITHIN-EXACT-ALLOWLIST", "UNVERIFIED"]}},
+          "rights_evidence_class": {"type": "string", "enum": ["OFFICIAL-SOURCE-VERIFIED", "COUNSEL-VERIFIED", "FOUNDER-RATIFIED", "PM-PROPOSED", "NEEDS-COUNSEL", "UNKNOWN"]},
+          "rights_class": {"type": "string", "enum": ["RIGHTS-QUALIFIED-PUBLIC", "RIGHTS-QUALIFIED-PUBLIC-WITH-MATERIAL-CONDITIONS", "CUSTOMER-LICENSED-PRIVATE", "VENDOR-LICENSED", "VENDOR-LICENSED-INTERNAL-FENCED", "METADATA-ONLY", "QUARANTINE-PENDING-COUNSEL", "QUARANTINE-PENDING-PROVENANCE", "PROHIBITED"]},
+          "territory_scope": {"type": "string", "enum": ["GLOBAL", "UNITED-STATES-ONLY", "EEA", "NAMED-JURISDICTIONS", "LICENSE-TERRITORY", "UNKNOWN"]},
+          "recommended_disposition": {"type": "string", "enum": ["KEEP-WITH-LICENSE-ENVELOPE", "EXCLUDE-FROM-NEW-INGESTION", "SEGREGATE-TO-LICENSE-GATED-STORE", "REBUILD-PUBLIC-SNAPSHOT-WITHOUT", "QUARANTINE-HISTORICAL-SNAPSHOTS", "DELETE-AFTER-EVIDENCE-RETENTION", "LAWFULLY-RETAIN-NEVER-SERVE", "NEEDS-COUNSEL", "DEFERRED"]},
+          "targeted_sample": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "OPTIONAL; valid ONLY for format-aware, locator-bound bounded reads (never monolithic gzip/zstd). Cannot establish global absence. No free text.",
+            "required": ["sample_kind"],
+            "properties": {
+              "sample_kind": {"type": "string", "enum": ["FIELD-PATH-ONLY", "KEY-NAME-ONLY", "SHAPE-SIGNATURE"]},
+              "observed_field_paths": {"type": "array", "items": {"type": "string", "description": "MUST be selected from the committed canonical field-path allowlist; never copied from payload strings"}},
+              "shape_signature_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "sample_bytes_read": {"type": "integer", "minimum": 0},
+              "sample_decoded_bytes": {"type": "integer", "minimum": 0}
+            }
+          }
+        }
+      }
+    },
+    "followup_queue": {
+      "type": "array",
+      "description": "unresolved items promoted to a follow-up queue (never silently dropped); reason codes are controlled; no payload-derived text",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["item_ref", "reason_code", "proposed_next_gate"],
+        "properties": {
+          "item_ref": {"type": "string", "description": "an object key / prefix / content-unit id -- a locator, not content"},
+          "reason_code": {"type": "string", "enum": ["PREFIX_NOT_AUTHORIZED", "OBJECT_NOT_FOUND", "FORMAT_NOT_SEEKABLE", "CAP_REACHED", "INTEGRITY_ANOMALY", "MANIFEST_MISSING", "MANIFEST_CONTRADICTION", "RIGHTS_UNRESOLVED", "PROVENANCE_UNRESOLVED", "NEEDS_SEPARATE_RUN", "OTHER_SANITIZED"]},
+          "proposed_next_gate": {"type": "string"},
+          "detail_sanitized": {"type": "string", "description": "OPTIONAL; must be sanitized and MUST NOT originate from payload text"}
+        }
+      }
+    }
+  }
+}

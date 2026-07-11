@@ -1,0 +1,44 @@
+{
+  "plan_version": "0.1.0",
+  "bucket": "rc3b-synthetic-bucket",
+  "endpoint_or_account_binding": "edee4904aff9b74973006d26043a8c93922b3f6279473d5d94acb6c82cd4340b",
+  "exact_prefixes": [
+    "synthetic/prefix/"
+  ],
+  "structural_keys": [
+    "synthetic/prefix/manifest.json"
+  ],
+  "class_c_head_keys": [
+    "synthetic/prefix/data.jsonl.gz"
+  ],
+  "class_x_targets": [
+    {
+      "key": "synthetic/prefix/fused-shard-000.bin",
+      "offset": 0,
+      "length": 64,
+      "object_class": "NXVF_SHARD"
+    }
+  ],
+  "object_class_map": {
+    "synthetic/prefix/manifest.json": "STRUCTURAL_JSON",
+    "synthetic/prefix/data.jsonl.gz": "MONOLITHIC_GZIP",
+    "synthetic/prefix/fused-shard-000.bin": "NXVF_SHARD"
+  },
+  "allowed_object_classes": [
+    "STRUCTURAL_JSON",
+    "NXVF_SHARD",
+    "MONOLITHIC_GZIP",
+    "PAYLOAD_JSONL"
+  ],
+  "snapshot_ids": [
+    "2026-01-01/1-1"
+  ],
+  "caps": {},
+  "record_spec_ref": "rc3b-p0b-record-spec-v0",
+  "authorized_binding": {
+    "account_binding": "synthetic-account-id"
+  },
+  "template_allowlist_sha256": "1d822ff35d2673e8df39bf119b8918d0405c6790f1881bad36c2c38ec2b4d872",
+  "materialized_allowlist_sha256": "a10ddc3d0df37680c7a1ad7e23d0cd89d9eb3f660440b432474daba1cd80909c",
+  "materialized_run_plan_sha256": "19eb4f37ba57980dc16ea75b49683bec6777e1473f88b54d0d4f89c27b3073d1"
+}
