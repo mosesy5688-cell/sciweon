@@ -21,6 +21,7 @@ import { instrumentStructuralReadOnlyClient } from './command-guard.mjs';
 import { findPlaceholder } from './placeholder-scan.mjs';
 import { classifyRangeTarget, classifyStructuralTarget, inferClassFromKey, isPayloadClass } from './format-policy.mjs';
 import { matchFamily } from './template-policy.mjs';
+import { decideOperation } from './operation-matrix.mjs';
 import { collectBounded, ResponseBoundExceeded, verifyContentRange } from './bounded-collector.mjs';
 import { structuralFacts, sampleFacts } from './shape-facts.mjs';
 
@@ -92,6 +93,21 @@ export function makeReadOnlyR2Client(rawClient, plan, budget, templatePolicy = n
             budget.reject('OUT_OF_ALLOWLIST', `key ${JSON.stringify(key)} is not an exact committed key`);
         }
         noPlaceholder(key, 'head key');
+        // CHANGE D: the effective class is SUFFIX-derived (never a free
+        // object_class_map override). Consult the operation/class matrix, then
+        // require an EXACT CLASS-C HEAD family carrying an explicit matching
+        // object_class -- so a payload key can be HEAD-ed ONLY via that family.
+        const eff = inferClassFromKey(key);
+        const decision = decideOperation({ operation: 'HEAD', effectiveClass: eff });
+        if (!decision.allow) {
+            budget.reject('FORMAT_NOT_SEEKABLE', `HEAD refused for ${JSON.stringify(key)}: ${decision.reason}`);
+        }
+        if (templatePolicy) {
+            const fam = matchFamily(templatePolicy, { operation: 'HEAD', key, effectiveClass: eff });
+            if (!fam) {
+                budget.reject('FORMAT_NOT_SEEKABLE', `HEAD key ${JSON.stringify(key)} is not an exact CLASS-C HEAD family instantiation (explicit object_class ${eff})`);
+            }
+        }
         budget.reserveHead();
         budget.reserveObject(key);
         const r = await guarded.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
@@ -116,6 +132,12 @@ export function makeReadOnlyR2Client(rawClient, plan, budget, templatePolicy = n
         }
         if (inferClassFromKey(key) !== 'STRUCTURAL_JSON') {
             budget.reject('FORMAT_NOT_SEEKABLE', `structural GET-META refused for ${JSON.stringify(key)}: suffix does not infer STRUCTURAL_JSON`);
+        }
+        // CHANGE D: operation/class matrix gate (belt-and-braces; effective class
+        // is DERIVED here, never the free object_class_map override).
+        const structDecision = decideOperation({ operation: 'GET_META', effectiveClass: verdict.effectiveClass });
+        if (!structDecision.allow) {
+            budget.reject('FORMAT_NOT_SEEKABLE', `structural GET-META refused for ${JSON.stringify(key)}: ${structDecision.reason}`);
         }
         // The template policy (when provided) must permit this key as a GET_META
         // CLASS-S instantiation. The effective class is DERIVED here, never the
@@ -162,6 +184,11 @@ export function makeReadOnlyR2Client(rawClient, plan, budget, templatePolicy = n
         const verdict = classifyRangeTarget(key, declared);
         if (!verdict.ok) {
             budget.reject('FORMAT_NOT_SEEKABLE', `range refused for ${JSON.stringify(key)}: ${verdict.reason}`);
+        }
+        // CHANGE D: operation/class matrix gate (belt-and-braces).
+        const rangeDecision = decideOperation({ operation: 'RANGE', effectiveClass: verdict.effectiveClass });
+        if (!rangeDecision.allow) {
+            budget.reject('FORMAT_NOT_SEEKABLE', `range refused for ${JSON.stringify(key)}: ${rangeDecision.reason}`);
         }
         budget.reserveRange(length); // rejects oversize single range; stops on cap
         budget.reserveObject(key);

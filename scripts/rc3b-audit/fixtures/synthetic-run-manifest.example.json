@@ -38,7 +38,7 @@
   "authorized_binding": {
     "account_binding": "synthetic-account-id"
   },
-  "template_allowlist_sha256": "1d822ff35d2673e8df39bf119b8918d0405c6790f1881bad36c2c38ec2b4d872",
+  "template_allowlist_sha256": "ef4b7b566dad8c1adbda263bf0900e099e00b10e047b45fcb4243f96c3b386d2",
   "materialized_allowlist_sha256": "a10ddc3d0df37680c7a1ad7e23d0cd89d9eb3f660440b432474daba1cd80909c",
-  "materialized_run_plan_sha256": "19eb4f37ba57980dc16ea75b49683bec6777e1473f88b54d0d4f89c27b3073d1"
+  "materialized_run_plan_sha256": "dd997f2fe2267a9efa626a69d6cd1aaa0479c0711f4e81c41fcf92244a4c526e"
 }

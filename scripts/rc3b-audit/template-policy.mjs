@@ -49,6 +49,10 @@ export function canonicalTemplatePolicy(tp) {
         families: [...(tp.families || [])]
             .map(canonicalFamily)
             .sort((a, b) => a.family_id.localeCompare(b.family_id)),
+        // CHANGE F: forbidden_prefixes is part of the hashed policy identity (an
+        // empty array when absent). A key/prefix under a forbidden_prefix is
+        // rejected before network EVEN IF a family would match (run-manifest).
+        forbidden_prefixes: [...(tp.forbidden_prefixes || [])].sort(),
     };
 }
 
@@ -75,10 +79,12 @@ export function templatePolicyFileSha256(policyPath = TEMPLATE_POLICY_PATH) {
 
 /**
  * Return the matching family for a would-be operation, or null.
- *   LIST: family.operation==='LIST' AND prefix === family.key_prefix (exact).
- *   HEAD/GET_META/RANGE: family.operation matches AND key starts with the family
- *     prefix AND some family suffix matches (case-insensitive) AND
- *     (family.object_class===null OR family.object_class===effectiveClass).
+ *   LIST: family.operation==='LIST' AND prefix === family.key_prefix (exact); a
+ *     LIST family MAY carry object_class:null.
+ *   HEAD/GET_META/RANGE (CHANGE D): family.operation matches AND the family
+ *     carries an EXPLICIT object_class (a null/absent object_class can match ONLY
+ *     LIST -- no non-LIST bypass) AND key starts with the family prefix AND some
+ *     family suffix matches (case-insensitive) AND family.object_class===effectiveClass.
  */
 export function matchFamily(tp, { operation, key, prefix, effectiveClass }) {
     const families = tp && Array.isArray(tp.families) ? tp.families : [];
@@ -88,15 +94,34 @@ export function matchFamily(tp, { operation, key, prefix, effectiveClass }) {
             if (prefix === f.key_prefix) return f;
             continue;
         }
+        // NON-LIST: a null/absent object_class NEVER matches (no object_class:null spoof).
+        if (f.object_class === null || f.object_class === undefined) continue;
         const k = String(key);
         if (!k.startsWith(f.key_prefix)) continue;
         const lower = k.toLowerCase();
         const suffixes = f.key_suffixes || [];
         if (!suffixes.some((s) => lower.endsWith(String(s).toLowerCase()))) continue;
-        if (f.object_class !== null && f.object_class !== effectiveClass) continue;
+        if (f.object_class !== effectiveClass) continue;
         return f;
     }
     return null;
+}
+
+/**
+ * CHANGE D: family_ids of NON-LIST families that ILLEGALLY carry a null/absent
+ * object_class. Such a policy is INVALID (a non-LIST family must be (operation,
+ * exactly-one-class)-scoped); run-manifest.checkTemplate rejects it.
+ */
+export function nullObjectClassNonListFamilies(tp) {
+    const families = tp && Array.isArray(tp.families) ? tp.families : [];
+    return families
+        .filter((f) => f.operation !== 'LIST' && (f.object_class === null || f.object_class === undefined))
+        .map((f) => f.family_id);
+}
+
+/** The declared policy scope (CHANGE F): 'SYNTHETIC-ONLY' | 'PRODUCTION-READONLY' | null. */
+export function templatePolicyScope(tp = loadTemplatePolicy()) {
+    return (tp && tp.policy_scope) || null;
 }
 
 /** Throws if bucket / endpoint are not on the committed template allowlists. */

@@ -21,9 +21,9 @@
     {
       "family_id": "synthetic-payload-head",
       "operation": "HEAD",
-      "object_class": null,
+      "object_class": "MONOLITHIC_GZIP",
       "key_prefix": "synthetic/prefix/",
-      "key_suffixes": [".jsonl.gz", ".gz", ".zst", ".zstd", ".jsonl", ".bin", ".json"]
+      "key_suffixes": [".jsonl.gz", ".gz"]
     },
     {
       "family_id": "synthetic-nxvf-range",

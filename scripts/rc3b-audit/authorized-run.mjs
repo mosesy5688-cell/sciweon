@@ -19,9 +19,11 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { assertFounderAuthorization } from './authorization.mjs';
-import { TEMPLATE_POLICY_PATH } from './template-policy.mjs';
+import { loadTemplatePolicy } from './template-policy.mjs';
 import { loadRunManifest, validateRunManifest } from './run-manifest.mjs';
 import { assertEndpointBinding } from './endpoint-binding.mjs';
+import { assertRunIdentity } from './run-identity.mjs';
+import { resolveCarrierInputs } from './carrier-inputs.mjs';
 import { makeMinimalReadOnlyS3Client } from './client-factory.mjs';
 import { runReadOnlyAudit } from './harness.mjs';
 import { buildEvidenceFromRun } from './evidence-assembly.mjs';
@@ -29,6 +31,12 @@ import { serializeLogBundle } from './log-bundle.mjs';
 
 export const RUN_PLAN_PATH_ENV = 'RC3B_RUN_PLAN_PATH';
 export const ALLOWED_BUCKETS_ENV = 'RC3B_ALLOWED_BUCKETS';
+// OPTIONAL override of the authorized template-policy FILE path (defaults to the
+// committed policy). A real production carrier points this at its own audited
+// PRODUCTION-READONLY policy; unset -> the committed SYNTHETIC-ONLY policy.
+export const TEMPLATE_POLICY_PATH_ENV = 'RC3B_TEMPLATE_POLICY_PATH';
+// OPTIONAL trusted carrier-checkout root for path safety (defaults to repo root).
+export const CARRIER_ROOT_ENV = 'RC3B_CARRIER_ROOT';
 export const EVIDENCE_NAME = 'rc3b-p0b-readonly-evidence.json';
 export const STRUCTURAL_LOG_NAME = 'rc3b-p0b-structural-log.jsonl';
 
@@ -39,17 +47,34 @@ export const STRUCTURAL_LOG_NAME = 'rc3b-p0b-structural-log.jsonl';
  *                    | {inert:true, reason:string}>}
  */
 export async function runAuthorizedAudit(env, opts = {}) {
-    const runPlanPath = env[RUN_PLAN_PATH_ENV];
     const allowedBuckets = (env[ALLOWED_BUCKETS_ENV] || '').split(',').map((s) => s.trim()).filter(Boolean);
 
-    // 1. EXTERNAL raw-file authorization anchors (incl. template FILE sha256).
-    const authz = assertFounderAuthorization(env, { runPlanPath, templatePolicyPath: TEMPLATE_POLICY_PATH });
+    // 0. PATH SAFETY (C1A-R1 / B1): the ONE shared resolver returns the RESOLVED,
+    //    real, in-root run-plan + template-policy paths, anchored to the exact
+    //    trusted checkout root -- BEFORE any read of those files. The SAME resolved
+    //    paths are then fed to authorization + plan/policy loads (no re-read of an
+    //    unresolved value).
+    const resolved = resolveCarrierInputs(env, opts);
+    const runPlanPath = resolved.runPlanPath;
+    const templatePolicyPath = resolved.templatePolicyPath;
+
+    // 1. EXTERNAL raw-file authorization anchors (incl. template FILE sha256) +
+    //    the EXACT authorized run-plan/template PATH anchors (resolved-path equality).
+    const authz = assertFounderAuthorization(env, {
+        runPlanPath, templatePolicyPath, rootDir: resolved.rootDir,
+    });
+
+    // 1b. EXACT run-identity binding (CHANGE A): tag / ref-name / sha / attempt==1 /
+    //     run-id -- all BEFORE the client (fail-before-client). A second independent
+    //     dispatch (new run-id, attempt==1) is rejected by the run-id bind.
+    const identity = assertRunIdentity(env);
 
     // 2. load the authorized plan.
     const { plan, rawBytes } = loadRunManifest(runPlanPath);
 
-    // 3. validate plan + template-derivation (fail-before-network on any gap).
-    const v = validateRunManifest(plan, { allowedBuckets });
+    // 3. validate plan + template-derivation against the EXACT authorized policy.
+    const templatePolicy = loadTemplatePolicy(templatePolicyPath);
+    const v = validateRunManifest(plan, { allowedBuckets, templatePolicy });
     if (!v.admissible) {
         throw new Error(`[RC3B AUTHZ-RUN] run manifest INADMISSIBLE -- fail-before-network:\n - ${v.errors.join('\n - ')}`);
     }
@@ -63,15 +88,22 @@ export async function runAuthorizedAudit(env, opts = {}) {
 
     // 7. ONLY THEN network.
     const runResult = await runReadOnlyAudit(plan, rawBytes, {
-        allowedBuckets, clientOverride: client, now: opts.now,
+        allowedBuckets, clientOverride: client, now: opts.now, templatePolicy,
     });
 
     const run_metadata = {
         bucket: plan.bucket,
-        r2_endpoint_or_account_id: plan.endpoint_or_account_binding,
-        workflow_run_id: env.GITHUB_RUN_ID ? `${env.GITHUB_RUN_ID}-${env.GITHUB_RUN_ATTEMPT || '1'}` : 'local',
+        // CHANGE C: the endpoint evidence is the COMPUTED 64-hex binding (== observed),
+        // NOT the plan label or a raw account id.
+        r2_endpoint_or_account_binding: binding.observed_endpoint_or_account_binding,
+        carrier_tag: identity.carrier_tag,
+        // C1A-R1 / B4: DIGITS-ONLY run id (no `-attempt` suffix), the attempt as a
+        // separate integer (must be 1), and the exact tag ref -- so the post-verifier
+        // can INDEPENDENTLY re-check run identity (run id / attempt / tag_or_ref).
+        workflow_run_id: String(env.GITHUB_RUN_ID),
+        workflow_run_attempt: Number(env.GITHUB_RUN_ATTEMPT || 1),
         commit_sha: env.GITHUB_SHA || '',
-        tag_or_ref: env.GITHUB_REF || 'local',
+        tag_or_ref: env.GITHUB_REF,
         materialized_run_plan_sha256: plan.materialized_run_plan_sha256,
         template_allowlist_sha256: plan.template_allowlist_sha256,
         materialized_allowlist_sha256: plan.materialized_allowlist_sha256,
