@@ -15,7 +15,14 @@
 import { createHash } from 'crypto';
 
 export const LEAK_SCANNER_NAME = 'rc3b-leak-scanner';
-export const LEAK_SCANNER_VERSION = '0.1.0';
+export const LEAK_SCANNER_VERSION = '0.2.0';
+
+export const LOCATOR_SEMANTIC_PATTERN_IDS = Object.freeze({
+    LAYOUT_VERSION: 'LAYOUT_VERSION_V2', SNAPSHOT_ID: 'SNAPSHOT_ID_V2',
+    OBJECT_PREFIX: 'OBJECT_PREFIX_V2', MANIFEST_KEY: 'MANIFEST_KEY_PATHSAFE',
+    OBJECT_KEY: 'R2_DATA_KEY_PATHSAFE', RELEASE_TOKEN: 'RELEASE_TOKEN_SEGMENT',
+    SNAPSHOT_DATE: 'ISO_DATE', SHA256_HEX: 'SHA256_HEX', RECORD_COUNT: 'NONNEG_INTEGER',
+});
 
 export const MAX_STRING_VALUE_LENGTH = 512;
 // A run of this many non-whitespace chars in a LOG line signals a dumped blob.
@@ -49,6 +56,7 @@ export function leakPolicyObject() {
         max_log_line_length: MAX_LOG_LINE_LENGTH,
         forbidden_property_names: [...FORBIDDEN_PROPERTY_NAMES].sort(),
         allowed_string_pattern: ALLOWED_STRING_RE.source,
+        locator_semantic_pattern_ids: Object.entries(LOCATOR_SEMANTIC_PATTERN_IDS).sort(([a], [b]) => a.localeCompare(b)),
     };
 }
 

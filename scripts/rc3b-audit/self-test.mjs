@@ -12,11 +12,13 @@
 
 import { validateRunManifest } from './run-manifest.mjs';
 import { allowlistSha256, runPlanSha256 } from './manifest-hash.mjs';
-import { templatePolicyCanonicalSha256 } from './template-policy.mjs';
+import { templatePolicyCanonicalSha256, loadTemplatePolicy } from './template-policy.mjs';
 import { deriveEndpointBinding } from './endpoint-binding.mjs';
 import { runReadOnlyAudit } from './harness.mjs';
 import { buildEvidenceFromRun } from './evidence-assembly.mjs';
 import { runLeakScan } from './leak-scanner.mjs';
+import { buildLocatorArtifact } from './locator-artifact.mjs';
+import { verifyLocatorArtifact } from './verify-artifact.mjs';
 
 export const SYNTHETIC_BUCKET = 'rc3b-synthetic-bucket';
 export const SYNTHETIC_ALLOWED_BUCKETS = Object.freeze([SYNTHETIC_BUCKET]);
@@ -28,10 +30,25 @@ const PREFIX = 'synthetic/prefix/';
 const MANIFEST_KEY = `${PREFIX}manifest.json`;
 const PAYLOAD_KEY = `${PREFIX}data.jsonl.gz`;
 const SHARD_KEY = `${PREFIX}fused-shard-000.bin`;
+const SNAPSHOT_DATE = '2026-01-01';
+const SNAPSHOT_ID = `${SNAPSHOT_DATE}/1-1`;
+const OBJECT_PREFIX = `snapshots/${SNAPSHOT_ID}/`;
+
+export function syntheticLocatorSpecs() {
+    const common = { key: MANIFEST_KEY, required: true, pointer_shape: 'immutable_snapshot_v2' };
+    return [
+        { ...common, spec_id: 'SYN_LAYOUT_VERSION', field_path: 'layout_version', semantic_type: 'LAYOUT_VERSION', scalar_type: 'string', value_pattern_id: 'LAYOUT_VERSION_V2', normalization: 'NONE', max_utf8_bytes: 64, cross_field_rules: ['LAYOUT_SELECTS_SPEC_SET'] },
+        { ...common, spec_id: 'SYN_SNAPSHOT_DATE', field_path: 'snapshot_date', semantic_type: 'SNAPSHOT_DATE', scalar_type: 'string', value_pattern_id: 'ISO_DATE', normalization: 'NONE', max_utf8_bytes: 10, cross_field_rules: [] },
+        { ...common, spec_id: 'SYN_SNAPSHOT_ID', field_path: 'snapshot_id', semantic_type: 'SNAPSHOT_ID', scalar_type: 'string', value_pattern_id: 'SNAPSHOT_ID_V2', normalization: 'NONE', max_utf8_bytes: 64, cross_field_rules: ['SNAPSHOT_ID_MATCHES_IMMUTABLE_IDENTITY'] },
+        { ...common, spec_id: 'SYN_OBJECT_PREFIX', field_path: 'object_prefix', semantic_type: 'OBJECT_PREFIX', scalar_type: 'string', value_pattern_id: 'OBJECT_PREFIX_V2', normalization: 'ENSURE_TRAILING_SLASH', max_utf8_bytes: 128, cross_field_rules: ['OBJECT_PREFIX_EQUALS_SNAPSHOTS_PLUS_ID', 'OBJECT_PREFIX_STARTS_SNAPSHOTS_ENDS_SLASH', 'PATH_SEGMENTS_SAFE'] },
+        { ...common, spec_id: 'SYN_COMPOUNDS_MANIFEST', field_path: 'compounds_manifest_key', semantic_type: 'MANIFEST_KEY', scalar_type: 'string', value_pattern_id: 'MANIFEST_KEY_PATHSAFE', normalization: 'NONE', max_utf8_bytes: 192, cross_field_rules: ['COMPOUNDS_MANIFEST_EQUALS_FIXED_SUFFIX', 'MANIFEST_KEY_UNDER_OBJECT_PREFIX', 'PATH_SEGMENTS_SAFE'] },
+    ];
+}
 
 export function manifestBodyBuffer() {
     return Buffer.from(JSON.stringify({
-        snapshot_id: '2026-01-01/1-1', object_prefix: PREFIX, manifest_hash: 'b'.repeat(64),
+        snapshot_date: SNAPSHOT_DATE, snapshot_id: SNAPSHOT_ID, object_prefix: OBJECT_PREFIX,
+        compounds_manifest_key: `${OBJECT_PREFIX}compounds/bucket-0000/manifest.json`, manifest_hash: 'b'.repeat(64),
         layout_version: 'immutable_snapshot_v2', schema_version: 1,
         files: [{ filename: 'data.jsonl.gz', records: 10, sha256_compressed: 'c'.repeat(64) }],
     }), 'utf-8');
@@ -46,6 +63,7 @@ export function syntheticRunManifest() {
         object_class_map: { [MANIFEST_KEY]: 'STRUCTURAL_JSON', [PAYLOAD_KEY]: 'MONOLITHIC_GZIP', [SHARD_KEY]: 'NXVF_SHARD' },
         allowed_object_classes: ['STRUCTURAL_JSON', 'NXVF_SHARD', 'MONOLITHIC_GZIP', 'PAYLOAD_JSONL'],
         snapshot_ids: ['2026-01-01/1-1'], caps: {},
+        structural_locator_specs: syntheticLocatorSpecs(),
         record_spec_ref: 'rc3b-p0b-record-spec-v0',
         authorized_binding: { account_binding: SYNTHETIC_ACCOUNT_ID },
         template_allowlist_sha256: templatePolicyCanonicalSha256(),
@@ -114,6 +132,31 @@ export function poisonedEvidence(clean) {
         p.inventory_records[0].hash_or_etag = 'leaked free text from the object body with spaces';
     }
     return p;
+}
+
+export async function runLocatorSelfTest({ forceFail = false, breakSource = false } = {}) {
+    const plan = syntheticRunManifest(); const tp = loadTemplatePolicy();
+    const base = makeSyntheticFakeClient();
+    const client = breakSource ? { async send(command) {
+        const r = await base.send(command);
+        if (command?.constructor?.name === 'GetObjectCommand' && !command?.input?.Range) return { ...r, ETag: 'different-etag' };
+        return r;
+    } } : base;
+    const run = await runReadOnlyAudit(plan, Buffer.from(JSON.stringify(plan)), {
+        allowedBuckets: SYNTHETIC_ALLOWED_BUCKETS, clientOverride: client, templatePolicy: tp,
+    });
+    const metadata = syntheticRunMetadata(plan);
+    const evidence = buildEvidenceFromRun(run, plan, { run_metadata: metadata, record_specs: syntheticRecordSpecs() }).evidence;
+    const built = buildLocatorArtifact({ sourceBoundResults: run.locator_source_results, objectFailures: run.locator_object_failures, plan, runMetadata: metadata });
+    const verified = verifyLocatorArtifact(built.artifact, { plan, templatePolicy: tp, evidence });
+    const checks = {
+        closed_schema: built.schema.valid,
+        verifier_join: verified.ok,
+        complete_happy_path: built.artifact.artifact_status === 'COMPLETE',
+        one_locator_get: run.budget.counters.getLocatorRequests === 1,
+        forced_control: !forceFail,
+    };
+    return { ok: Object.values(checks).every(Boolean), checks, artifact: built.artifact };
 }
 
 export async function runSelfTest() {

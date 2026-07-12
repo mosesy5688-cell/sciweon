@@ -18,7 +18,7 @@ import {
     authorizedScenario, runScenario, sha256File, AUTHORIZED_ALL_GREEN,
 } from './rc3b-authorized-fixtures';
 
-const verify = (scn, result) => verifyArtifact(result.evidencePath, scn.env, result.logPath, scn.planPath, scn.policy.path);
+const verify = (scn, result) => verifyArtifact(result.evidencePath, scn.env, result.logPath, scn.planPath, scn.policy.path, result.locatorArtifactPath);
 
 describe('RC-3B-P0B authorized-mode e2e: PASS path (temp PRODUCTION-READONLY policy)', () => {
     it('the full chain passes and verifyArtifact is all green (no SKIPPED)', async () => {

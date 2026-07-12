@@ -33,12 +33,19 @@
   "snapshot_ids": [
     "2026-01-01/1-1"
   ],
+  "structural_locator_specs": [
+    {"spec_id":"SYN_LAYOUT_VERSION","key":"synthetic/prefix/manifest.json","required":true,"pointer_shape":"immutable_snapshot_v2","field_path":"layout_version","semantic_type":"LAYOUT_VERSION","scalar_type":"string","value_pattern_id":"LAYOUT_VERSION_V2","normalization":"NONE","max_utf8_bytes":64,"cross_field_rules":["LAYOUT_SELECTS_SPEC_SET"]},
+    {"spec_id":"SYN_SNAPSHOT_DATE","key":"synthetic/prefix/manifest.json","required":true,"pointer_shape":"immutable_snapshot_v2","field_path":"snapshot_date","semantic_type":"SNAPSHOT_DATE","scalar_type":"string","value_pattern_id":"ISO_DATE","normalization":"NONE","max_utf8_bytes":10,"cross_field_rules":[]},
+    {"spec_id":"SYN_SNAPSHOT_ID","key":"synthetic/prefix/manifest.json","required":true,"pointer_shape":"immutable_snapshot_v2","field_path":"snapshot_id","semantic_type":"SNAPSHOT_ID","scalar_type":"string","value_pattern_id":"SNAPSHOT_ID_V2","normalization":"NONE","max_utf8_bytes":64,"cross_field_rules":["SNAPSHOT_ID_MATCHES_IMMUTABLE_IDENTITY"]},
+    {"spec_id":"SYN_OBJECT_PREFIX","key":"synthetic/prefix/manifest.json","required":true,"pointer_shape":"immutable_snapshot_v2","field_path":"object_prefix","semantic_type":"OBJECT_PREFIX","scalar_type":"string","value_pattern_id":"OBJECT_PREFIX_V2","normalization":"ENSURE_TRAILING_SLASH","max_utf8_bytes":128,"cross_field_rules":["OBJECT_PREFIX_EQUALS_SNAPSHOTS_PLUS_ID","OBJECT_PREFIX_STARTS_SNAPSHOTS_ENDS_SLASH","PATH_SEGMENTS_SAFE"]},
+    {"spec_id":"SYN_COMPOUNDS_MANIFEST","key":"synthetic/prefix/manifest.json","required":true,"pointer_shape":"immutable_snapshot_v2","field_path":"compounds_manifest_key","semantic_type":"MANIFEST_KEY","scalar_type":"string","value_pattern_id":"MANIFEST_KEY_PATHSAFE","normalization":"NONE","max_utf8_bytes":192,"cross_field_rules":["COMPOUNDS_MANIFEST_EQUALS_FIXED_SUFFIX","MANIFEST_KEY_UNDER_OBJECT_PREFIX","PATH_SEGMENTS_SAFE"]}
+  ],
   "caps": {},
   "record_spec_ref": "rc3b-p0b-record-spec-v0",
   "authorized_binding": {
     "account_binding": "synthetic-account-id"
   },
-  "template_allowlist_sha256": "ef4b7b566dad8c1adbda263bf0900e099e00b10e047b45fcb4243f96c3b386d2",
+  "template_allowlist_sha256": "055589fb2345d24dbbbd71497a3c2ea7204c1f1366fc395441afbfb7264f1981",
   "materialized_allowlist_sha256": "a10ddc3d0df37680c7a1ad7e23d0cd89d9eb3f660440b432474daba1cd80909c",
-  "materialized_run_plan_sha256": "dd997f2fe2267a9efa626a69d6cd1aaa0479c0711f4e81c41fcf92244a4c526e"
+  "materialized_run_plan_sha256": "5437f1148f052201e2f24bd7c27a2fd3b9a337f2028091e6470f6fcfbe02cf87"
 }

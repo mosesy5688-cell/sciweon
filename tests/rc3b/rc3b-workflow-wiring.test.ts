@@ -51,3 +51,12 @@ describe('RC-3B-P0B workflow: still inert / build-only (E)', () => {
         expect(YML).toContain('R2_ACCOUNT_ID: ${{ secrets.RC3B_R2_ACCOUNT_ID }}');
     });
 });
+
+describe('RC-3B-P0B workflow: resolved locators are a fixed bound artifact', () => {
+    it('passes the fixed locator path to verification and uploads all three artifacts together', () => {
+        expect(YML).toMatch(/--verify-artifact[^\n]*output\/rc3b-p0b-resolved-locators\.json/);
+        expect(YML).toContain('output/rc3b-p0b-readonly-evidence.json');
+        expect(YML).toContain('output/rc3b-p0b-structural-log.jsonl');
+        expect(YML).toContain('output/rc3b-p0b-resolved-locators.json');
+    });
+});

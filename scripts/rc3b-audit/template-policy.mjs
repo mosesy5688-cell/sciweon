@@ -21,6 +21,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
+import { canonicalLocatorRules } from './locator-extract.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const TEMPLATE_POLICY_PATH = path.join(HERE, 'template-policy.json');
@@ -30,6 +31,15 @@ export function loadTemplatePolicy(policyPath = TEMPLATE_POLICY_PATH) {
 }
 
 function canonicalFamily(f) {
+    if (f.operation === 'GET_LOCATOR') {
+        return {
+            family_id: f.family_id,
+            operation: f.operation,
+            object_class: f.object_class ?? null,
+            exact_key: f.exact_key,
+            locator_rules: canonicalLocatorRules(f.locator_rules || []),
+        };
+    }
     return {
         family_id: f.family_id,
         operation: f.operation,
@@ -92,6 +102,12 @@ export function matchFamily(tp, { operation, key, prefix, effectiveClass }) {
         if (f.operation !== operation) continue;
         if (operation === 'LIST') {
             if (prefix === f.key_prefix) return f;
+            continue;
+        }
+        if (operation === 'GET_LOCATOR') {
+            if (f.object_class === 'STRUCTURAL_JSON'
+                && effectiveClass === 'STRUCTURAL_JSON'
+                && typeof key === 'string' && key === f.exact_key) return f;
             continue;
         }
         // NON-LIST: a null/absent object_class NEVER matches (no object_class:null spoof).

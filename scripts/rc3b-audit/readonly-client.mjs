@@ -1,11 +1,13 @@
 /**
  * RC-3B-P0B -- the dedicated READ-ONLY R2 client (typed methods ONLY).
  *
- * Exposes EXACTLY four typed methods and NOTHING generic:
+ * Exposes EXACTLY five typed methods and NOTHING generic:
  *   listExactPrefix(prefix)              -- ListObjectsV2 over an EXACT prefix
  *   headExactKey(key)                    -- HeadObject of an EXACT key
  *   getStructuralMetadata(key)           -- structural GET-META (no Range),
  *                                           ONLY after HEAD proves small enough
+ *   getLocatorScalars(key)               -- committed structural scalars from
+ *                                           one same-buffer bounded GET
  *   readLocatorBoundRange(key,off,len)   -- Range GET of an NXVF locator target
  *
  * There is NO send(command) / request(method,key) / getObject(key). Every
@@ -24,6 +26,8 @@ import { matchFamily } from './template-policy.mjs';
 import { decideOperation } from './operation-matrix.mjs';
 import { collectBounded, ResponseBoundExceeded, verifyContentRange } from './bounded-collector.mjs';
 import { structuralFacts, sampleFacts } from './shape-facts.mjs';
+import { extractLocators } from './locator-extract.mjs';
+import { verifySourceBinding } from './locator-source-binding.mjs';
 
 function targetKeyOf(t) { return `${t.key}|${t.offset}|${t.length}`; }
 
@@ -39,11 +43,17 @@ export function makeReadOnlyR2Client(rawClient, plan, budget, templatePolicy = n
     const bucket = plan.bucket;
     const exactPrefixes = new Set(plan.exact_prefixes || []);
     const structuralKeys = new Set(plan.structural_keys || []);
+    const locatorSpecsByKey = new Map();
+    for (const spec of plan.structural_locator_specs || []) {
+        if (!locatorSpecsByKey.has(spec.key)) locatorSpecsByKey.set(spec.key, []);
+        locatorSpecsByKey.get(spec.key).push(spec);
+    }
+    const locatorKeys = new Set(locatorSpecsByKey.keys());
     const headKeys = new Set(plan.class_c_head_keys || []);
     const rangeTargets = new Map((plan.class_x_targets || []).map((t) => [targetKeyOf(t), t]));
     const rangeKeys = new Set((plan.class_x_targets || []).map((t) => t.key));
     const classMap = plan.object_class_map || {};
-    const exactKeys = new Set([...structuralKeys, ...headKeys, ...rangeKeys]);
+    const exactKeys = new Set([...structuralKeys, ...locatorKeys, ...headKeys, ...rangeKeys]);
 
     const guarded = instrumentStructuralReadOnlyClient(rawClient, {
         bucket, exactKeys, exactPrefixes, budget,
@@ -174,6 +184,61 @@ export function makeReadOnlyR2Client(rawClient, plan, budget, templatePolicy = n
         return { key, object_class: verdict.effectiveClass, etag: got.ETag ?? head.ETag ?? null, ...structuralFacts(buf) };
     }
 
+    async function getLocatorScalars(key) {
+        if (!locatorKeys.has(key)) {
+            budget.reject('OUT_OF_ALLOWLIST', `key ${JSON.stringify(key)} is not an exact structural locator key`);
+        }
+        noPlaceholder(key, 'locator key');
+        const specs = locatorSpecsByKey.get(key);
+        const declaredClass = classMap[key] || inferClassFromKey(key);
+        if (isPayloadClass(declaredClass)) {
+            budget.reject('FORMAT_NOT_SEEKABLE', `payload-class key ${JSON.stringify(key)} cannot use GET_LOCATOR`);
+        }
+        const verdict = classifyStructuralTarget(key, declaredClass);
+        if (!verdict.ok || inferClassFromKey(key) !== 'STRUCTURAL_JSON') {
+            budget.reject('FORMAT_NOT_SEEKABLE', `GET_LOCATOR refused for ${JSON.stringify(key)}: key is not suffix-derived STRUCTURAL_JSON`);
+        }
+        const decision = decideOperation({ operation: 'GET_LOCATOR', effectiveClass: verdict.effectiveClass });
+        if (!decision.allow) budget.reject('FORMAT_NOT_SEEKABLE', `GET_LOCATOR refused for ${JSON.stringify(key)}: ${decision.reason}`);
+        if (templatePolicy && !matchFamily(templatePolicy, { operation: 'GET_LOCATOR', key, effectiveClass: 'STRUCTURAL_JSON' })) {
+            budget.reject('FORMAT_NOT_SEEKABLE', `locator key ${JSON.stringify(key)} is not an exact-key GET_LOCATOR family instantiation`);
+        }
+
+        budget.reserveHead();
+        budget.reserveObject(key);
+        const head = await guarded.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+        const expected = head.ContentLength ?? 0;
+        budget.reserveGetLocator(expected);
+        const got = await guarded.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+        if (got.ContentLength != null && got.ContentLength !== expected) {
+            budget.reject('INTEGRITY_ANOMALY', `GET_LOCATOR GET ContentLength ${got.ContentLength} differs from HEAD ${expected}`);
+        }
+        let buf;
+        try { buf = await collectBounded(got.Body, Math.min(expected, budget.caps.MAX_GET_META_OBJECT_BYTES)); }
+        catch (e) {
+            if (e instanceof ResponseBoundExceeded) budget.reject('INTEGRITY_ANOMALY', `GET_LOCATOR body for ${JSON.stringify(key)} exceeded expected/cap`);
+            throw e;
+        }
+        if (buf.length !== expected) {
+            budget.reject('INTEGRITY_ANOMALY', `GET_LOCATOR body for ${JSON.stringify(key)} was ${buf.length} bytes, expected ${expected}`);
+        }
+        budget.commitGetLocatorActualBytes(buf.length);
+        const extracted = extractLocators(buf, specs, { key });
+        let bound;
+        try {
+            bound = verifySourceBinding(buf, extracted, specs, {
+                head_etag: head.ETag, get_etag: got.ETag,
+                head_content_length: head.ContentLength, get_content_length: got.ContentLength,
+            });
+        } catch (e) {
+            if (/INTEGRITY_ANOMALY/.test(String(e?.message))) budget.reject('INTEGRITY_ANOMALY', e.message);
+            throw e;
+        }
+        if (bound.source_binding_status !== 'PASS') budget.stop('INTEGRITY_ANOMALY');
+        budget.reserveLocatorValues(bound.resolved);
+        return bound;
+    }
+
     async function readLocatorBoundRange(key, offset, length) {
         const target = rangeTargets.get(`${key}|${offset}|${length}`);
         if (!target) {
@@ -239,13 +304,14 @@ export function makeReadOnlyR2Client(rawClient, plan, budget, templatePolicy = n
         call_count: guarded.callCount,
     });
 
-    // EXACTLY the four typed methods (+ a counters snapshot). No generic
+    // EXACTLY the five typed methods (+ a counters snapshot). No generic
     // send(command) / request(method,key) / getObject(key) is exposed.
     return {
         bucket,
         listExactPrefix,
         headExactKey,
         getStructuralMetadata,
+        getLocatorScalars,
         readLocatorBoundRange,
         guardCounters,
     };

@@ -69,6 +69,8 @@ export async function runReadOnlyAudit(plan, rawBytes, opts = {}) {
     const client = makeReadOnlyR2Client(rawClient, plan, budget, templatePolicy);
     const observations = [];
     const followup = [];
+    const locator_source_results = [];
+    const locator_object_failures = [];
 
     const queue = (item_ref, err) => {
         const reason = reasonCodeFor(err);
@@ -76,6 +78,33 @@ export async function runReadOnlyAudit(plan, rawBytes, opts = {}) {
         followup.push({ item_ref, reason_code: reason, proposed_next_gate: 'RC3B-P1-RESOLVE', detail_sanitized: detailToken(err) });
     };
     const stoppedQueue = (item_ref) => followup.push({ item_ref, reason_code: 'CAP_REACHED', proposed_next_gate: 'RC3B-P1-SEPARATE-RUN', detail_sanitized: 'SKIPPED-AFTER-STOP' });
+
+    // ---- structural GET_LOCATOR (one bounded read per UNIQUE spec key) ------
+    const locatorSpecsByKey = new Map();
+    for (const spec of plan.structural_locator_specs || []) {
+        if (!locatorSpecsByKey.has(spec.key)) locatorSpecsByKey.set(spec.key, []);
+        locatorSpecsByKey.get(spec.key).push(spec);
+    }
+    for (const [key, specs] of locatorSpecsByKey) {
+        if (budget.stopped) {
+            stoppedQueue(key);
+            locator_object_failures.push({ source_object_key: key, specs, group_status: 'LAYOUT_INVALID', reason_code: 'CAP_REACHED' });
+            continue;
+        }
+        try {
+            const result = await client.getLocatorScalars(key);
+            logger.event('get_locator', { key, resolved: result.resolved.length, unresolved: result.unresolved.length });
+            locator_source_results.push(result);
+        } catch (err) {
+            queue(key, err);
+            const notFound = err?.name === 'NoSuchKey' || err?.$metadata?.httpStatusCode === 404 || /not.?found|404/i.test(String(err?.message));
+            locator_object_failures.push({
+                source_object_key: key, specs,
+                group_status: notFound ? 'NOT_FOUND' : 'PARSE_FAILED',
+                reason_code: notFound ? 'OBJECT_NOT_FOUND' : (reasonCodeFor(err) === 'CAP_REACHED' ? 'CAP_REACHED' : 'LOCATOR_VALUE_INVALID'),
+            });
+        }
+    }
 
     // ---- LIST exact prefixes -------------------------------------------------
     for (const prefix of plan.exact_prefixes || []) {
@@ -128,7 +157,8 @@ export async function runReadOnlyAudit(plan, rawBytes, opts = {}) {
     }
 
     return {
-        observations, followup, budget, logger, guard_counters: client.guardCounters(),
+        observations, followup, locator_source_results, locator_object_failures,
+        budget, logger, guard_counters: client.guardCounters(),
         logLines: logger.lines, partial: budget.partial, stop_reasons: budget.stopReasonList(),
     };
 }

@@ -28,6 +28,8 @@ import { makeMinimalReadOnlyS3Client } from './client-factory.mjs';
 import { runReadOnlyAudit } from './harness.mjs';
 import { buildEvidenceFromRun } from './evidence-assembly.mjs';
 import { serializeLogBundle } from './log-bundle.mjs';
+import { buildLocatorArtifact } from './locator-artifact.mjs';
+import { scanLocatorArtifact } from './leak-scanner.mjs';
 
 export const RUN_PLAN_PATH_ENV = 'RC3B_RUN_PLAN_PATH';
 export const ALLOWED_BUCKETS_ENV = 'RC3B_ALLOWED_BUCKETS';
@@ -39,6 +41,7 @@ export const TEMPLATE_POLICY_PATH_ENV = 'RC3B_TEMPLATE_POLICY_PATH';
 export const CARRIER_ROOT_ENV = 'RC3B_CARRIER_ROOT';
 export const EVIDENCE_NAME = 'rc3b-p0b-readonly-evidence.json';
 export const STRUCTURAL_LOG_NAME = 'rc3b-p0b-structural-log.jsonl';
+export const LOCATOR_ARTIFACT_NAME = 'rc3b-p0b-resolved-locators.json';
 
 /**
  * @param {object} env   process.env (or an injected fake in tests)
@@ -118,16 +121,35 @@ export async function runAuthorizedAudit(env, opts = {}) {
     };
     const built = buildEvidenceFromRun(runResult, plan, { run_metadata });
 
+    // Gate 2: no locator artifact write is reachable unless every value-bearing
+    // result came through the opaque same-buffer source-binding path.
+    if (runResult.locator_source_results.some((r) => r.source_binding_status !== 'PASS')) {
+        throw new Error('LOCATOR_SOURCE_MISMATCH -- refusing every artifact write');
+    }
+    const locatorBuilt = buildLocatorArtifact({
+        sourceBoundResults: runResult.locator_source_results,
+        objectFailures: runResult.locator_object_failures,
+        plan, runMetadata: run_metadata,
+    });
+    const locatorScanResult = scanLocatorArtifact(locatorBuilt.artifact);
+    if (!locatorBuilt.schema.valid || !locatorScanResult.pass) {
+        throw new Error(`[RC3B LOCATOR] closed-schema/leak gate failed -- schema=${locatorBuilt.schema.valid} leak=${locatorScanResult.pass}`);
+    }
+
     const outDir = opts.outDir || env.RC3B_OUTPUT_DIR || 'output';
     await fs.mkdir(outDir, { recursive: true });
     const evidencePath = path.join(outDir, EVIDENCE_NAME);
     const logPath = path.join(outDir, STRUCTURAL_LOG_NAME);
+    const locatorArtifactPath = path.join(outDir, LOCATOR_ARTIFACT_NAME);
     await fs.writeFile(evidencePath, JSON.stringify(built.evidence, null, 2), 'utf-8');
     // The structural log is the SAME bytes the evidence log_bundle_sha256 hashes.
     await fs.writeFile(logPath, serializeLogBundle(runResult.logLines), 'utf-8');
+    await fs.writeFile(locatorArtifactPath, JSON.stringify(locatorBuilt.artifact, null, 2), 'utf-8');
 
     return {
-        evidence: built.evidence, evidencePath, logPath, run_metadata,
+        evidence: built.evidence, evidencePath, logPath, locatorArtifactPath,
+        locatorArtifact: locatorBuilt.artifact, locatorSchema: locatorBuilt.schema,
+        locatorScanResult, run_metadata,
         schema: built.schema, scanResult: built.scanResult, runResult,
     };
 }

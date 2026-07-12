@@ -32,12 +32,14 @@ export class Budget {
         this.rejectionReasons = new Set();
         this.counters = {
             listPages: 0, listKeys: 0, headRequests: 0, getMetaRequests: 0,
-            rangeRequests: 0, bytesGetMeta: 0, bytesRange: 0, rejectedBeforeNetwork: 0,
+            getLocatorRequests: 0, locatorValues: 0, locatorValueBytes: 0,
+            rangeRequests: 0, bytesGetMeta: 0, bytesGetLocator: 0, bytesRange: 0, rejectedBeforeNetwork: 0,
         };
         this.touched = new Set();
         // Per-request reserved byte amount (upper bound), reconciled to ACTUAL
         // bytes received by commitGetMetaActualBytes / commitRangeActualBytes.
         this._pendingGetMetaBytes = 0;
+        this._pendingGetLocatorBytes = 0;
         this._pendingRangeBytes = 0;
     }
 
@@ -147,6 +149,48 @@ export class Budget {
         this.counters.bytesGetMeta += (actualBytes - reserved); // adjust down to actual
     }
 
+    reserveGetLocator(objectBytes) {
+        this.ensureRunning();
+        if (objectBytes > this.caps.MAX_GET_META_OBJECT_BYTES) {
+            this.reject('CAP_REACHED', `get-locator object too large (${objectBytes} > ${this.caps.MAX_GET_META_OBJECT_BYTES}) -- refusing body GET after HEAD`);
+        }
+        if (this.counters.getLocatorRequests + 1 > this.caps.MAX_GET_LOCATOR_REQUESTS_PER_RUN) {
+            this.stop('CAP_REACHED');
+            throw new RunStoppedError(`[RC3B BUDGET] get-locator request cap reached (${this.caps.MAX_GET_LOCATOR_REQUESTS_PER_RUN}) -- STOPPED`);
+        }
+        if (this.counters.bytesGetMeta + this.counters.bytesGetLocator + objectBytes > this.caps.MAX_GET_META_TOTAL_BYTES) {
+            this.stop('CAP_REACHED');
+            throw new RunStoppedError(`[RC3B BUDGET] structural body total-bytes cap reached (${this.caps.MAX_GET_META_TOTAL_BYTES}) -- STOPPED`);
+        }
+        this._reserveTotalBytes(objectBytes);
+        this.counters.getLocatorRequests += 1;
+        this.counters.bytesGetLocator += objectBytes;
+        this._pendingGetLocatorBytes = objectBytes;
+    }
+
+    commitGetLocatorActualBytes(actualBytes) {
+        const reserved = this._pendingGetLocatorBytes;
+        this._pendingGetLocatorBytes = 0;
+        if (actualBytes > reserved) this.reject('INTEGRITY_ANOMALY', `get-locator actual bytes ${actualBytes} exceed reserved ${reserved}`);
+        this.counters.bytesGetLocator += (actualBytes - reserved);
+    }
+
+    reserveLocatorValues(rows) {
+        this.ensureRunning();
+        const count = rows.length;
+        const bytes = rows.reduce((n, row) => n + row.value_utf8_bytes, 0);
+        if (rows.some((row) => row.value_utf8_bytes > this.caps.MAX_LOCATOR_VALUE_BYTES_SINGLE)) {
+            this.reject('CAP_REACHED', 'single locator value exceeds immutable byte ceiling');
+        }
+        if (this.counters.locatorValues + count > this.caps.MAX_LOCATOR_VALUES_PER_RUN
+            || this.counters.locatorValueBytes + bytes > this.caps.MAX_LOCATOR_VALUE_BYTES_TOTAL) {
+            this.stop('CAP_REACHED');
+            throw new RunStoppedError('[RC3B BUDGET] locator value cap reached -- STOPPED');
+        }
+        this.counters.locatorValues += count;
+        this.counters.locatorValueBytes += bytes;
+    }
+
     reserveRange(length) {
         this.ensureRunning();
         if (length > this.caps.MAX_SINGLE_RANGE_BYTES) {
@@ -177,7 +221,7 @@ export class Budget {
     }
 
     _reserveTotalBytes(n) {
-        const total = this.counters.bytesGetMeta + this.counters.bytesRange + n;
+        const total = this.counters.bytesGetMeta + this.counters.bytesGetLocator + this.counters.bytesRange + n;
         if (total > this.caps.MAX_BYTES_TOTAL_PER_RUN) {
             this.stop('CAP_REACHED');
             throw new RunStoppedError(`[RC3B BUDGET] cumulative byte cap reached (${total} > ${this.caps.MAX_BYTES_TOTAL_PER_RUN}) -- STOPPED`);

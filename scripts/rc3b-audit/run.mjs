@@ -45,10 +45,12 @@ export {
 };
 
 async function doSelfTest() {
-    const { runSelfTest } = await import('./self-test.mjs');
+    const { runSelfTest, runLocatorSelfTest } = await import('./self-test.mjs');
     const r = await runSelfTest();
+    const locator = await runLocatorSelfTest();
     console.log(`[RC3B-P0B SELF-TEST] ok=${r.ok} checks=${JSON.stringify(r.checks)}`);
-    if (!r.ok) { console.error(`[RC3B-P0B SELF-TEST] schema_errors=${JSON.stringify(r.schema_errors)}`); process.exit(1); }
+    console.log(`[RC3B-P0B LOCATOR SELF-TEST] ok=${locator.ok} checks=${JSON.stringify(locator.checks)}`);
+    if (!r.ok || !locator.ok) { console.error(`[RC3B-P0B SELF-TEST] schema_errors=${JSON.stringify(r.schema_errors)}`); process.exit(1); }
     console.log('[RC3B-P0B SELF-TEST] PASS (offline; no network; no secrets)');
 }
 
@@ -79,8 +81,8 @@ async function doRun(env) {
         return process.exit(2);
     }
     if (result.inert) return inert(result.reason);
-    console.log(`[RC3B-P0B] evidence written: ${result.evidencePath} log: ${result.logPath} schema_valid=${result.schema.valid} leak_pass=${result.scanResult.pass}`);
-    if (!result.schema.valid || !result.scanResult.pass) process.exit(1);
+    console.log(`[RC3B-P0B] evidence written: ${result.evidencePath} log: ${result.logPath} locators: ${result.locatorArtifactPath} schema_valid=${result.schema.valid} leak_pass=${result.scanResult.pass}`);
+    if (!result.schema.valid || !result.scanResult.pass || !result.locatorSchema.valid || !result.locatorScanResult.pass) process.exit(1);
 }
 
 async function doCheckAuthorization(env) {
@@ -107,9 +109,9 @@ async function doCheckAuthorization(env) {
     }
 }
 
-async function doVerifyArtifact(evidencePath, logPath, runPlanPath, templatePolicyPath, env) {
-    if (!evidencePath) { console.error('[RC3B-P0B VERIFY-ARTIFACT] usage: --verify-artifact <evidence.json> [structural-log.jsonl] [run-plan.json] [template-policy.json]'); return process.exit(1); }
-    const r = await verifyArtifact(evidencePath, env, logPath, runPlanPath, templatePolicyPath);
+async function doVerifyArtifact(evidencePath, logPath, runPlanPath, templatePolicyPath, locatorArtifactPath, env) {
+    if (!evidencePath) { console.error('[RC3B-P0B VERIFY-ARTIFACT] usage: --verify-artifact <evidence.json> [structural-log.jsonl] [run-plan.json] [template-policy.json] [resolved-locators.json]'); return process.exit(1); }
+    const r = await verifyArtifact(evidencePath, env, logPath, runPlanPath, templatePolicyPath, locatorArtifactPath);
     console.log(`[RC3B-P0B VERIFY-ARTIFACT] ok=${r.ok} checks=${JSON.stringify(r.checks)}`);
     if (!r.ok) { if (r.errors && r.errors.length) console.error(`[RC3B-P0B VERIFY-ARTIFACT] errors=${JSON.stringify(r.errors)}`); process.exit(1); }
 }
@@ -122,10 +124,10 @@ async function main() {
     if (args.has('--verify-artifact')) {
         const i = argv.indexOf('--verify-artifact');
         const pos = (n) => (argv[i + n] && !argv[i + n].startsWith('--') ? argv[i + n] : undefined);
-        return doVerifyArtifact(pos(1), pos(2), pos(3), pos(4), process.env);
+        return doVerifyArtifact(pos(1), pos(2), pos(3), pos(4), pos(5), process.env);
     }
     if (args.has('--run')) return doRun(process.env);
-    console.log('[RC3B-P0B] usage: run.mjs --self-test | --check-authorization | --verify-artifact <evidence.json> [structural-log.jsonl] [run-plan.json] [template-policy.json] | --run   (default: no-op). Build-only; --run is inert without full authorization.');
+    console.log('[RC3B-P0B] usage: run.mjs --self-test | --check-authorization | --verify-artifact <evidence.json> [structural-log.jsonl] [run-plan.json] [template-policy.json] [resolved-locators.json] | --run   (default: no-op). Build-only; --run is inert without full authorization.');
 }
 
 main().catch((err) => { console.error(`[RC3B-P0B] UNHANDLED: ${String(err?.stack ?? err)}`); process.exit(1); });

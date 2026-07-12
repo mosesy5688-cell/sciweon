@@ -87,5 +87,5 @@ export const AUTHORIZED_ALL_GREEN = [
     'authorized_endpoint_binding',
     // C1A-R1 / B4: independent post-verifier run-identity checks.
     'authorized_carrier_tag', 'authorized_workflow_run_id', 'authorized_workflow_run_attempt',
-    'authorized_tag_ref',
+    'authorized_tag_ref', 'locator_external_join', 'locator_leak_scan',
 ];
