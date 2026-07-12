@@ -14,10 +14,17 @@ import { recomputeArtifactSha256 } from '../../scripts/rc3b-audit/evidence-build
 import { authorizedScenario, runScenario, AUTHORIZED_ALL_GREEN } from './rc3b-authorized-fixtures';
 
 describe('RC-3B-P0B authorized verifier: missing inputs are HARD FAILS (never SKIPPED)', () => {
+    it('a missing resolved-locators path -> FAIL', async () => {
+        const scn = authorizedScenario(); const r = await runScenario(scn);
+        const v = await verifyArtifact(r.evidencePath, scn.env, r.logPath, scn.planPath, scn.policy.path);
+        expect(v.checks.locator_external_join).toBe(false);
+        expect(v.checks.locator_leak_scan).toBe(false);
+        expect(v.ok).toBe(false);
+    });
     it('a missing structural-log path -> FAIL (H4.1)', async () => {
         const scn = authorizedScenario();
         const r = await runScenario(scn);
-        const v = await verifyArtifact(r.evidencePath, scn.env, undefined, scn.planPath, scn.policy.path);
+        const v = await verifyArtifact(r.evidencePath, scn.env, undefined, scn.planPath, scn.policy.path, r.locatorArtifactPath);
         expect(v.checks.log_bundle_sha256).toBe(false);
         expect(v.checks.log_scan_result).toBe(false);
         expect(v.ok).toBe(false);
@@ -26,7 +33,7 @@ describe('RC-3B-P0B authorized verifier: missing inputs are HARD FAILS (never SK
     it('a missing run-plan path -> FAIL (H4.2)', async () => {
         const scn = authorizedScenario();
         const r = await runScenario(scn);
-        const v = await verifyArtifact(r.evidencePath, scn.env, r.logPath, undefined, scn.policy.path);
+        const v = await verifyArtifact(r.evidencePath, scn.env, r.logPath, undefined, scn.policy.path, r.locatorArtifactPath);
         expect(v.checks.authorized_run_plan_sha256).toBe(false);
         expect(v.ok).toBe(false);
     });
@@ -34,7 +41,7 @@ describe('RC-3B-P0B authorized verifier: missing inputs are HARD FAILS (never SK
     it('a missing template-policy path -> FAIL (H4.2b + H4.5)', async () => {
         const scn = authorizedScenario();
         const r = await runScenario(scn);
-        const v = await verifyArtifact(r.evidencePath, scn.env, r.logPath, scn.planPath, undefined);
+        const v = await verifyArtifact(r.evidencePath, scn.env, r.logPath, scn.planPath, undefined, r.locatorArtifactPath);
         expect(v.checks.authorized_template_file_sha256).toBe(false);
         expect(v.checks.authorized_policy_scope).toBe(false);
         expect(v.ok).toBe(false);
@@ -54,7 +61,7 @@ describe('RC-3B-P0B authorized verifier: SYNTHETIC-ONLY policy fails H4.5 (negat
     it('the SAME chain with a SYNTHETIC-ONLY policy fails ONLY on authorized_policy_scope', async () => {
         const scn = authorizedScenario({ policyScope: 'SYNTHETIC-ONLY' });
         const r = await runScenario(scn);
-        const v = await verifyArtifact(r.evidencePath, scn.env, r.logPath, scn.planPath, scn.policy.path);
+        const v = await verifyArtifact(r.evidencePath, scn.env, r.logPath, scn.planPath, scn.policy.path, r.locatorArtifactPath);
         expect(v.checks.authorized_policy_scope).toBe(false);
         expect(v.ok).toBe(false);
         for (const k of AUTHORIZED_ALL_GREEN) {
@@ -70,7 +77,7 @@ function reseal(evPath, mutate) {
     ev.integrity_evidence.artifact_sha256 = recomputeArtifactSha256(ev);
     fs.writeFileSync(evPath, JSON.stringify(ev, null, 2), 'utf-8');
 }
-const verifyId = (scn, r, envOver = {}) => verifyArtifact(r.evidencePath, { ...scn.env, ...envOver }, r.logPath, scn.planPath, scn.policy.path);
+const verifyId = (scn, r, envOver = {}) => verifyArtifact(r.evidencePath, { ...scn.env, ...envOver }, r.logPath, scn.planPath, scn.policy.path, r.locatorArtifactPath);
 
 describe('RC-3B-P0B authorized verifier: INDEPENDENT run-identity (carrier_tag / run_id / attempt / tag_or_ref)', () => {
     it('all exact identity fields aligned -> the four identity checks PASS', async () => {

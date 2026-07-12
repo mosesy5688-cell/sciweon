@@ -32,12 +32,15 @@ import { loadEvidenceSchema } from './evidence-assembly.mjs';
 import { validateDraft07 } from './schema-validate.mjs';
 import { recomputeArtifactSha256 } from './evidence-builder.mjs';
 import { leakPolicySha256 } from './leak-policy.mjs';
-import { scanForbiddenProperties, scanArtifactValues, scanLogs } from './leak-scanner.mjs';
+import { scanForbiddenProperties, scanArtifactValues, scanLogs, scanLocatorArtifact } from './leak-scanner.mjs';
 import { parseLogBundle } from './log-bundle.mjs';
-import { templatePolicyCanonicalSha256 } from './template-policy.mjs';
+import { templatePolicyCanonicalSha256, loadTemplatePolicy } from './template-policy.mjs';
 import { deriveEndpointBinding, resolveAccountId } from './endpoint-binding.mjs';
 import { assertSafeCarrierPath } from './path-safety.mjs';
 import { resolveCarrierRoot } from './carrier-inputs.mjs';
+import { canonicalScalarBytes, LOCATOR_PATTERNS, evaluateCrossFieldTwoPhase } from './locator-extract.mjs';
+import { loadLocatorArtifactSchema, locatorSpecSetSha256, recomputeLocatorArtifactSha256 } from './locator-artifact.mjs';
+import { validateRunManifest } from './run-manifest.mjs';
 
 const HEX64 = /^[0-9a-f]{64}$/;
 
@@ -65,7 +68,161 @@ function sha256(bytes) { return createHash('sha256').update(bytes).digest('hex')
  * @param {string} [templatePolicyPath]  the EXACT template-policy file (authorized-mode rehash)
  * @returns {Promise<{ok:boolean, checks:object, errors:string[]}>}
  */
-export async function verifyArtifact(evidenceOrPath, env = process.env, logPath, runPlanPath, templatePolicyPath) {
+function readJson(value) { return typeof value === 'string' ? JSON.parse(fs.readFileSync(value, 'utf-8')) : value; }
+function sameJson(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+
+function expectedIdentity(rm) {
+    return {
+        bucket: rm.bucket, r2_endpoint_or_account_binding: rm.r2_endpoint_or_account_binding,
+        carrier_tag: rm.carrier_tag, workflow_run_id: String(rm.workflow_run_id),
+        workflow_run_attempt: rm.workflow_run_attempt, commit_sha: rm.commit_sha,
+        tag_or_ref: rm.tag_or_ref, mode: rm.mode,
+    };
+}
+
+function expectedAuthorization(rm) {
+    return {
+        materialized_run_plan_sha256: rm.materialized_run_plan_sha256,
+        template_allowlist_sha256: rm.template_allowlist_sha256,
+        materialized_allowlist_sha256: rm.materialized_allowlist_sha256,
+        authorized_harness_sha: rm.authorized_harness_sha,
+        authorized_run_plan_sha256: rm.authorized_run_plan_sha256,
+        authorized_template_file_sha256: rm.authorized_template_file_sha256,
+        authorized_endpoint_or_account_binding: rm.authorized_endpoint_or_account_binding,
+    };
+}
+
+function derivedShape(group, specs, rows) {
+    const shapes = new Set(specs.map((s) => s.pointer_shape));
+    if (shapes.size === 1 && shapes.has('cursor_v1')) return 'cursor_v1';
+    if (group.group_status !== 'PASS') return null;
+    const byId = new Map(specs.map((s) => [s.spec_id, s]));
+    const layout = rows.find((r) => byId.get(r.spec_id)?.field_path === 'layout_version');
+    if (layout?.normalized_scalar_value === 'immutable_snapshot_v2') return 'immutable_snapshot_v2';
+    if (rows.some((r) => byId.get(r.spec_id)?.pointer_shape === 'legacy_v1')) return 'legacy_v1';
+    return null;
+}
+
+export function verifyLocatorArtifact(locatorOrPath, { plan, templatePolicy, evidence } = {}) {
+    const errors = []; const checks = {};
+    let artifact;
+    try { artifact = readJson(locatorOrPath); } catch (e) { return { ok: false, checks: { V0: false }, errors: [`locator artifact unreadable: ${e.message}`] }; }
+    const specs = plan?.structural_locator_specs || [];
+    const specById = new Map(specs.map((s) => [s.spec_id, s]));
+    const rm = evidence?.run_metadata || {};
+
+    const schema = validateDraft07(loadLocatorArtifactSchema(), artifact);
+    checks.V0 = !!plan && !!templatePolicy && !!evidence
+        && validateRunManifest(plan, { allowedBuckets: [plan.bucket], templatePolicy }).admissible;
+    checks.schema = schema.valid;
+    checks.integrity = recomputeLocatorArtifactSha256(artifact) === artifact?.integrity?.artifact_sha256;
+    checks.spec_set_hash = artifact?.locator_spec_set_sha256 === locatorSpecSetSha256(specs);
+
+    const groups = artifact?.object_group_results || [];
+    const expectedKeys = [...new Set(specs.map((s) => s.key))].sort();
+    const groupKeys = groups.map((g) => g.source_object_key);
+    checks.V1 = groups.length === expectedKeys.length && new Set(groupKeys).size === groupKeys.length
+        && sameJson([...groupKeys].sort(), expectedKeys);
+
+    const resolved = artifact?.resolved_locators || [];
+    const unresolved = artifact?.unresolved_locators || [];
+    const allRows = [...resolved, ...unresolved];
+    const rowIds = allRows.map((r) => r.spec_id);
+    checks.V4 = allRows.every((r) => specById.has(r.spec_id));
+    checks.V5 = new Set(rowIds).size === rowIds.length;
+    checks.V6 = !resolved.some((r) => unresolved.some((u) => u.spec_id === r.spec_id));
+
+    const applicable = [];
+    let groupCountsOk = true; let applicabilityOk = true;
+    for (const group of groups) {
+        const keySpecs = specs.filter((s) => s.key === group.source_object_key);
+        const groupRows = allRows.filter((r) => r.source_object_key === group.source_object_key);
+        const shape = derivedShape(group, keySpecs, groupRows);
+        const cursorOnly = keySpecs.length && keySpecs.every((s) => s.pointer_shape === 'cursor_v1');
+        if (group.selected_pointer_shape !== shape
+            || group.applicability_status !== (shape || cursorOnly ? 'RESOLVED' : 'UNRESOLVED')) applicabilityOk = false;
+        const selected = shape ? keySpecs.filter((s) => s.pointer_shape === shape) : keySpecs;
+        applicable.push(...selected);
+        const requiredIds = new Set(selected.filter((s) => s.required).map((s) => s.spec_id));
+        const rr = resolved.filter((r) => r.source_object_key === group.source_object_key && requiredIds.has(r.spec_id)).length;
+        const ur = unresolved.filter((r) => r.source_object_key === group.source_object_key && requiredIds.has(r.spec_id)).length;
+        if (group.required_spec_count !== requiredIds.size || group.resolved_spec_count !== rr || group.unresolved_spec_count !== ur) groupCountsOk = false;
+        if (groupRows.some((r) => !keySpecs.some((s) => s.spec_id === r.spec_id))) groupCountsOk = false;
+    }
+    checks.V1 = checks.V1 && applicabilityOk && groupCountsOk;
+
+    const required = applicable.filter((s) => s.required);
+    checks.V2 = required.every((s) => rowIds.filter((id) => id === s.spec_id).length === 1);
+    checks.V3 = required.every((s) => (resolved.some((r) => r.spec_id === s.spec_id) ? 1 : 0)
+        + (unresolved.some((r) => r.spec_id === s.spec_id) ? 1 : 0) === 1);
+
+    checks.V7 = resolved.every((row) => {
+        const s = specById.get(row.spec_id);
+        return !!s && row.source_object_key === s.key && row.field_path === s.field_path
+            && row.pointer_shape === s.pointer_shape && row.semantic_type === s.semantic_type
+            && row.scalar_type === s.scalar_type && row.admitted === true;
+    });
+    checks.V8 = resolved.every((r) => (r.scalar_type === 'string' && typeof r.normalized_scalar_value === 'string')
+        || (r.scalar_type === 'integer' && Number.isSafeInteger(r.normalized_scalar_value) && !Object.is(r.normalized_scalar_value, -0)));
+    checks.V9 = resolved.every((r) => {
+        try { const b = canonicalScalarBytes(r.normalized_scalar_value, r.scalar_type); return b.length === r.value_utf8_bytes && b.length <= specById.get(r.spec_id).max_utf8_bytes; }
+        catch { return false; }
+    });
+    checks.V10 = resolved.every((r) => {
+        try {
+            const b = canonicalScalarBytes(r.normalized_scalar_value, r.scalar_type);
+            return createHash('sha256').update(b).digest('hex') === r.value_sha256;
+        } catch { return false; }
+    });
+    checks.V11 = resolved.every((r) => {
+        const p = LOCATOR_PATTERNS[specById.get(r.spec_id)?.value_pattern_id];
+        return !!p && p.test(r.normalized_scalar_value);
+    });
+
+    let crossOk = true;
+    for (const key of expectedKeys) {
+        const rows = resolved.filter((r) => r.source_object_key === key);
+        const candidates = new Map(rows.map((r) => [r.field_path, r.normalized_scalar_value]));
+        const phase = [];
+        for (const r of rows) {
+            const spec = specById.get(r.spec_id);
+            if (!spec) { crossOk = false; continue; }
+            try { phase.push({ spec, value: r.normalized_scalar_value, bytes: canonicalScalarBytes(r.normalized_scalar_value, r.scalar_type) }); }
+            catch { crossOk = false; }
+        }
+        const evaluated = evaluateCrossFieldTwoPhase(phase.map((x) => x.spec), phase, candidates);
+        if (evaluated.unresolved.length) crossOk = false;
+    }
+    checks.V12 = crossOk;
+    checks.V13 = expectedKeys.every((key) => {
+        const rows = resolved.filter((r) => r.source_object_key === key);
+        return rows.length < 2 || rows.every((r) => r.source_etag === rows[0].source_etag
+            && r.source_byte_length === rows[0].source_byte_length && r.source_byte_sha256 === rows[0].source_byte_sha256);
+    });
+
+    const requiredIds = new Set(required.map((s) => s.spec_id));
+    const derivedCoverage = {
+        applicable_spec_count: applicable.length,
+        resolved_required_count: resolved.filter((r) => requiredIds.has(r.spec_id)).length,
+        unresolved_required_count: unresolved.filter((r) => requiredIds.has(r.spec_id)).length,
+        optional_absent_count: applicable.filter((s) => !s.required && !rowIds.includes(s.spec_id)).length,
+    };
+    const hardFailure = groups.some((g) => g.group_status !== 'PASS')
+        || unresolved.some((r) => r.reason_code === 'LOCATOR_SOURCE_MISMATCH');
+    const derivedStatus = hardFailure ? 'FAILED' : (derivedCoverage.unresolved_required_count ? 'PARTIAL' : 'COMPLETE');
+    checks.V14 = sameJson(artifact.coverage, derivedCoverage) && artifact.artifact_status === derivedStatus
+        && !(required.length && rowIds.length === 0 && artifact.artifact_status === 'COMPLETE');
+    checks.V15 = derivedCoverage.unresolved_required_count === 0 || artifact.artifact_status !== 'COMPLETE';
+    checks.V16 = sameJson(artifact.run_identity, expectedIdentity(rm)) && sameJson(artifact.authorization, expectedAuthorization(rm));
+    checks.V17 = !resolved.some((r) => unresolved.some((u) => u.spec_id === r.spec_id && u.reason_code === 'LOCATOR_SOURCE_MISMATCH'))
+        && (!unresolved.some((r) => r.reason_code === 'LOCATOR_SOURCE_MISMATCH') || artifact.artifact_status === 'FAILED');
+
+    for (const [name, pass] of Object.entries(checks)) if (!pass) errors.push(`${name} failed`);
+    if (!schema.valid) errors.push(...schema.errors);
+    return { ok: Object.values(checks).every(Boolean), checks, errors, derived: { coverage: derivedCoverage, artifact_status: derivedStatus } };
+}
+
+export async function verifyArtifact(evidenceOrPath, env = process.env, logPath, runPlanPath, templatePolicyPath, locatorArtifactPath) {
     const errors = [];
     const evidence = typeof evidenceOrPath === 'string'
         ? JSON.parse(fs.readFileSync(evidenceOrPath, 'utf-8'))
@@ -86,6 +243,9 @@ export async function verifyArtifact(evidenceOrPath, env = process.env, logPath,
     const tpBytes = authorized ? safeFileBytes(templatePolicyPath, rootDir) : null;
     let tpParsed = null;
     if (tpBytes != null) { try { tpParsed = JSON.parse(tpBytes.toString('utf-8')); } catch { tpParsed = null; } }
+    const rpBytesForJoin = runPlanPath ? safeFileBytes(runPlanPath, rootDir) : null;
+    let rpParsed = null;
+    if (rpBytesForJoin != null) { try { rpParsed = JSON.parse(rpBytesForJoin.toString('utf-8')); } catch { rpParsed = null; } }
 
     // ---- STRUCTURAL checks (always run) -------------------------------------
     const schemaVal = validateDraft07(loadEvidenceSchema(), evidence);
@@ -166,7 +326,7 @@ export async function verifyArtifact(evidenceOrPath, env = process.env, logPath,
             && rm.authorized_harness_sha === env.RC3B_AUTHORIZED_HARNESS_SHA;
 
         // H4.2: re-read + rehash the EXACT run-plan FILE (path-safe).
-        const rpBytes = safeFileBytes(runPlanPath, rootDir);
+        const rpBytes = rpBytesForJoin;
         const rpSha = rpBytes != null ? sha256(rpBytes) : null;
         checks.authorized_run_plan_sha256 = rpSha != null
             && rpSha === env.RC3B_AUTHORIZED_RUN_PLAN_SHA256
@@ -198,6 +358,35 @@ export async function verifyArtifact(evidenceOrPath, env = process.env, logPath,
         checks.authorized_tag_ref = rm.tag_or_ref === env.GITHUB_REF
             && env.GITHUB_REF_TYPE === 'tag'
             && env.GITHUB_REF_NAME === env.RC3B_AUTHORIZED_CARRIER_TAG;
+    }
+
+    // Gate 3 runs only AFTER the raw plan/template authorization-anchor checks
+    // above have been independently recomputed (V0 fail-first ordering).
+    if (locatorArtifactPath) {
+        let locator = null;
+        try {
+            const bytes = authorized ? safeFileBytes(locatorArtifactPath, rootDir) : fs.readFileSync(locatorArtifactPath);
+            locator = bytes ? JSON.parse(bytes.toString('utf-8')) : null;
+        } catch { locator = null; }
+        const anchorsPass = !authorized || (checks.authorized_run_plan_sha256 === true && checks.authorized_template_file_sha256 === true);
+        if (anchorsPass && locator && rpParsed && (tpParsed || !authorized)) {
+            const lv = verifyLocatorArtifact(locator, {
+                plan: rpParsed, templatePolicy: tpParsed || (templatePolicyPath ? JSON.parse(fs.readFileSync(templatePolicyPath, 'utf-8')) : loadTemplatePolicy()),
+                evidence,
+            });
+            checks.locator_external_join = lv.ok;
+            checks.locator_leak_scan = scanLocatorArtifact(locator).pass;
+            if (!lv.ok) errors.push(...lv.errors.map((e) => `locator:${e}`));
+        } else {
+            checks.locator_external_join = false;
+            checks.locator_leak_scan = false;
+        }
+    } else if (authorized) {
+        checks.locator_external_join = false;
+        checks.locator_leak_scan = false;
+    } else {
+        checks.locator_external_join = 'SKIPPED';
+        checks.locator_leak_scan = 'SKIPPED';
     }
 
     // H4.4: authorized mode requires EVERY check === true (any 'SKIPPED' or false

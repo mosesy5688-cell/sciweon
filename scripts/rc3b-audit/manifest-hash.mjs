@@ -16,6 +16,7 @@
  */
 
 import { createHash } from 'crypto';
+import { canonicalLocatorSpecs } from './locator-extract.mjs';
 
 function sha256Hex(str) { return createHash('sha256').update(Buffer.from(str, 'utf-8')).digest('hex'); }
 
@@ -57,6 +58,7 @@ export function canonicalRunPlan(plan) {
         object_class_map: canonicalObjectClassMap(plan),
         allowed_object_classes: [...(plan.allowed_object_classes || [])].sort(),
         snapshot_ids: [...(plan.snapshot_ids || [])].sort(),
+        structural_locator_specs: canonicalLocatorSpecs(plan.structural_locator_specs || []),
         caps: plan.caps || {},
         template_allowlist_sha256: plan.template_allowlist_sha256 ?? null,
         record_spec_ref: plan.record_spec_ref ?? null,

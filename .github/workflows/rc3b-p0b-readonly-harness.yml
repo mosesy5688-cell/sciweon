@@ -110,13 +110,13 @@ jobs:
       - name: Install dependencies (lock-file enforced)
         run: |
           if [ -f package-lock.json ]; then npm ci; else npm install; fi
-      - name: Run READ-ONLY R2 audit (fails closed; writes evidence + structural log)
+      - name: Run READ-ONLY R2 audit (fails closed; writes evidence + structural log + locators)
         run: node scripts/rc3b-audit/run.mjs --run
       - name: Verify produced evidence artifact + structural-log + run-plan + template-policy (independent rehash)
-        run: node scripts/rc3b-audit/run.mjs --verify-artifact output/rc3b-p0b-readonly-evidence.json output/rc3b-p0b-structural-log.jsonl "$RC3B_RUN_PLAN_PATH" "${RC3B_TEMPLATE_POLICY_PATH:-scripts/rc3b-audit/template-policy.json}"
+        run: node scripts/rc3b-audit/run.mjs --verify-artifact output/rc3b-p0b-readonly-evidence.json output/rc3b-p0b-structural-log.jsonl "$RC3B_RUN_PLAN_PATH" "${RC3B_TEMPLATE_POLICY_PATH:-scripts/rc3b-audit/template-policy.json}" output/rc3b-p0b-resolved-locators.json
       - name: Validate evidence schema + leak scan (belt-and-braces)
         run: node scripts/rc3b-audit/run.mjs --self-test
-      - name: Upload evidence artifact + structural log bundle
+      - name: Upload evidence artifact + structural log + resolved locators
         if: always()
         uses: actions/upload-artifact@0b2256b8c012f0828dc542b3febcab082c67f72b  # v4.3.4 (pinned)
         with:
@@ -124,5 +124,6 @@ jobs:
           path: |
             output/rc3b-p0b-readonly-evidence.json
             output/rc3b-p0b-structural-log.jsonl
+            output/rc3b-p0b-resolved-locators.json
           retention-days: 90
           if-no-files-found: warn

@@ -1,0 +1,226 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "RC3B_C3_R2_LOCATOR_ARTIFACT_SCHEMA_v0.1",
+  "title": "RC-3B-P0B GET_LOCATOR design: template_locator_rule + structural_locator_spec + resolved-locators artifact (closed)",
+  "description": "LOCAL governance DESIGN artifact (governance tree), NOT repo code. Authorized 2026-07-11 UTC; executed/completed 2026-07-12 UTC. Revised under RC-3B-P0B-C3-R2-R1 then C3-R2-R2 then C3-R2-R3 (final implementation-spec reconciliation; governance date 2026-07-12 UTC). MUST NOT be copied into the repository under this gate. Mirrors evidence-schema.json's closed style: every object sets additionalProperties=false. A value appears in exactly ONE place -- resolved_locators[].normalized_scalar_value -- and only after it has passed a TEMPLATE locator_rule (deny-by-default), the run-plan spec (which may only equal or narrow that rule), the field-path + scalar-type + length-cap + committed-semantic-regex + segment-safe + cross-field gates in GET_LOCATOR, AND a verifier external join. GET_META stays value-free and unchanged. Grants no R2 access.",
+  "$defs": {
+    "sha256_hex": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "semantic_type": {
+      "type": "string",
+      "description": "RUN_ID + RUN_ATTEMPT REMOVED under C3-R2-R1 (Blocker 8: producer-provenance, not first-round objective; schema/inventory disagreed on RUN_ATTEMPT type). Re-add only via a separate design gate.",
+      "enum": ["LAYOUT_VERSION", "SNAPSHOT_ID", "OBJECT_PREFIX", "MANIFEST_KEY", "OBJECT_KEY", "RELEASE_TOKEN", "SNAPSHOT_DATE", "SHA256_HEX", "RECORD_COUNT"]
+    },
+    "value_pattern_id": {
+      "type": "string",
+      "description": "identifier into the COMMITTED regex registry in C1B code; the regex text is NEVER supplied at dispatch",
+      "enum": ["LAYOUT_VERSION_V2", "SNAPSHOT_ID_V2", "OBJECT_PREFIX_V2", "MANIFEST_KEY_PATHSAFE", "R2_DATA_KEY_PATHSAFE", "RELEASE_TOKEN_SEGMENT", "ISO_DATE", "SHA256_HEX", "NONNEG_INTEGER"]
+    },
+    "scalar_type": {"type": "string", "enum": ["string", "integer"], "description": "boolean REMOVED under C3-R2-R2 (Blocker 5: no first-round boolean objective; ambiguous canonical bytes)"},
+    "pointer_shape": {"type": "string", "enum": ["immutable_snapshot_v2", "legacy_v1", "cursor_v1"]},
+    "normalization_rule": {"type": "string", "enum": ["NONE", "TRIM", "ENSURE_TRAILING_SLASH", "LOWERCASE_HEX"]},
+    "cross_field_rule_id": {
+      "type": "string",
+      "description": "generic traversal/prefix rules PLUS source-specific derived-key equalities (Blocker 3): a first-use OBJECT_KEY locator must satisfy its exact producer contract, not merely be traversal-free.",
+      "enum": ["OBJECT_PREFIX_EQUALS_SNAPSHOTS_PLUS_ID", "OBJECT_PREFIX_STARTS_SNAPSHOTS_ENDS_SLASH", "PATH_SEGMENTS_SAFE", "SNAPSHOT_ID_MATCHES_IMMUTABLE_IDENTITY", "MANIFEST_KEY_UNDER_OBJECT_PREFIX", "COMPOUNDS_MANIFEST_EQUALS_FIXED_SUFFIX", "UMLS_MESH_KEY_EQUALS_RELEASE_PATH", "UMLS_SNOMED_KEY_EQUALS_RELEASE_PATH", "UMLS_LOINC_KEY_EQUALS_RELEASE_PATH", "FDA_SRS_KEY_EQUALS_RELEASE_DATE_PATH", "RELEASE_TOKEN_SINGLE_SEGMENT", "LAYOUT_SELECTS_SPEC_SET"]
+    },
+    "artifact_status": {"type": "string", "enum": ["COMPLETE", "PARTIAL", "FAILED"], "description": "VERIFIER-derived only; a builder may NOT self-report COMPLETE"},
+    "object_group_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Blocker 3(R3): per-object-key applicability. For snapshots/latest.json an unreadable/ambiguous object => applicability_status UNRESOLVED + selected_pointer_shape null + group FAILED + whole artifact FAILED; v2 and legacy are NEVER both applicable. Cursor objects are always cursor_v1 and may report diagnostics but cannot restore COMPLETE.",
+      "required": ["source_object_key", "applicability_status", "selected_pointer_shape", "group_status", "required_spec_count", "resolved_spec_count", "unresolved_spec_count"],
+      "properties": {
+        "source_object_key": {"type": "string", "minLength": 1, "maxLength": 256},
+        "applicability_status": {"type": "string", "enum": ["RESOLVED", "UNRESOLVED"]},
+        "selected_pointer_shape": {"type": ["string", "null"], "enum": ["immutable_snapshot_v2", "legacy_v1", "cursor_v1", null]},
+        "group_status": {"type": "string", "enum": ["PASS", "NOT_FOUND", "PARSE_FAILED", "DUPLICATE_KEY", "LAYOUT_INVALID"]},
+        "required_spec_count": {"type": "integer", "minimum": 0},
+        "resolved_spec_count": {"type": "integer", "minimum": 0},
+        "unresolved_spec_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "template_get_locator_family": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Blocker 2: a GET_LOCATOR family binds an EXACT object key (NOT key_prefix/key_suffixes). matchFamily for GET_LOCATOR MUST require plan spec.key === family.exact_key; startsWith+suffix does NOT authorize GET_LOCATOR. exact_key + locator_rules are canonical-hashed. One family = one exact key + its locator_rules[].",
+      "required": ["family_id", "operation", "exact_key", "object_class", "locator_rules"],
+      "properties": {
+        "family_id": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{3,96}$"},
+        "operation": {"type": "string", "const": "GET_LOCATOR"},
+        "exact_key": {"type": "string", "minLength": 1, "maxLength": 256},
+        "object_class": {"type": "string", "const": "STRUCTURAL_JSON"},
+        "locator_rules": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/template_locator_rule"}}
+      }
+    },
+    "template_locator_rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Blocker 1/8: the DENY-BY-DEFAULT unit on a GET_LOCATOR family (bound into the template canonical + raw-file hashes). A run-plan structural_locator_spec may only EQUAL or strictly NARROW one rule; requiredness is MONOTONIC (R.required=true => S.required MUST stay true; R.required=false => S may be false or true). Unique by (exact_key, pointer_shape, field_path).",
+      "required": ["field_path", "semantic_type", "scalar_type", "value_pattern_id", "normalization", "max_utf8_bytes", "required", "pointer_shape", "cross_field_rules"],
+      "properties": {
+        "field_path": {"type": "string", "pattern": "^[A-Za-z0-9_]{1,64}$", "not": {"enum": ["__proto__", "constructor", "prototype", "hasOwnProperty"]}},
+        "semantic_type": {"$ref": "#/$defs/semantic_type"},
+        "scalar_type": {"$ref": "#/$defs/scalar_type"},
+        "value_pattern_id": {"$ref": "#/$defs/value_pattern_id"},
+        "normalization": {"$ref": "#/$defs/normalization_rule"},
+        "max_utf8_bytes": {"type": "integer", "minimum": 1, "maximum": 512},
+        "required": {"type": "boolean", "description": "Blocker 1: monotonic -- a run-plan spec may promote optional->required but NEVER downgrade required->optional"},
+        "pointer_shape": {"$ref": "#/$defs/pointer_shape"},
+        "cross_field_rules": {"type": "array", "items": {"$ref": "#/$defs/cross_field_rule_id"}, "uniqueItems": true}
+      }
+    },
+    "structural_locator_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "one plan-embedded locator spec; must EQUAL-OR-NARROW exactly one template_locator_rule (checkLocatorSpecs). Bound into canonicalRunPlan.",
+      "required": ["spec_id", "key", "field_path", "semantic_type", "value_pattern_id", "scalar_type", "max_utf8_bytes", "required", "pointer_shape", "normalization", "cross_field_rules"],
+      "properties": {
+        "spec_id": {"type": "string", "pattern": "^[A-Z0-9_]{3,64}$"},
+        "key": {"type": "string", "description": "EXACT committed object key (no wildcard, no template placeholder)", "minLength": 1, "maxLength": 256},
+        "field_path": {"type": "string", "description": "EXACT top-level scalar property name; own-property only; NO dots/wildcards/JSONPath/brackets", "pattern": "^[A-Za-z0-9_]{1,64}$", "not": {"enum": ["__proto__", "constructor", "prototype", "hasOwnProperty"]}},
+        "semantic_type": {"$ref": "#/$defs/semantic_type"},
+        "value_pattern_id": {"$ref": "#/$defs/value_pattern_id"},
+        "scalar_type": {"$ref": "#/$defs/scalar_type"},
+        "max_utf8_bytes": {"type": "integer", "minimum": 1, "maximum": 512},
+        "required": {"type": "boolean"},
+        "pointer_shape": {"$ref": "#/$defs/pointer_shape"},
+        "normalization": {"$ref": "#/$defs/normalization_rule"},
+        "cross_field_rules": {"type": "array", "items": {"$ref": "#/$defs/cross_field_rule_id"}, "uniqueItems": true}
+      }
+    },
+    "resolved_locator": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "one ADMITTED locator. scalar_type MUST equal the JSON type of normalized_scalar_value (allOf below). source integrity split into three fields. The verifier independently recomputes value_utf8_bytes + value_sha256 and joins every field to the authorized spec (V7-V13).",
+      "required": ["spec_id", "semantic_type", "source_object_key", "source_etag", "source_byte_length", "source_byte_sha256", "field_path", "pointer_shape", "scalar_type", "admitted", "value_utf8_bytes", "value_sha256", "normalized_scalar_value"],
+      "properties": {
+        "spec_id": {"type": "string", "pattern": "^[A-Z0-9_]{3,64}$"},
+        "semantic_type": {"$ref": "#/$defs/semantic_type"},
+        "source_object_key": {"type": "string", "minLength": 1, "maxLength": 256},
+        "source_etag": {"type": "string", "minLength": 1, "maxLength": 128, "description": "the GET response ETag this run (HEAD ETag is a consistency cross-check, NOT the value source)"},
+        "source_byte_length": {"type": "integer", "minimum": 0, "description": "the exact collected GET Buffer length; HEAD ContentLength is an INDEPENDENT consistency gate (must equal), NOT the value source"},
+        "source_byte_sha256": {"$ref": "#/$defs/sha256_hex", "description": "sha256 of the SAME collected GET Buffer; verifier checks all rows from one object agree"},
+        "field_path": {"type": "string", "pattern": "^[A-Za-z0-9_]{1,64}$", "not": {"enum": ["__proto__", "constructor", "prototype", "hasOwnProperty"]}},
+        "pointer_shape": {"$ref": "#/$defs/pointer_shape"},
+        "scalar_type": {"$ref": "#/$defs/scalar_type"},
+        "admitted": {"type": "boolean", "const": true},
+        "value_utf8_bytes": {"type": "integer", "minimum": 0, "maximum": 512, "description": "verifier RECOMPUTES from normalized_scalar_value; a false value fails V9"},
+        "value_sha256": {"$ref": "#/$defs/sha256_hex", "description": "verifier RECOMPUTES; a false value fails V10"},
+        "normalized_scalar_value": {"description": "the admitted scalar; per-semantic-type + per-scalar_type constrained below", "type": ["string", "integer"], "maxLength": 512}
+      },
+      "allOf": [
+        {"if": {"properties": {"scalar_type": {"const": "string"}}}, "then": {"properties": {"normalized_scalar_value": {"type": "string"}}}},
+        {"if": {"properties": {"scalar_type": {"const": "integer"}}}, "then": {"properties": {"normalized_scalar_value": {"type": "integer"}}}},
+        {"if": {"properties": {"semantic_type": {"const": "OBJECT_PREFIX"}}},
+         "then": {"properties": {"normalized_scalar_value": {"type": "string", "pattern": "^(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)snapshots/[0-9A-Za-z._/-]+/$"}}}},
+        {"if": {"properties": {"semantic_type": {"const": "SNAPSHOT_ID"}}},
+         "then": {"properties": {"normalized_scalar_value": {"type": "string", "pattern": "^(?!.*(?:^|/)\\.{1,2}(?:/|$))[0-9A-Za-z._-]+/[0-9A-Za-z._-]+$"}}}},
+        {"if": {"properties": {"semantic_type": {"const": "MANIFEST_KEY"}}},
+         "then": {"properties": {"normalized_scalar_value": {"type": "string", "pattern": "^(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)snapshots/[0-9A-Za-z._/-]+$"}}}},
+        {"if": {"properties": {"semantic_type": {"const": "OBJECT_KEY"}}},
+         "then": {"properties": {"normalized_scalar_value": {"type": "string", "pattern": "^(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!/)[0-9A-Za-z._/-]{1,256}$"}}}},
+        {"if": {"properties": {"semantic_type": {"const": "SHA256_HEX"}}},
+         "then": {"properties": {"normalized_scalar_value": {"$ref": "#/$defs/sha256_hex"}}}},
+        {"if": {"properties": {"semantic_type": {"const": "RELEASE_TOKEN"}}},
+         "then": {"properties": {"normalized_scalar_value": {"type": "string", "pattern": "^(?!\\.\\.?$)(?!.*\\.\\.)[0-9A-Za-z._-]{1,64}$"}}}},
+        {"if": {"properties": {"semantic_type": {"const": "SNAPSHOT_DATE"}}},
+         "then": {"properties": {"normalized_scalar_value": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}}}},
+        {"if": {"properties": {"semantic_type": {"const": "LAYOUT_VERSION"}}},
+         "then": {"properties": {"normalized_scalar_value": {"type": "string", "enum": ["immutable_snapshot_v2"]}}}},
+        {"if": {"properties": {"semantic_type": {"const": "RECORD_COUNT"}}},
+         "then": {"properties": {"normalized_scalar_value": {"type": "integer", "minimum": 0}}}}
+      ]
+    },
+    "unresolved_locator": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "a REQUIRED spec that could not be admitted; carries NO raw value -- only a controlled reason code",
+      "required": ["spec_id", "source_object_key", "reason_code"],
+      "properties": {
+        "spec_id": {"type": "string", "pattern": "^[A-Z0-9_]{3,64}$"},
+        "source_object_key": {"type": "string", "minLength": 1, "maxLength": 256},
+        "reason_code": {"type": "string", "enum": ["LOCATOR_VALUE_INVALID", "LOCATOR_FIELD_ABSENT", "LOCATOR_LAYOUT_INVALID", "LOCATOR_TYPE_MISMATCH", "LOCATOR_OVERLENGTH", "LOCATOR_CROSS_FIELD_FAIL", "LOCATOR_SEGMENT_INVALID", "LOCATOR_JSON_DUPLICATE_KEY", "LOCATOR_SOURCE_MISMATCH", "LOCATOR_DEPENDENCY_INVALID", "OBJECT_NOT_FOUND", "CAP_REACHED"]}
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_id", "run_identity", "authorization", "locator_spec_set_sha256", "artifact_status", "coverage", "object_group_results", "resolved_locators", "unresolved_locators", "integrity"],
+  "properties": {
+    "schema_id": {"type": "string", "const": "RC3B_C3_R2_LOCATOR_ARTIFACT_SCHEMA_v0.1"},
+    "run_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bucket", "r2_endpoint_or_account_binding", "carrier_tag", "workflow_run_id", "workflow_run_attempt", "commit_sha", "tag_or_ref", "mode"],
+      "properties": {
+        "bucket": {"type": "string", "minLength": 1},
+        "r2_endpoint_or_account_binding": {"$ref": "#/$defs/sha256_hex"},
+        "carrier_tag": {"type": "string", "minLength": 1},
+        "workflow_run_id": {"type": "string", "pattern": "^[0-9]+$"},
+        "workflow_run_attempt": {"type": "integer", "const": 1},
+        "commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "tag_or_ref": {"type": "string", "pattern": "^refs/tags/.+$"},
+        "mode": {"type": "string", "const": "READ-ONLY-R2"}
+      }
+    },
+    "authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["materialized_run_plan_sha256", "template_allowlist_sha256", "materialized_allowlist_sha256", "authorized_harness_sha", "authorized_run_plan_sha256", "authorized_template_file_sha256", "authorized_endpoint_or_account_binding"],
+      "properties": {
+        "materialized_run_plan_sha256": {"$ref": "#/$defs/sha256_hex"},
+        "template_allowlist_sha256": {"$ref": "#/$defs/sha256_hex", "description": "covers the template families INCLUDING their locator_rules (Blocker 1)"},
+        "materialized_allowlist_sha256": {"$ref": "#/$defs/sha256_hex"},
+        "authorized_harness_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "authorized_run_plan_sha256": {"$ref": "#/$defs/sha256_hex"},
+        "authorized_template_file_sha256": {"$ref": "#/$defs/sha256_hex"},
+        "authorized_endpoint_or_account_binding": {"$ref": "#/$defs/sha256_hex"}
+      }
+    },
+    "locator_spec_set_sha256": {"$ref": "#/$defs/sha256_hex", "description": "canonical hash of the sorted structural_locator_specs bound in the run plan; MUST equal the plan's"},
+    "artifact_status": {"$ref": "#/$defs/artifact_status"},
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "VERIFIER-derived (V1-V6, V14): the join between the artifact and the applicable authorized spec set; a builder self-report is overwritten by the verifier",
+      "required": ["applicable_spec_count", "resolved_required_count", "unresolved_required_count", "optional_absent_count"],
+      "properties": {
+        "applicable_spec_count": {"type": "integer", "minimum": 0},
+        "resolved_required_count": {"type": "integer", "minimum": 0},
+        "unresolved_required_count": {"type": "integer", "minimum": 0},
+        "optional_absent_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "object_group_results": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/object_group_result"}},
+    "resolved_locators": {"type": "array", "items": {"$ref": "#/$defs/resolved_locator"}},
+    "unresolved_locators": {"type": "array", "items": {"$ref": "#/$defs/unresolved_locator"}},
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_sha256"],
+      "properties": {
+        "artifact_sha256": {"$ref": "#/$defs/sha256_hex", "description": "sha256 over the artifact with this one field excluded; independently recomputable by a verifier"}
+      }
+    }
+  },
+  "_design_notes": {
+    "_comment": "properties prefixed with _ are DESIGN annotations, not part of the runtime schema contract. Authorized 2026-07-11 UTC / executed 2026-07-12 UTC. Revised under C3-R2-R1.",
+    "three_gate_closure": "safety does NOT rest on the Founder reading a run-plan hash. Gate 1 = template EXACT-KEY deny-by-default (family.exact_key + hash-bound locator_rules; a run-plan spec may only EQUAL or NARROW a rule; requiredness monotonic). Gate 2 = the IN-RUN source-binding gate (re-extract from the retained raw bytes + byte-for-byte compare; unskippable branded SourceBoundLocatorResult). Gate 3 = the OFFLINE verifier external join V0-V17 (every artifact row equals an authorized applicable spec; bytes/hash recomputed).",
+    "artifact_status_verifier_derived": "artifact_status + coverage.* are VERIFIER-derived; an empty resolved+unresolved cannot be COMPLETE when applicable REQUIRED specs exist (V14). A builder may not self-certify COMPLETE.",
+    "scalar_type_consistency": "scalar_type MUST equal the JSON type of normalized_scalar_value (allOf if/then; scalar_type in {string,integer} ONLY), so e.g. scalar_type=integer + value=string is rejected at schema level; full join is verifier V7/V8",
+    "source_integrity_split": "source_etag_or_hash REPLACED by source_etag (GET ETag) + source_byte_length (collected GET Buffer length) + source_byte_sha256 (sha256 of that same Buffer); HEAD metadata is an INDEPENDENT consistency gate (HEAD ContentLength == GET ContentLength == Buffer.length; HEAD/GET ETag normalized-equal, else INTEGRITY_ANOMALY), NOT the value source; verifier checks all rows from one object agree (A1)",
+    "segment_safe_patterns": "path patterns now reject a '.' OR '..' segment ((?:^|/)\\.{1,2}(?:/|$)) AND an empty internal segment (//); RELEASE_TOKEN rejects a lone '.'/'..' and any '..'. THE AUTHORITATIVE gate is the code segment-validator (split('/') + reject ''/'.'/'..'/backslash/leading-slash/repeated-slash/control-chars); these regexes are a coarse co-gate (Blocker 4). 'a..b' as a filename is allowed by the traversal rule and decided by the semantic rule, not as a traversal side effect.",
+    "source_specific_keys": "OBJECT_KEY/MANIFEST_KEY first-use locators MUST additionally satisfy a source-specific derived-key cross_field_rule (e.g. UMLS_MESH_KEY_EQUALS_RELEASE_PATH, FDA_SRS_KEY_EQUALS_RELEASE_DATE_PATH, COMPOUNDS_MANIFEST_EQUALS_FIXED_SUFFIX); generic traversal-free OBJECT_KEY is NOT the final safety boundary (Blocker 3)",
+    "run_id_attempt_removed": "RUN_ID + RUN_ATTEMPT semantic types REMOVED (Blocker 8); producer-provenance, not first-round objective; schema/inventory had disagreed on RUN_ATTEMPT type",
+    "duplicate_json_key": "a duplicate top-level key in a pointer object is an integrity anomaly -> LOCATOR_JSON_DUPLICATE_KEY, whole object fails loud, zero locator output (Blocker 5; NOT JSON.parse last-wins). Enforced in code (raw-key scan), reflected here as an unresolved reason_code.",
+    "value_free_guarantee": "normalized_scalar_value is the ONLY value field; GET_LOCATOR is STRUCTURAL_JSON-only (payload/gzip/zstd/NXVF matrix-denied), so no scientific corpus value can reach it; GET_META stays value-free and unchanged",
+    "r2r2_requiredness_monotonic": "template_locator_rule.required is a boolean; a run-plan spec may promote optional->required but NEVER downgrade required->optional (Blocker 1; scratch CE1)",
+    "r2r2_exact_key_family": "GET_LOCATOR authorization is EXACT-KEY (template_get_locator_family.exact_key), NOT startsWith+suffix; one family = one exact key + its locator_rules (Blocker 2; scratch CE2)",
+    "r2r2_source_binding": "an IN-RUN source-binding gate re-extracts the value from the retained raw pointer bytes and compares byte-for-byte with normalized_scalar_value; the offline verifier cannot re-read R2, so this closes 'value came from the actual source object' (Blocker 3; scratch CE3; reason LOCATOR_SOURCE_MISMATCH)",
+    "r2r2_per_object_applicability": "applicability is per OBJECT KEY (latest.json v2 XOR legacy; each cursor cursor_v1); the global applicable set is the UNION of the 5 object groups, not one global shape; cursor specs cannot be dropped by choosing v2 (Blocker 4; scratch CE4)",
+    "r2r2_canonical_scalar_bytes": "value_utf8_bytes + value_sha256 are over canonicalScalarBytes(value, scalar_type) -- string: exact UTF-8 no quotes; integer: safe-int, no -0, canonical base-10; boolean removed; golden vectors shared builder+verifier (Blocker 5; scratch CE5)",
+    "r2r2_snapshot_date_required": "snapshot_date is a first-run REQUIRED v2 locator so SNAPSHOT_ID_MATCHES_IMMUTABLE_IDENTITY can assert snapshot_id's date-segment == snapshot_date (Blocker 6; scratch CE6)",
+    "r2r2_decoded_dup_key": "the duplicate-key tokenizer compares DECODED unicode keys (JSON escapes resolved), rejects invalid escape + unpaired surrogate (Blocker 7; scratch CE7)",
+    "r2r2_two_phase_uniqueness": "cross-field is TWO-PHASE (Phase 1 independent scalars; Phase 2 over the normalized candidate map) so results are spec-order-independent, and a dependent field whose peer failed Phase 1 => LOCATOR_DEPENDENCY_INVALID; uniqueness gates on family_id / (exact_key,pointer_shape,field_path) / spec_id / (key,pointer_shape,field_path) / cross_field_rules (Blocker 8; scratch CE8-CE10)"
+  }
+}

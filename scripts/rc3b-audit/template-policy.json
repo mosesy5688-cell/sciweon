@@ -12,6 +12,19 @@
       "key_suffixes": [".json", ".manifest.json"]
     },
     {
+      "family_id": "synthetic-structural-locators",
+      "operation": "GET_LOCATOR",
+      "object_class": "STRUCTURAL_JSON",
+      "exact_key": "synthetic/prefix/manifest.json",
+      "locator_rules": [
+        {"field_path":"layout_version","semantic_type":"LAYOUT_VERSION","scalar_type":"string","value_pattern_id":"LAYOUT_VERSION_V2","normalization":"NONE","max_utf8_bytes":64,"required":true,"pointer_shape":"immutable_snapshot_v2","cross_field_rules":["LAYOUT_SELECTS_SPEC_SET"]},
+        {"field_path":"snapshot_date","semantic_type":"SNAPSHOT_DATE","scalar_type":"string","value_pattern_id":"ISO_DATE","normalization":"NONE","max_utf8_bytes":10,"required":true,"pointer_shape":"immutable_snapshot_v2","cross_field_rules":[]},
+        {"field_path":"snapshot_id","semantic_type":"SNAPSHOT_ID","scalar_type":"string","value_pattern_id":"SNAPSHOT_ID_V2","normalization":"NONE","max_utf8_bytes":64,"required":true,"pointer_shape":"immutable_snapshot_v2","cross_field_rules":["SNAPSHOT_ID_MATCHES_IMMUTABLE_IDENTITY"]},
+        {"field_path":"object_prefix","semantic_type":"OBJECT_PREFIX","scalar_type":"string","value_pattern_id":"OBJECT_PREFIX_V2","normalization":"ENSURE_TRAILING_SLASH","max_utf8_bytes":128,"required":true,"pointer_shape":"immutable_snapshot_v2","cross_field_rules":["OBJECT_PREFIX_EQUALS_SNAPSHOTS_PLUS_ID","OBJECT_PREFIX_STARTS_SNAPSHOTS_ENDS_SLASH","PATH_SEGMENTS_SAFE"]},
+        {"field_path":"compounds_manifest_key","semantic_type":"MANIFEST_KEY","scalar_type":"string","value_pattern_id":"MANIFEST_KEY_PATHSAFE","normalization":"NONE","max_utf8_bytes":192,"required":true,"pointer_shape":"immutable_snapshot_v2","cross_field_rules":["COMPOUNDS_MANIFEST_EQUALS_FIXED_SUFFIX","MANIFEST_KEY_UNDER_OBJECT_PREFIX","PATH_SEGMENTS_SAFE"]}
+      ]
+    },
+    {
       "family_id": "synthetic-list",
       "operation": "LIST",
       "object_class": null,

@@ -6,7 +6,7 @@
  * gate on top of the per-key format policy + the template families: a payload
  * class (MONOLITHIC_GZIP / MONOLITHIC_ZSTD / PAYLOAD_JSONL) may ONLY be HEAD-ed;
  * a GET_META / RANGE / full GET of a payload class is DENIED (not seekable, no
- * arbitrary middle decode). STRUCTURAL_JSON is GET_META-only; NXVF_SHARD is
+ * arbitrary middle decode). STRUCTURAL_JSON is GET_META/GET_LOCATOR-only; NXVF_SHARD is
  * RANGE-only. Everything else default-denies.
  *
  * The effectiveClass MUST be derived from the key suffix / template, NEVER from a
@@ -21,10 +21,10 @@ const PAYLOAD_CLASSES = Object.freeze(['MONOLITHIC_GZIP', 'MONOLITHIC_ZSTD', 'PA
  * @returns {{allow:boolean, reason:string}}
  */
 export function decideOperation({ operation, effectiveClass } = {}) {
-    // STRUCTURAL_JSON: GET_META only.
+    // STRUCTURAL_JSON: value-free GET_META or committed-scalar GET_LOCATOR only.
     if (effectiveClass === 'STRUCTURAL_JSON') {
-        if (operation === 'GET_META') return { allow: true, reason: 'STRUCTURAL_JSON GET_META' };
-        return { allow: false, reason: `STRUCTURAL_JSON supports only GET_META (got ${operation}) -- not seekable for ${operation}` };
+        if (operation === 'GET_META' || operation === 'GET_LOCATOR') return { allow: true, reason: `STRUCTURAL_JSON ${operation}` };
+        return { allow: false, reason: `STRUCTURAL_JSON supports only GET_META or GET_LOCATOR (got ${operation}) -- not seekable for ${operation}` };
     }
 
     // NXVF_SHARD: locator-bound RANGE only.
