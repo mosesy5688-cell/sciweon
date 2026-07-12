@@ -62,6 +62,9 @@ describe('opaque brand, closed schema, object groups, and GET_META regression', 
         expect(Object.keys(mod)).not.toContain('SOURCE_BOUND');
         expect(Object.keys(mod)).not.toContain('mint');
         expect(Object.keys(mod)).not.toContain('brandToken');
+        expect(Object.keys(mod)).not.toContain('SOURCE_BOUND_DIGEST');
+        expect(Object.keys(mod)).not.toContain('integrityDigest');
+        expect(Object.keys(mod)).not.toContain('deepFreeze');
     });
     it('artifact group rows conform exactly to the committed closed schema', async () => {
         const s = clientScenario(); const bound = await s.client.getLocatorScalars('synthetic/prefix/manifest.json');

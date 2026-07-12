@@ -9,6 +9,11 @@ import { createHash } from 'crypto';
 import { canonicalScalarBytes, inspectLocatorJson } from './locator-extract.mjs';
 
 const SOURCE_BOUND = new WeakSet();
+// Module-private integrity attestation: keyed by the branded root object, value
+// is the canonical SHA-256 over the COMPLETE frozen source-bound payload. Brand
+// membership proves a result came from mint; this digest proves the frozen graph
+// is byte-for-byte the one that was minted. Neither is exported or forgeable.
+const SOURCE_BOUND_DIGEST = new WeakMap();
 
 function normalizeIndependent(value, rule) {
     if (rule === 'NONE') return value;
@@ -27,9 +32,44 @@ function normalizeEtag(value) {
     return value.trim().replace(/^W\//i, '').replace(/^"|"$/g, '');
 }
 
+/**
+ * Recursively freeze the COMPLETE result graph BEFORE brand registration: the
+ * root, every nested object, and every nested array (the arrays themselves, not
+ * only their element objects).
+ */
+function deepFreeze(value) {
+    if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+        Object.freeze(value);
+        for (const key of Object.keys(value)) deepFreeze(value[key]);
+    }
+    return value;
+}
+
+/**
+ * Deterministic canonicalization (stable, sorted key ordering at every object
+ * level; array order preserved) so the integrity digest is reproducible.
+ */
+function canonicalize(value) {
+    if (Array.isArray(value)) return value.map(canonicalize);
+    if (value !== null && typeof value === 'object') {
+        const out = {};
+        for (const key of Object.keys(value).sort()) out[key] = canonicalize(value[key]);
+        return out;
+    }
+    return value;
+}
+
+/** Canonical SHA-256 over the complete security-relevant source-bound payload. */
+function integrityDigest(result) {
+    return createHash('sha256').update(Buffer.from(JSON.stringify(canonicalize(result)), 'utf-8')).digest('hex');
+}
+
 function mint(data) {
-    const result = Object.freeze({ ...data });
+    // Immutable BEFORE brand registration, then bind the canonical integrity
+    // digest to the frozen root.
+    const result = deepFreeze({ ...data });
     SOURCE_BOUND.add(result);
+    SOURCE_BOUND_DIGEST.set(result, integrityDigest(result));
     return result;
 }
 
@@ -37,6 +77,12 @@ export function isSourceBoundLocatorResult(value) { return !!value && SOURCE_BOU
 
 export function assertSourceBoundLocatorResult(value) {
     if (!isSourceBoundLocatorResult(value)) throw new TypeError('UNBOUND_ROWS_REJECTED');
+    // Brand membership is necessary but NOT sufficient: recompute the canonical
+    // digest over the CURRENT graph and reject any drift from the minted digest.
+    const expected = SOURCE_BOUND_DIGEST.get(value);
+    if (expected == null || integrityDigest(value) !== expected) {
+        throw new Error('SOURCE_BOUND_RESULT_MUTATED');
+    }
     return value;
 }
 
@@ -46,14 +92,21 @@ export function assertSourceBoundLocatorResult(value) {
  */
 export function verifySourceBinding(rawBuffer, extraction, specs, source) {
     if (!Buffer.isBuffer(rawBuffer)) throw new TypeError('LOCATOR_SOURCE_MISMATCH');
+    // B2 -- fail-CLOSED HEAD/GET consistency, enforced in isolation
+    // (defense-in-depth). A missing field is NEVER "cannot compare, continue";
+    // every missing or mismatched field is an INTEGRITY_ANOMALY.
     const getLength = source?.get_content_length;
     const headLength = source?.head_content_length;
-    if (getLength != null && getLength !== rawBuffer.length) throw new Error('INTEGRITY_ANOMALY: GET ContentLength differs from collected Buffer length');
-    if (headLength != null && headLength !== rawBuffer.length) throw new Error('INTEGRITY_ANOMALY: HEAD ContentLength differs from collected Buffer length');
+    if (headLength == null) throw new Error('INTEGRITY_ANOMALY: HEAD ContentLength missing');
+    if (getLength == null) throw new Error('INTEGRITY_ANOMALY: GET ContentLength missing');
+    if (headLength !== getLength) throw new Error('INTEGRITY_ANOMALY: HEAD/GET ContentLength mismatch');
+    if (getLength !== rawBuffer.length) throw new Error('INTEGRITY_ANOMALY: GET ContentLength differs from collected Buffer length');
+    if (headLength !== rawBuffer.length) throw new Error('INTEGRITY_ANOMALY: HEAD ContentLength differs from collected Buffer length');
     const getEtag = normalizeEtag(source?.get_etag);
     const headEtag = normalizeEtag(source?.head_etag);
+    if (!headEtag) throw new Error('INTEGRITY_ANOMALY: HEAD ETag missing');
     if (!getEtag) throw new Error('INTEGRITY_ANOMALY: GET ETag missing');
-    if (headEtag && headEtag !== getEtag) throw new Error('INTEGRITY_ANOMALY: HEAD/GET ETag mismatch');
+    if (headEtag !== getEtag) throw new Error('INTEGRITY_ANOMALY: HEAD/GET ETag mismatch');
 
     const sourceFields = {
         source_etag: source.get_etag,
