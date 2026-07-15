@@ -1,0 +1,261 @@
+{
+  "_candidate_metadata": {
+    "gate": "RC-3B-P0B-C3-R3",
+    "status": "BOUND / C3-FINAL RE-SEALED / NOT AUTHORIZED",
+    "grounding": "code-grounded (landed cd36756) / R2-UNVERIFIED",
+    "note": "endpoint_or_account_binding_allowlist carries the resolved NON-SECRET Founder-local endpoint binding (64-hex sha256 commitment; NO raw account id / endpoint URL present). PRODUCTION-READONLY scope remains a declaration only -- authorization still fails CLOSED (Founder-local auth anchors are PREPARED, NOT CONFIGURED) until C4/dispatch."
+  },
+  "template_policy_version": "1.0.0-candidate-c3r3",
+  "policy_scope": "PRODUCTION-READONLY",
+  "bucket_allowlist": [
+    "sciweon-prod"
+  ],
+  "endpoint_or_account_binding_allowlist": [
+    "ad70e9363f0db353eced534bbe4a4e5104b6378257250e8c9117c4b427eaf85e"
+  ],
+  "forbidden_prefixes": [
+    "processed/cache/",
+    "internal/config/",
+    "internal/secrets/",
+    "internal/state/",
+    "factory/",
+    "config/",
+    "secrets/",
+    "credentials/",
+    "env/",
+    "test/",
+    "tests/",
+    "verification/",
+    "tmp/",
+    "rk16/",
+    "rk16c/"
+  ],
+  "families": [
+    {
+      "family_id": "getlocator-snapshot-pointer",
+      "operation": "GET_LOCATOR",
+      "object_class": "STRUCTURAL_JSON",
+      "exact_key": "snapshots/latest.json",
+      "locator_rules": [
+        {
+          "field_path": "layout_version",
+          "semantic_type": "LAYOUT_VERSION",
+          "scalar_type": "string",
+          "value_pattern_id": "LAYOUT_VERSION_V2",
+          "normalization": "NONE",
+          "max_utf8_bytes": 64,
+          "required": true,
+          "pointer_shape": "immutable_snapshot_v2",
+          "cross_field_rules": [
+            "LAYOUT_SELECTS_SPEC_SET"
+          ]
+        },
+        {
+          "field_path": "snapshot_date",
+          "semantic_type": "SNAPSHOT_DATE",
+          "scalar_type": "string",
+          "value_pattern_id": "ISO_DATE",
+          "normalization": "NONE",
+          "max_utf8_bytes": 10,
+          "required": true,
+          "pointer_shape": "immutable_snapshot_v2",
+          "cross_field_rules": []
+        },
+        {
+          "field_path": "snapshot_id",
+          "semantic_type": "SNAPSHOT_ID",
+          "scalar_type": "string",
+          "value_pattern_id": "SNAPSHOT_ID_V2",
+          "normalization": "NONE",
+          "max_utf8_bytes": 64,
+          "required": true,
+          "pointer_shape": "immutable_snapshot_v2",
+          "cross_field_rules": [
+            "SNAPSHOT_ID_MATCHES_IMMUTABLE_IDENTITY"
+          ]
+        },
+        {
+          "field_path": "object_prefix",
+          "semantic_type": "OBJECT_PREFIX",
+          "scalar_type": "string",
+          "value_pattern_id": "OBJECT_PREFIX_V2",
+          "normalization": "ENSURE_TRAILING_SLASH",
+          "max_utf8_bytes": 128,
+          "required": true,
+          "pointer_shape": "immutable_snapshot_v2",
+          "cross_field_rules": [
+            "OBJECT_PREFIX_EQUALS_SNAPSHOTS_PLUS_ID",
+            "OBJECT_PREFIX_STARTS_SNAPSHOTS_ENDS_SLASH",
+            "PATH_SEGMENTS_SAFE"
+          ]
+        },
+        {
+          "field_path": "compounds_manifest_key",
+          "semantic_type": "MANIFEST_KEY",
+          "scalar_type": "string",
+          "value_pattern_id": "MANIFEST_KEY_PATHSAFE",
+          "normalization": "NONE",
+          "max_utf8_bytes": 192,
+          "required": true,
+          "pointer_shape": "immutable_snapshot_v2",
+          "cross_field_rules": [
+            "COMPOUNDS_MANIFEST_EQUALS_FIXED_SUFFIX",
+            "MANIFEST_KEY_UNDER_OBJECT_PREFIX",
+            "PATH_SEGMENTS_SAFE"
+          ]
+        },
+        {
+          "field_path": "latest_snapshot_date",
+          "semantic_type": "SNAPSHOT_DATE",
+          "scalar_type": "string",
+          "value_pattern_id": "ISO_DATE",
+          "normalization": "NONE",
+          "max_utf8_bytes": 10,
+          "required": true,
+          "pointer_shape": "legacy_v1",
+          "cross_field_rules": []
+        }
+      ]
+    },
+    {
+      "family_id": "getlocator-umls-mesh-cursor",
+      "operation": "GET_LOCATOR",
+      "object_class": "STRUCTURAL_JSON",
+      "exact_key": "state/umls-mesh-bulk-cursor.json",
+      "locator_rules": [
+        {
+          "field_path": "release",
+          "semantic_type": "RELEASE_TOKEN",
+          "scalar_type": "string",
+          "value_pattern_id": "RELEASE_TOKEN_SEGMENT",
+          "normalization": "NONE",
+          "max_utf8_bytes": 64,
+          "required": true,
+          "pointer_shape": "cursor_v1",
+          "cross_field_rules": [
+            "RELEASE_TOKEN_SINGLE_SEGMENT"
+          ]
+        },
+        {
+          "field_path": "r2_data_key",
+          "semantic_type": "OBJECT_KEY",
+          "scalar_type": "string",
+          "value_pattern_id": "R2_DATA_KEY_PATHSAFE",
+          "normalization": "NONE",
+          "max_utf8_bytes": 256,
+          "required": true,
+          "pointer_shape": "cursor_v1",
+          "cross_field_rules": [
+            "UMLS_MESH_KEY_EQUALS_RELEASE_PATH",
+            "PATH_SEGMENTS_SAFE"
+          ]
+        }
+      ]
+    },
+    {
+      "family_id": "getlocator-umls-snomed-cursor",
+      "operation": "GET_LOCATOR",
+      "object_class": "STRUCTURAL_JSON",
+      "exact_key": "state/umls-snomed-bulk-cursor.json",
+      "locator_rules": [
+        {
+          "field_path": "release",
+          "semantic_type": "RELEASE_TOKEN",
+          "scalar_type": "string",
+          "value_pattern_id": "RELEASE_TOKEN_SEGMENT",
+          "normalization": "NONE",
+          "max_utf8_bytes": 64,
+          "required": true,
+          "pointer_shape": "cursor_v1",
+          "cross_field_rules": [
+            "RELEASE_TOKEN_SINGLE_SEGMENT"
+          ]
+        },
+        {
+          "field_path": "r2_data_key",
+          "semantic_type": "OBJECT_KEY",
+          "scalar_type": "string",
+          "value_pattern_id": "R2_DATA_KEY_PATHSAFE",
+          "normalization": "NONE",
+          "max_utf8_bytes": 256,
+          "required": true,
+          "pointer_shape": "cursor_v1",
+          "cross_field_rules": [
+            "UMLS_SNOMED_KEY_EQUALS_RELEASE_PATH",
+            "PATH_SEGMENTS_SAFE"
+          ]
+        }
+      ]
+    },
+    {
+      "family_id": "getlocator-umls-loinc-cursor",
+      "operation": "GET_LOCATOR",
+      "object_class": "STRUCTURAL_JSON",
+      "exact_key": "state/umls-loinc-bulk-cursor.json",
+      "locator_rules": [
+        {
+          "field_path": "release",
+          "semantic_type": "RELEASE_TOKEN",
+          "scalar_type": "string",
+          "value_pattern_id": "RELEASE_TOKEN_SEGMENT",
+          "normalization": "NONE",
+          "max_utf8_bytes": 64,
+          "required": true,
+          "pointer_shape": "cursor_v1",
+          "cross_field_rules": [
+            "RELEASE_TOKEN_SINGLE_SEGMENT"
+          ]
+        },
+        {
+          "field_path": "r2_data_key",
+          "semantic_type": "OBJECT_KEY",
+          "scalar_type": "string",
+          "value_pattern_id": "R2_DATA_KEY_PATHSAFE",
+          "normalization": "NONE",
+          "max_utf8_bytes": 256,
+          "required": true,
+          "pointer_shape": "cursor_v1",
+          "cross_field_rules": [
+            "UMLS_LOINC_KEY_EQUALS_RELEASE_PATH",
+            "PATH_SEGMENTS_SAFE"
+          ]
+        }
+      ]
+    },
+    {
+      "family_id": "getlocator-fda-srs-cursor",
+      "operation": "GET_LOCATOR",
+      "object_class": "STRUCTURAL_JSON",
+      "exact_key": "state/fda-srs-cursor.json",
+      "locator_rules": [
+        {
+          "field_path": "release_date",
+          "semantic_type": "RELEASE_TOKEN",
+          "scalar_type": "string",
+          "value_pattern_id": "RELEASE_TOKEN_SEGMENT",
+          "normalization": "NONE",
+          "max_utf8_bytes": 64,
+          "required": true,
+          "pointer_shape": "cursor_v1",
+          "cross_field_rules": [
+            "RELEASE_TOKEN_SINGLE_SEGMENT"
+          ]
+        },
+        {
+          "field_path": "r2_data_key",
+          "semantic_type": "OBJECT_KEY",
+          "scalar_type": "string",
+          "value_pattern_id": "R2_DATA_KEY_PATHSAFE",
+          "normalization": "NONE",
+          "max_utf8_bytes": 256,
+          "required": true,
+          "pointer_shape": "cursor_v1",
+          "cross_field_rules": [
+            "FDA_SRS_KEY_EQUALS_RELEASE_DATE_PATH",
+            "PATH_SEGMENTS_SAFE"
+          ]
+        }
+      ]
+    }
+  ]
+}

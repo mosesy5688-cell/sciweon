@@ -11,7 +11,7 @@ import fs from 'fs';
 import { verifyArtifact } from '../../scripts/rc3b-audit/verify-artifact.mjs';
 import { runSelfTest } from '../../scripts/rc3b-audit/self-test.mjs';
 import { recomputeArtifactSha256 } from '../../scripts/rc3b-audit/evidence-builder.mjs';
-import { authorizedScenario, runScenario, AUTHORIZED_ALL_GREEN } from './rc3b-authorized-fixtures';
+import { authorizedScenario, runScenario } from './rc3b-authorized-fixtures';
 
 describe('RC-3B-P0B authorized verifier: missing inputs are HARD FAILS (never SKIPPED)', () => {
     it('a missing resolved-locators path -> FAIL', async () => {
@@ -57,16 +57,19 @@ describe('RC-3B-P0B authorized verifier: no SKIPPED can yield an authorized PASS
     });
 });
 
-describe('RC-3B-P0B authorized verifier: SYNTHETIC-ONLY policy fails H4.5 (negative control)', () => {
-    it('the SAME chain with a SYNTHETIC-ONLY policy fails ONLY on authorized_policy_scope', async () => {
+describe('RC-3B-P0B authorized run: SYNTHETIC-ONLY policy fails the C4-A/B5 PRE-CLIENT scope gate', () => {
+    // C4-A / B5: an authorized run now requires a PRODUCTION-READONLY template policy.
+    // A SYNTHETIC-ONLY (or missing/null/unknown) scope fails-before-client in
+    // runAuthorizedAudit -- BEFORE endpoint binding + client construction + any
+    // network -- so the audit can never even produce an artifact. verify-artifact
+    // H4.5 (authorized_policy_scope) remains the independent SECOND-LAYER
+    // post-artifact check: its FALSE branch is covered by the 'missing
+    // template-policy path' test above, and its TRUE branch by the PASS-path e2e.
+    it('a SYNTHETIC-ONLY policy is rejected BEFORE the client (0 network), never producing an artifact', async () => {
         const scn = authorizedScenario({ policyScope: 'SYNTHETIC-ONLY' });
-        const r = await runScenario(scn);
-        const v = await verifyArtifact(r.evidencePath, scn.env, r.logPath, scn.planPath, scn.policy.path, r.locatorArtifactPath);
-        expect(v.checks.authorized_policy_scope).toBe(false);
-        expect(v.ok).toBe(false);
-        for (const k of AUTHORIZED_ALL_GREEN) {
-            if (k !== 'authorized_policy_scope') expect(v.checks[k]).toBe(true);
-        }
+        const spy = { sends: 0, async send() { this.sends += 1; return {}; } };
+        await expect(runScenario(scn, spy)).rejects.toThrow(/PRODUCTION_SCOPE_REQUIRED/);
+        expect(spy.sends).toBe(0);
     });
 });
 

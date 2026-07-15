@@ -13,6 +13,7 @@
  */
 
 import { S3Client } from '@aws-sdk/client-s3';
+import { normalizeAccountId } from './endpoint-binding.mjs';
 
 /**
  * @param {object} env  defaults to process.env; injected in tests
@@ -25,9 +26,14 @@ export function makeMinimalReadOnlyS3Client(env = process.env) {
     if (!accountId || !accessKeyId || !secretAccessKey) {
         return null;
     }
+    // C4-A / B2: build the endpoint from the account id under the SAME normalization
+    // (normalizeAccountId) that deriveEndpointBinding uses, so the client's account
+    // is byte-for-byte the SAME value that assertEndpointBinding already verified
+    // against the authorized plan binding. The raw account id / endpoint are never
+    // logged or returned (crypto/transport only); no new command class is added.
     return new S3Client({
         region: 'auto',
-        endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+        endpoint: `https://${normalizeAccountId(accountId)}.r2.cloudflarestorage.com`,
         credentials: { accessKeyId, secretAccessKey },
     });
 }

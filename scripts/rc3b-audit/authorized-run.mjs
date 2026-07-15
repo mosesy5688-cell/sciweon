@@ -43,6 +43,33 @@ export const EVIDENCE_NAME = 'rc3b-p0b-readonly-evidence.json';
 export const STRUCTURAL_LOG_NAME = 'rc3b-p0b-structural-log.jsonl';
 export const LOCATOR_ARTIFACT_NAME = 'rc3b-p0b-resolved-locators.json';
 
+// C4-A / B5: the ONLY template-policy scope an authorized run may open a client for.
+export const PRODUCTION_POLICY_SCOPE = 'PRODUCTION-READONLY';
+
+/**
+ * C4-A / B5 PRE-CLIENT production scope gate. An authorized read-only R2 run is
+ * admissible ONLY against a template policy whose declared scope is EXACTLY
+ * 'PRODUCTION-READONLY'. A SYNTHETIC-ONLY / missing / null / unknown scope THROWS
+ * here -- and runAuthorizedAudit calls this BEFORE endpoint-binding + client
+ * construction + any network, so a non-production policy can never construct a
+ * client (client-construction count stays 0, network calls stay 0). This is the
+ * FIRST layer; verify-artifact.mjs H4.5 (authorized_policy_scope) is the
+ * independent SECOND-LAYER post-artifact check. PURE: it inspects only the
+ * already-loaded policy object and never constructs a client. It does NOT alter
+ * generic validateRunManifest, so offline/synthetic fixtures still VALIDATE.
+ *
+ * @param {object} policy  the loaded template-policy object
+ * @returns {true}         on a PRODUCTION-READONLY scope
+ * @throws {Error} `[RC3B AUTHZ-RUN] PRODUCTION_SCOPE_REQUIRED ...` otherwise
+ */
+export function assertProductionPolicyScope(policy) {
+    const scope = policy && typeof policy === 'object' ? policy.policy_scope : undefined;
+    if (scope !== PRODUCTION_POLICY_SCOPE) {
+        throw new Error(`[RC3B AUTHZ-RUN] PRODUCTION_SCOPE_REQUIRED: authorized run requires template policy_scope === ${JSON.stringify(PRODUCTION_POLICY_SCOPE)} (got ${JSON.stringify(scope ?? null)}) -- fail before client`);
+    }
+    return true;
+}
+
 /**
  * @param {object} env   process.env (or an injected fake in tests)
  * @param {{clientOverride?, now?, outDir?}} opts
@@ -81,6 +108,13 @@ export async function runAuthorizedAudit(env, opts = {}) {
     if (!v.admissible) {
         throw new Error(`[RC3B AUTHZ-RUN] run manifest INADMISSIBLE -- fail-before-network:\n - ${v.errors.join('\n - ')}`);
     }
+
+    // 3b. C4-A / B5 PRE-CLIENT production scope gate: an authorized run requires a
+    //     PRODUCTION-READONLY template policy. A SYNTHETIC-ONLY / missing / null /
+    //     unknown scope THROWS HERE -- BEFORE endpoint binding + client construction
+    //     + any network (client-construction count stays 0). verify-artifact H4.5 is
+    //     the independent second-layer post-artifact check.
+    assertProductionPolicyScope(templatePolicy);
 
     // 4/5. RE-DERIVE + assert the actual account/endpoint binding == authorized.
     const binding = assertEndpointBinding(env, plan);
