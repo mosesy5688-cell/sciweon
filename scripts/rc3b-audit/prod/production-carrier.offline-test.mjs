@@ -2,7 +2,7 @@
  * RC-3B-P0B-C4-A -- OFFLINE production-carrier proof (ZERO network, ZERO real values).
  *
  * Proves, entirely offline, that the two committed production-carrier files
- * (scripts/rc3b-audit/prod/production-template-policy.json + production-run-plan.json)
+ * (scripts/rc3b-audit/prod/production-template-policy.json + production-run-spec.json)
  * are BYTE-IDENTICAL to the founder-frozen governance sources (raw sha256 anchors),
  * are accepted BY THE LANDED canonicalizers + run-manifest validator, carry a
  * consistent non-secret endpoint binding, describe exactly the 5x (HEAD + GET_LOCATOR)
@@ -32,7 +32,7 @@ import { assertProductionPolicyScope } from '../authorized-run.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const POLICY_PATH = path.join(HERE, 'production-template-policy.json');
-export const RUN_PLAN_PATH = path.join(HERE, 'production-run-plan.json');
+export const RUN_PLAN_PATH = path.join(HERE, 'production-run-spec.json');
 const AUTHORIZED_RUN_SRC = path.join(HERE, '..', 'authorized-run.mjs');
 
 // Founder-frozen anchors. The local-only governance SOURCE files are deliberately
