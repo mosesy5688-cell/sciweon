@@ -1,0 +1,58 @@
+name: RC-3B-P0B run-id timing proof (INERT)
+
+# RC-3B-P0B-C4-A -- NON-PRODUCTION, BUILD-ONLY proof that a dedicated ENVIRONMENT
+# SECRET can be late-bound DURING the environment approval wait to a value formed
+# from the current GITHUB_RUN_ID (the exact post-approval late-binding timing the
+# real harness relies on for RC3B_AUTHORIZED_WORKFLOW_RUN_ID). It is a self-contained
+# timing proof and touches NOTHING else:
+#   * INERT by default: the job is SKIPPED unless the NON-SECRET repo variable
+#     RC3B_P0B_ENABLE_RUNID_TIMING_PROOF == 'true'. That variable is NOT set here.
+#   * It references a DEDICATED THROWAWAY environment secret
+#     RC3B_RUNID_TIMING_PROOF_TOKEN (NOT created here) inside a PROTECTED environment
+#     (referenced by NAME only; NOT created here).
+#   * It references / maps / enumerates NO Cloudflare Account ID, NO R2 access key,
+#     NO R2 secret key, NO production credential, and NO production R2 bucket.
+#   * It does NO checkout, NO npm install, and uses NO third-party / network action
+#     (only in-line shell). It never prints the token.
+#   * It compares ONLY whether the throwaway token (updated during the approval wait)
+#     equals the expected value formed from the current GITHUB_RUN_ID, and outputs
+#     ONLY PASS / FAIL.
+#
+# FOUNDER-TRIGGERED ONLY: workflow_dispatch. This file dispatches nothing, creates no
+# environment / secret / variable, and does not enable itself.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  runid-timing-proof:
+    # INERT by default: SKIPPED unless a Founder sets this NON-SECRET repo variable.
+    # The variable is NOT set in this build, so the job never runs by default.
+    if: ${{ vars.RC3B_P0B_ENABLE_RUNID_TIMING_PROOF == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # PROTECTED environment referenced by NAME only (NOT created here). Its approval
+    # protection rule is what makes the token a POST-APPROVAL, late-bound value; the
+    # throwaway secret below is delivered only after the approval wait.
+    environment: rc3b-p0b-runid-timing-proof
+    env:
+      # Dedicated THROWAWAY environment secret (NOT provisioned here). It carries NO
+      # account id / R2 key / production credential -- only the timing-proof token the
+      # Founder sets to the expected value during the approval wait.
+      RC3B_RUNID_TIMING_PROOF_TOKEN: ${{ secrets.RC3B_RUNID_TIMING_PROOF_TOKEN }}
+    steps:
+      - name: Compare late-bound token to the value formed from GITHUB_RUN_ID (PASS/FAIL only)
+        run: |
+          # The expected value is deterministically formed from the CURRENT run id.
+          # During the approval wait the Founder sets the throwaway environment secret
+          # to this exact value. We NEVER print the token or the expected value.
+          expected="rc3b-p0b-runid-timing-proof-${GITHUB_RUN_ID}"
+          if [ -n "$RC3B_RUNID_TIMING_PROOF_TOKEN" ] && [ "$RC3B_RUNID_TIMING_PROOF_TOKEN" = "$expected" ]; then
+            echo "PASS"
+          else
+            echo "FAIL"
+            exit 1
+          fi

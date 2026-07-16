@@ -1,0 +1,279 @@
+{
+  "_candidate_metadata": {
+    "gate": "RC-3B-P0B-C3-R3",
+    "status": "BOUND / C3-FINAL RE-SEALED / NOT AUTHORIZED",
+    "grounding": "code-grounded (landed cd36756) / R2-UNVERIFIED",
+    "operation_sequence": "5x GET_LOCATOR (one HEAD + one GET per exact locator source object): snapshots/latest.json, state/umls-mesh-bulk-cursor.json, state/umls-snomed-bulk-cursor.json, state/umls-loinc-bulk-cursor.json, state/fda-srs-cursor.json. NO LIST/GET_META/RANGE.",
+    "expected_object_counts": {
+      "locator_source_objects": 5,
+      "head_requests": 5,
+      "get_locator_requests": 5,
+      "applicable_specs_v2_path": 13,
+      "applicable_specs_legacy_path": 9,
+      "plan_specs_total": 14
+    },
+    "evidence_paths_runtime_only": {
+      "evidence": "output/rc3b-p0b-readonly-evidence.json",
+      "structural_log": "output/rc3b-p0b-structural-log.jsonl",
+      "locator_artifact": "output/rc3b-p0b-resolved-locators.json"
+    },
+    "endpoint_binding": "endpoint_or_account_binding is the resolved NON-SECRET Founder-local endpoint binding (64-hex sha256 of the derived R2 endpoint; NO raw account id / URL present). It is well-formed, so authorization still fails CLOSED for lack of provisioning: assertFounderAuthorization MISSING_AUTHORIZATION (RC3B_P0B_RUN_AUTHORIZED != 'true'; no harness-SHA / run-plan / template-file anchors) and assertEndpointBinding MISSING_ACCOUNT_ID / BINDING_MISMATCH at run time absent a matching Founder-local account id in env. The internal materialized_run_plan_sha256 is an integrity check ONLY, never the authorization anchor."
+  },
+  "plan_version": "1.0.0-candidate-c3r3-structural-locator-discovery",
+  "bucket": "sciweon-prod",
+  "endpoint_or_account_binding": "ad70e9363f0db353eced534bbe4a4e5104b6378257250e8c9117c4b427eaf85e",
+  "record_spec_ref": "RC3B_C3_SOURCE_TRACE_AND_JUSTIFICATION_v0.1.md",
+  "exact_prefixes": [],
+  "structural_keys": [],
+  "class_c_head_keys": [],
+  "class_x_targets": [],
+  "object_class_map": {
+    "snapshots/latest.json": "STRUCTURAL_JSON",
+    "state/umls-mesh-bulk-cursor.json": "STRUCTURAL_JSON",
+    "state/umls-snomed-bulk-cursor.json": "STRUCTURAL_JSON",
+    "state/umls-loinc-bulk-cursor.json": "STRUCTURAL_JSON",
+    "state/fda-srs-cursor.json": "STRUCTURAL_JSON"
+  },
+  "allowed_object_classes": [
+    "STRUCTURAL_JSON"
+  ],
+  "snapshot_ids": [],
+  "caps": {
+    "MAX_LIST_KEYS_PER_RUN": 0,
+    "MAX_LIST_PAGES_PER_RUN": 0,
+    "MAX_OBJECTS_TOUCHED_PER_RUN": 5,
+    "MAX_HEAD_REQUESTS_PER_RUN": 5,
+    "MAX_GET_META_REQUESTS_PER_RUN": 0,
+    "MAX_RANGE_REQUESTS_PER_RUN": 0,
+    "MAX_BYTES_TOTAL_PER_RUN": 5242880,
+    "MAX_GET_META_OBJECT_BYTES": 1048576,
+    "MAX_GET_META_TOTAL_BYTES": 5242880,
+    "MAX_GET_LOCATOR_REQUESTS_PER_RUN": 5,
+    "MAX_LOCATOR_SPECS_PER_RUN": 14,
+    "MAX_LOCATOR_VALUES_PER_RUN": 13,
+    "MAX_LOCATOR_VALUE_BYTES_SINGLE": 512,
+    "MAX_LOCATOR_VALUE_BYTES_TOTAL": 4096,
+    "MAX_SINGLE_RANGE_BYTES": 0,
+    "MAX_DECODED_BYTES_PER_SAMPLE": 0,
+    "MAX_RUNTIME_SECONDS": 300
+  },
+  "structural_locator_specs": [
+    {
+      "spec_id": "PROD_SNAP_LAYOUT_VERSION",
+      "key": "snapshots/latest.json",
+      "field_path": "layout_version",
+      "semantic_type": "LAYOUT_VERSION",
+      "value_pattern_id": "LAYOUT_VERSION_V2",
+      "scalar_type": "string",
+      "max_utf8_bytes": 64,
+      "required": true,
+      "pointer_shape": "immutable_snapshot_v2",
+      "normalization": "NONE",
+      "cross_field_rules": [
+        "LAYOUT_SELECTS_SPEC_SET"
+      ]
+    },
+    {
+      "spec_id": "PROD_SNAP_SNAPSHOT_DATE",
+      "key": "snapshots/latest.json",
+      "field_path": "snapshot_date",
+      "semantic_type": "SNAPSHOT_DATE",
+      "value_pattern_id": "ISO_DATE",
+      "scalar_type": "string",
+      "max_utf8_bytes": 10,
+      "required": true,
+      "pointer_shape": "immutable_snapshot_v2",
+      "normalization": "NONE",
+      "cross_field_rules": []
+    },
+    {
+      "spec_id": "PROD_SNAP_SNAPSHOT_ID",
+      "key": "snapshots/latest.json",
+      "field_path": "snapshot_id",
+      "semantic_type": "SNAPSHOT_ID",
+      "value_pattern_id": "SNAPSHOT_ID_V2",
+      "scalar_type": "string",
+      "max_utf8_bytes": 64,
+      "required": true,
+      "pointer_shape": "immutable_snapshot_v2",
+      "normalization": "NONE",
+      "cross_field_rules": [
+        "SNAPSHOT_ID_MATCHES_IMMUTABLE_IDENTITY"
+      ]
+    },
+    {
+      "spec_id": "PROD_SNAP_OBJECT_PREFIX",
+      "key": "snapshots/latest.json",
+      "field_path": "object_prefix",
+      "semantic_type": "OBJECT_PREFIX",
+      "value_pattern_id": "OBJECT_PREFIX_V2",
+      "scalar_type": "string",
+      "max_utf8_bytes": 128,
+      "required": true,
+      "pointer_shape": "immutable_snapshot_v2",
+      "normalization": "ENSURE_TRAILING_SLASH",
+      "cross_field_rules": [
+        "OBJECT_PREFIX_EQUALS_SNAPSHOTS_PLUS_ID",
+        "OBJECT_PREFIX_STARTS_SNAPSHOTS_ENDS_SLASH",
+        "PATH_SEGMENTS_SAFE"
+      ]
+    },
+    {
+      "spec_id": "PROD_SNAP_COMPOUNDS_MANIFEST",
+      "key": "snapshots/latest.json",
+      "field_path": "compounds_manifest_key",
+      "semantic_type": "MANIFEST_KEY",
+      "value_pattern_id": "MANIFEST_KEY_PATHSAFE",
+      "scalar_type": "string",
+      "max_utf8_bytes": 192,
+      "required": true,
+      "pointer_shape": "immutable_snapshot_v2",
+      "normalization": "NONE",
+      "cross_field_rules": [
+        "COMPOUNDS_MANIFEST_EQUALS_FIXED_SUFFIX",
+        "MANIFEST_KEY_UNDER_OBJECT_PREFIX",
+        "PATH_SEGMENTS_SAFE"
+      ]
+    },
+    {
+      "spec_id": "PROD_SNAP_LEGACY_DATE",
+      "key": "snapshots/latest.json",
+      "field_path": "latest_snapshot_date",
+      "semantic_type": "SNAPSHOT_DATE",
+      "value_pattern_id": "ISO_DATE",
+      "scalar_type": "string",
+      "max_utf8_bytes": 10,
+      "required": true,
+      "pointer_shape": "legacy_v1",
+      "normalization": "NONE",
+      "cross_field_rules": []
+    },
+    {
+      "spec_id": "PROD_UMLS_MESH_RELEASE",
+      "key": "state/umls-mesh-bulk-cursor.json",
+      "field_path": "release",
+      "semantic_type": "RELEASE_TOKEN",
+      "value_pattern_id": "RELEASE_TOKEN_SEGMENT",
+      "scalar_type": "string",
+      "max_utf8_bytes": 64,
+      "required": true,
+      "pointer_shape": "cursor_v1",
+      "normalization": "NONE",
+      "cross_field_rules": [
+        "RELEASE_TOKEN_SINGLE_SEGMENT"
+      ]
+    },
+    {
+      "spec_id": "PROD_UMLS_MESH_R2_DATA_KEY",
+      "key": "state/umls-mesh-bulk-cursor.json",
+      "field_path": "r2_data_key",
+      "semantic_type": "OBJECT_KEY",
+      "value_pattern_id": "R2_DATA_KEY_PATHSAFE",
+      "scalar_type": "string",
+      "max_utf8_bytes": 256,
+      "required": true,
+      "pointer_shape": "cursor_v1",
+      "normalization": "NONE",
+      "cross_field_rules": [
+        "UMLS_MESH_KEY_EQUALS_RELEASE_PATH",
+        "PATH_SEGMENTS_SAFE"
+      ]
+    },
+    {
+      "spec_id": "PROD_UMLS_SNOMED_RELEASE",
+      "key": "state/umls-snomed-bulk-cursor.json",
+      "field_path": "release",
+      "semantic_type": "RELEASE_TOKEN",
+      "value_pattern_id": "RELEASE_TOKEN_SEGMENT",
+      "scalar_type": "string",
+      "max_utf8_bytes": 64,
+      "required": true,
+      "pointer_shape": "cursor_v1",
+      "normalization": "NONE",
+      "cross_field_rules": [
+        "RELEASE_TOKEN_SINGLE_SEGMENT"
+      ]
+    },
+    {
+      "spec_id": "PROD_UMLS_SNOMED_R2_DATA_KEY",
+      "key": "state/umls-snomed-bulk-cursor.json",
+      "field_path": "r2_data_key",
+      "semantic_type": "OBJECT_KEY",
+      "value_pattern_id": "R2_DATA_KEY_PATHSAFE",
+      "scalar_type": "string",
+      "max_utf8_bytes": 256,
+      "required": true,
+      "pointer_shape": "cursor_v1",
+      "normalization": "NONE",
+      "cross_field_rules": [
+        "UMLS_SNOMED_KEY_EQUALS_RELEASE_PATH",
+        "PATH_SEGMENTS_SAFE"
+      ]
+    },
+    {
+      "spec_id": "PROD_UMLS_LOINC_RELEASE",
+      "key": "state/umls-loinc-bulk-cursor.json",
+      "field_path": "release",
+      "semantic_type": "RELEASE_TOKEN",
+      "value_pattern_id": "RELEASE_TOKEN_SEGMENT",
+      "scalar_type": "string",
+      "max_utf8_bytes": 64,
+      "required": true,
+      "pointer_shape": "cursor_v1",
+      "normalization": "NONE",
+      "cross_field_rules": [
+        "RELEASE_TOKEN_SINGLE_SEGMENT"
+      ]
+    },
+    {
+      "spec_id": "PROD_UMLS_LOINC_R2_DATA_KEY",
+      "key": "state/umls-loinc-bulk-cursor.json",
+      "field_path": "r2_data_key",
+      "semantic_type": "OBJECT_KEY",
+      "value_pattern_id": "R2_DATA_KEY_PATHSAFE",
+      "scalar_type": "string",
+      "max_utf8_bytes": 256,
+      "required": true,
+      "pointer_shape": "cursor_v1",
+      "normalization": "NONE",
+      "cross_field_rules": [
+        "UMLS_LOINC_KEY_EQUALS_RELEASE_PATH",
+        "PATH_SEGMENTS_SAFE"
+      ]
+    },
+    {
+      "spec_id": "PROD_FDA_SRS_RELEASE_DATE",
+      "key": "state/fda-srs-cursor.json",
+      "field_path": "release_date",
+      "semantic_type": "RELEASE_TOKEN",
+      "value_pattern_id": "RELEASE_TOKEN_SEGMENT",
+      "scalar_type": "string",
+      "max_utf8_bytes": 64,
+      "required": true,
+      "pointer_shape": "cursor_v1",
+      "normalization": "NONE",
+      "cross_field_rules": [
+        "RELEASE_TOKEN_SINGLE_SEGMENT"
+      ]
+    },
+    {
+      "spec_id": "PROD_FDA_SRS_R2_DATA_KEY",
+      "key": "state/fda-srs-cursor.json",
+      "field_path": "r2_data_key",
+      "semantic_type": "OBJECT_KEY",
+      "value_pattern_id": "R2_DATA_KEY_PATHSAFE",
+      "scalar_type": "string",
+      "max_utf8_bytes": 256,
+      "required": true,
+      "pointer_shape": "cursor_v1",
+      "normalization": "NONE",
+      "cross_field_rules": [
+        "FDA_SRS_KEY_EQUALS_RELEASE_DATE_PATH",
+        "PATH_SEGMENTS_SAFE"
+      ]
+    }
+  ],
+  "template_allowlist_sha256": "bf3408c18e3bbbe9ac97031559238cc364d755dc0b9f98a9f094ac2f2e285647",
+  "materialized_allowlist_sha256": "92d911d5830121d17b3d2f7af342ea6aa35e89e3a6efe24d4b9624b65b62e77c",
+  "materialized_run_plan_sha256": "dc70b5bd13aa701c3b2b82b43bd42536da14fc4d5cd202d11d561e030f4ed5bf"
+}
