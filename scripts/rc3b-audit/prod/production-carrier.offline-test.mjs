@@ -13,9 +13,15 @@
  * so client-construction count stays 0). It also proves the C4-A/B2 client endpoint is
  * built under the SAME normalization the binding uses (positive + negative controls).
  *
+ * It also proves the C4-E-T1 session-token model: the minimal read-only client
+ * constructs ONLY with a format-valid temporary R2 session token (a synthetic
+ * fake), the token is byte-exact in the client's resolved credentials, and a
+ * 3-field-only trio (no token) or a malformed token BOTH throw before any client.
+ *
  * No secret, no environment, no production R2, no real account id / endpoint / token is
- * used or emitted: the only account id here is a synthetic fake and the caps prove no
- * network is reachable. Run: node scripts/rc3b-audit/prod/production-carrier.offline-test.mjs
+ * used or emitted: the only account id here is a synthetic fake, the only session token
+ * is a synthetic format-valid fake, and the caps prove no network is reachable.
+ * Run: node scripts/rc3b-audit/prod/production-carrier.offline-test.mjs
  */
 
 import fs from 'fs';
@@ -52,6 +58,11 @@ const sha256File = (p) => createHash('sha256').update(fs.readFileSync(p)).digest
 const sha256Str = (s) => createHash('sha256').update(Buffer.from(s, 'utf-8')).digest('hex');
 const threw = (fn) => { try { fn(); return false; } catch { return true; } };
 
+// C4-E-T1: a synthetic, format-VALID temporary R2 session token
+// (base64("jwt/" + three-segment JWT)). It is a FAKE -- NOT a real/signed token;
+// the client's session-token gate is FORMAT-only (no signer, no claim parsing).
+const SYNTH_SESSION_TOKEN = Buffer.from('jwt/aaa.bbb.ccc').toString('base64');
+
 export function loadCarriers() {
     const policy = JSON.parse(fs.readFileSync(POLICY_PATH, 'utf-8'));
     const plan = JSON.parse(fs.readFileSync(RUN_PLAN_PATH, 'utf-8'));
@@ -68,13 +79,19 @@ export function scopeGateNegatives() {
     };
 }
 
-/** C4-A / B2: the client endpoint uses the SAME normalization the binding uses. */
+/** C4-A / B2: the client endpoint uses the SAME normalization the binding uses.
+ *  C4-E-T1: the client now REQUIRES a temporary R2 session token (no fallback to
+ *  a 3-field-only credential), so pass a synthetic format-valid token so it builds;
+ *  also prove the token is byte-exact in the credentials and that a no-token /
+ *  malformed-token trio BOTH throw before any client. All offline: no network. */
 export async function b2Normalization() {
     const messy = '  R2acct-XYZ  '; // synthetic fake: whitespace + uppercase, no real value
     const norm = normalizeAccountId(messy); // 'r2acct-xyz'
-    const client = makeMinimalReadOnlyS3Client({
+    const trio = {
         R2_ACCOUNT_ID: messy, R2_ACCESS_KEY_ID: 'ro-fake-key', R2_SECRET_ACCESS_KEY: 'ro-fake-secret',
-    });
+    };
+    // Trio + a synthetic format-valid session token -> the client constructs.
+    const client = makeMinimalReadOnlyS3Client({ ...trio, R2_SESSION_TOKEN: SYNTH_SESSION_TOKEN });
     const ep = await client.config.endpoint(); // local resolver -- NO network
     const normalizedHost = `${norm}.r2.cloudflarestorage.com`;
     const rawHost = `${messy}.r2.cloudflarestorage.com`;
@@ -87,7 +104,17 @@ export async function b2Normalization() {
     // NEGATIVE: normalization is meaningful for this id and the client did NOT use
     // the raw (un-normalized) account id.
     const negative = norm !== messy && ep.hostname !== rawHost;
-    return { positive, negative, normalizedHost, host: ep.hostname };
+    // C4-E-T1: the client was built, the session token is byte-exact in its resolved
+    // credentials, and the no-fallback gate holds -- a 3-field-only trio (no token)
+    // AND a malformed token BOTH throw before any client (local resolver -- NO network).
+    const clientConstructed = !!client;
+    const sessionTokenByteExact = (await client.config.credentials()).sessionToken === SYNTH_SESSION_TOKEN;
+    const noTokenFails = threw(() => makeMinimalReadOnlyS3Client({ ...trio }));
+    const malformedTokenFails = threw(() => makeMinimalReadOnlyS3Client({ ...trio, R2_SESSION_TOKEN: 'notbase64$$$' }));
+    return {
+        positive, negative, normalizedHost, host: ep.hostname,
+        clientConstructed, sessionTokenByteExact, noTokenFails, malformedTokenFails,
+    };
 }
 
 export async function runProductionCarrierOfflineTest() {
@@ -161,10 +188,18 @@ export async function runProductionCarrierOfflineTest() {
     const clientAt = src.indexOf('makeMinimalReadOnlyS3Client(env)');
     checks.scope_gate_before_client = gateAt > 0 && bindAt > gateAt && clientAt > gateAt;
 
-    // 7. C4-A / B2 client-endpoint normalization (positive + negative controls).
+    // 7. C4-A / B2 client-endpoint normalization (positive + negative controls) +
+    //    C4-E-T1 session-token model: the client builds ONLY with a format-valid
+    //    temporary session token, the token is byte-exact in the client's resolved
+    //    credentials, and a 3-field-only trio (no token) or a malformed token BOTH
+    //    throw before any client (client-construction count 0 on the failure paths).
     const b2 = await b2Normalization();
     checks.b2_normalization_positive = b2.positive;
     checks.b2_normalization_negative = b2.negative;
+    checks.b2_client_constructed = b2.clientConstructed;
+    checks.b2_session_token_byte_exact = b2.sessionTokenByteExact;
+    checks.b2_no_token_fails = b2.noTokenFails;
+    checks.b2_malformed_token_fails = b2.malformedTokenFails;
 
     const ok = Object.entries(checks).every(([k, val]) => k.startsWith('_') || val === true);
     return { ok, checks };

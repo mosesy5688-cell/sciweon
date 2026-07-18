@@ -52,6 +52,25 @@ describe('RC-3B-P0B workflow: still inert / build-only (E)', () => {
     });
 });
 
+describe('RC-3B-P0B-C4-E-T1 workflow: temporary session token wired as a 4th SECRET', () => {
+    it('maps RC3B_R2_READONLY_SESSION_TOKEN -> R2_SESSION_TOKEN as a SECRET (not a var)', () => {
+        expect(YML).toContain('R2_SESSION_TOKEN: ${{ secrets.RC3B_R2_READONLY_SESSION_TOKEN }}');
+        expect(YML).not.toContain('R2_SESSION_TOKEN: ${{ vars.RC3B_R2_READONLY_SESSION_TOKEN }}');
+    });
+    it('the session token line sits immediately after R2_SECRET_ACCESS_KEY', () => {
+        // Normalize CRLF (Windows checkout) -> LF so the ordering match is line-ending
+        // agnostic. Only comment lines may sit between the two secret lines.
+        const lf = YML.replace(/\r\n/g, '\n');
+        expect(lf).toMatch(/R2_SECRET_ACCESS_KEY: \$\{\{ secrets\.RC3B_R2_READONLY_SECRET_ACCESS_KEY \}\}\n(?:\s*#[^\n]*\n)*\s*R2_SESSION_TOKEN: \$\{\{ secrets\.RC3B_R2_READONLY_SESSION_TOKEN \}\}/);
+    });
+    it('remains inert: still gated, dispatch-only, contents:read, dedicated environment', () => {
+        expect(YML).toContain('workflow_dispatch: {}');
+        expect(YML).toContain('contents: read');
+        expect(YML).toContain("if: ${{ vars.RC3B_P0B_ENABLE_R2_RUN == 'true' }}");
+        expect(YML).toContain('environment: rc3b-p0b-readonly-r2');
+    });
+});
+
 describe('RC-3B-P0B workflow: resolved locators are a fixed bound artifact', () => {
     it('passes the fixed locator path to verification and uploads all three artifacts together', () => {
         expect(YML).toMatch(/--verify-artifact[^\n]*output\/rc3b-p0b-resolved-locators\.json/);
