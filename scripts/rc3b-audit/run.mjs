@@ -100,16 +100,17 @@ async function doCheckAuthorization(env) {
             templatePolicyPath: resolved.templatePolicyPath,
             rootDir: resolved.rootDir,
         });
-        // C4-E-T1: REQUIRE a valid temporary R2 session token in the SAME preflight
-        // (immediately after the Founder anchors, before install/client/network), so
-        // a missing/invalid token fails here (fixed, leak-free code) with NO fallback
-        // to a long-term 3-field credential. This is the SAME gate makeMinimalReadOnly
-        // S3Client enforces, hoisted into the install-free preflight (pure; no @aws-sdk).
-        assertValidSessionToken(env);
-        // THEN the EXACT run identity, so a wrong tag / ref / attempt / run-id fails
-        // BEFORE npm ci (fail-before-install).
+        // C4-E-T2 F2 (identity-before-secret): FIRST bind the EXACT run identity, so a
+        // wrong tag / ref / attempt / run-id fails on IDENTITY BEFORE npm ci
+        // (fail-before-install) and BEFORE any session token is decoded.
         assertRunIdentity(env);
-        console.log('[RC3B-P0B AUTHZ] PASS (path-safe carrier inputs + external Founder authorization anchors + temporary session token + exact run identity bound)');
+        // C4-E-T1: THEN REQUIRE a valid temporary R2 session token in the SAME preflight
+        // (still before install/client/network), so a missing/invalid token fails here
+        // (fixed, leak-free code) with NO fallback to a long-term 3-field credential.
+        // This is the SAME gate makeMinimalReadOnlyS3Client enforces, hoisted into the
+        // install-free preflight (pure; no @aws-sdk).
+        assertValidSessionToken(env);
+        console.log('[RC3B-P0B AUTHZ] PASS (path-safe carrier inputs + external Founder authorization anchors + exact run identity + temporary session token bound)');
     } catch (err) {
         console.error(String(err && err.message ? err.message : err));
         return process.exit(2);

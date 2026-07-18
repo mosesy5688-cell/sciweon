@@ -134,3 +134,65 @@ describe('C4-E-T1 leak: a synthetic token never reaches artifacts or --self-test
         for (const frag of FRAGS) expect(out).not.toContain(frag);
     });
 });
+
+describe('C4-E-T2 F2: EXACT run identity is verified BEFORE the session-token secret', () => {
+    // SOURCE-ORDER proof: in BOTH orchestrators the run-identity gate precedes the
+    // session-token gate (identity before secret) -- literal-symbol order AND the
+    // actual call-site order.
+    const readSrc = (rel) => fs.readFileSync(path.join(process.cwd(), 'scripts', 'rc3b-audit', rel), 'utf-8');
+    for (const rel of ['authorized-run.mjs', 'run.mjs']) {
+        it(`${rel}: assertRunIdentity precedes assertValidSessionToken in source`, () => {
+            const src = readSrc(rel);
+            const idAt = src.indexOf('assertRunIdentity');
+            const tokAt = src.indexOf('assertValidSessionToken');
+            expect(idAt).toBeGreaterThan(-1);
+            expect(tokAt).toBeGreaterThan(-1);
+            expect(idAt).toBeLessThan(tokAt);
+            // CALL-SITE order (not just imports): the identity gate is CALLED before
+            // the temporary-session-token gate.
+            const idCall = src.indexOf('assertRunIdentity(env)');
+            const tokCall = src.indexOf('assertValidSessionToken(env)');
+            expect(idCall).toBeGreaterThan(-1);
+            expect(tokCall).toBeGreaterThan(-1);
+            expect(idCall).toBeLessThan(tokCall);
+        });
+    }
+
+    // BEHAVIORAL negative control (the key F2 proof): a WRONG run identity AND a
+    // malformed session token together must fail with the RUN-IDENTITY error FIRST
+    // (fixed `[RC3B IDENTITY]` prefix), NOT SESSION_TOKEN_INVALID, with 0 client
+    // construction + 0 network. GITHUB_SHA is left correct (so the Founder anchors
+    // still pass and the identity gate is reached); GITHUB_REF_NAME is set to a
+    // non-authorized tag so assertRunIdentity throws first.
+    const badIdentityAndToken = {
+        GITHUB_REF_NAME: 'wrong-tag-not-authorized',   // != authorized carrier tag -> IDENTITY fail
+        [SESSION_TOKEN_ENV]: 'notbase64$$$',           // also malformed, but identity gate runs first
+    };
+
+    it('runAuthorizedAudit: wrong identity + malformed token -> [RC3B IDENTITY] first, NOT SESSION_TOKEN_INVALID, 0 network', async () => {
+        const scn = authorizedScenario({ envOverride: badIdentityAndToken });
+        const s = { sends: 0, async send() { this.sends += 1; return {}; } };
+        let err;
+        try { await runScenario(scn, s); } catch (e) { err = e; }
+        expect(err).toBeTruthy();
+        const msg = String(err && err.message ? err.message : err);
+        expect(msg).toMatch(/\[RC3B IDENTITY\]/);
+        expect(msg).not.toContain('SESSION_TOKEN_INVALID');
+        expect(s.sends).toBe(0);
+    });
+
+    it('--check-authorization: wrong identity + malformed token -> exit 2, IDENTITY in stderr, NO SESSION_TOKEN_INVALID', () => {
+        const scn = authorizedScenario({ envOverride: badIdentityAndToken });
+        const env = { ...process.env, ...scn.env };
+        delete env.GITHUB_WORKSPACE; // isolate carrier root to scn.dir
+        const r = spawnSync(process.execPath, ['scripts/rc3b-audit/run.mjs', '--check-authorization'],
+            { cwd: process.cwd(), env, encoding: 'utf-8' });
+        expect(r.status).toBe(2);
+        expect(r.stderr).toMatch(/\[RC3B IDENTITY\]/);
+        expect(r.stderr).not.toMatch(/SESSION_TOKEN_INVALID/);
+        // Proof it PASSED the Founder anchors (reached the identity gate) and did not
+        // reach the AUTHZ PASS.
+        expect(r.stderr).not.toMatch(/\[RC3B AUTHZ\] MISSING_AUTHORIZATION/);
+        expect(r.stdout).not.toMatch(/AUTHZ\] PASS/);
+    });
+});
