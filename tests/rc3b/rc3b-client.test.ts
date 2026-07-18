@@ -6,6 +6,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { basePlan, buildClient, stdResponder } from './rc3b-fixtures';
+import { makeMinimalReadOnlyS3Client } from '../../scripts/rc3b-audit/client-factory.mjs';
 
 const MB = 1024 * 1024;
 
@@ -196,5 +197,35 @@ describe('RC-3B-P0B: exact LIST-key cap (clamp MaxKeys, stop at the exact budget
         expect(calls.length).toBe(1);
         expect(budget.stopped).toBe(true);
         expect(budget.counters.listKeys).toBe(0); // none emitted
+    });
+});
+
+describe('RC-3B-P0B-C4-E-T1: minimal client factory REQUIRES a temporary session token (no fallback)', () => {
+    const TRIO = { R2_ACCOUNT_ID: 'synthetic-account', R2_ACCESS_KEY_ID: 'synthetic-access-key', R2_SECRET_ACCESS_KEY: 'synthetic-secret-key' };
+    const VALID = Buffer.from('jwt/aaa.bbb.ccc').toString('base64');
+
+    it('a valid trio + valid session token builds a client with the token BYTE-EXACT in credentials (item b)', async () => {
+        const client = makeMinimalReadOnlyS3Client({ ...TRIO, R2_SESSION_TOKEN: VALID });
+        expect(client).toBeTruthy();
+        const creds = await client.config.credentials();
+        expect(creds.sessionToken).toBe(VALID);
+        expect(creds.accessKeyId).toBe('synthetic-access-key');
+        expect(creds.secretAccessKey).toBe('synthetic-secret-key');
+    });
+
+    it('a 3-field-only env (NO session token) THROWS -- no fallback, no client (item c)', () => {
+        expect(() => makeMinimalReadOnlyS3Client({ ...TRIO })).toThrow(/SESSION_TOKEN_INVALID: MISSING/);
+    });
+
+    it('a valid trio + an INVALID session token THROWS (no client, no token bytes)', () => {
+        expect(() => makeMinimalReadOnlyS3Client({ ...TRIO, R2_SESSION_TOKEN: 'notbase64$$$' })).toThrow(/SESSION_TOKEN_INVALID/);
+    });
+
+    it('a fully-absent env returns null (inert path preserved; item c)', () => {
+        expect(makeMinimalReadOnlyS3Client({})).toBe(null);
+    });
+
+    it('a partial trio THROWS CREDENTIAL_INCOMPLETE (no fallback, before any token consumption)', () => {
+        expect(() => makeMinimalReadOnlyS3Client({ R2_ACCOUNT_ID: 'synthetic-account' })).toThrow(/CREDENTIAL_INCOMPLETE/);
     });
 });

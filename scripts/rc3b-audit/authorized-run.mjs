@@ -24,6 +24,7 @@ import { loadRunManifest, validateRunManifest } from './run-manifest.mjs';
 import { assertEndpointBinding } from './endpoint-binding.mjs';
 import { assertRunIdentity } from './run-identity.mjs';
 import { resolveCarrierInputs } from './carrier-inputs.mjs';
+import { assertValidSessionToken } from './session-token.mjs';
 import { makeMinimalReadOnlyS3Client } from './client-factory.mjs';
 import { runReadOnlyAudit } from './harness.mjs';
 import { buildEvidenceFromRun } from './evidence-assembly.mjs';
@@ -93,6 +94,14 @@ export async function runAuthorizedAudit(env, opts = {}) {
     const authz = assertFounderAuthorization(env, {
         runPlanPath, templatePolicyPath, rootDir: resolved.rootDir,
     });
+
+    // 1a. C4-E-T1 TEMPORARY-CREDENTIAL gate (fail-before-client, no-fallback):
+    //     immediately after the Founder authorization anchors and BEFORE endpoint
+    //     binding / client construction / any network, REQUIRE a valid temporary R2
+    //     session token. A missing/invalid token throws a fixed, leak-free code here,
+    //     so a long-term 3-field-only credential can never reach the client. (Return
+    //     value is discarded here; makeMinimalReadOnlyS3Client re-reads + consumes it.)
+    assertValidSessionToken(env);
 
     // 1b. EXACT run-identity binding (CHANGE A): tag / ref-name / sha / attempt==1 /
     //     run-id -- all BEFORE the client (fail-before-client). A second independent

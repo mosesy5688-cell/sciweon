@@ -22,6 +22,10 @@ export const HARNESS = 'a'.repeat(40);
 export const CARRIER_TAG = 'rc3b-p0b-carrier-v0-synthetic';
 export const RUN_ID = '424242';
 export const sha256File = (p) => createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+// C4-E-T1: a synthetic-but-format-VALID temporary R2 session token
+// (base64("jwt/" + three-segment JWT)). It is NOT a real/signed token; the gate
+// is format-only. Consumed as the AWS sessionToken by makeMinimalReadOnlyS3Client.
+export const SYNTHETIC_SESSION_TOKEN = Buffer.from('jwt/aaa.bbb.ccc').toString('base64');
 
 /** Write a TEMP template policy (committed synthetic families) with a given scope. */
 export function writeTempPolicy(dir, scope) {
@@ -66,6 +70,9 @@ export function authorizedScenario({ policyScope = 'PRODUCTION-READONLY', mutate
         RC3B_TEMPLATE_POLICY_PATH: policy.path,
         RC3B_ALLOWED_BUCKETS: plan.bucket,
         R2_ACCOUNT_ID: SYNTHETIC_ACCOUNT_ID,
+        // C4-E-T1: a valid temporary session token, so the no-fallback gate PASSES
+        // on the happy path (negative controls override this to an invalid value).
+        R2_SESSION_TOKEN: SYNTHETIC_SESSION_TOKEN,
         RC3B_CARRIER_ROOT: dir,
         RC3B_OUTPUT_DIR: dir,
         ...envOverride,

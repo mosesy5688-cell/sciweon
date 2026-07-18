@@ -70,6 +70,10 @@ jobs:
       R2_ACCOUNT_ID: ${{ secrets.RC3B_R2_ACCOUNT_ID }}
       R2_ACCESS_KEY_ID: ${{ secrets.RC3B_R2_READONLY_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.RC3B_R2_READONLY_SECRET_ACCESS_KEY }}
+      # C4-E-T1: temporary R2 session token (Cloudflare temp credentials), consumed
+      # as the AWS sessionToken. Future READ-ONLY environment SECRET (NOT provisioned
+      # in this build). No-fallback: without it a real run fails before the client.
+      R2_SESSION_TOKEN: ${{ secrets.RC3B_R2_READONLY_SESSION_TOKEN }}
       RC3B_P0B_RUN_AUTHORIZED: ${{ vars.RC3B_P0B_RUN_AUTHORIZED }}
       RC3B_ALLOWED_BUCKETS: ${{ vars.RC3B_ALLOWED_BUCKETS }}
       RC3B_RUN_PLAN_PATH: ${{ vars.RC3B_RUN_PLAN_PATH }}
