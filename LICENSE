@@ -24,29 +24,58 @@ SOFTWARE.
 
 DATA LICENSE NOTICE
 
-The Sciweon code (this MIT license) is distinct from the data Sciweon
-aggregates. Data sourced from upstream providers retains the original
-licenses of those providers:
+The MIT license above covers the SOURCE CODE in this repository and NOTHING
+ELSE. It grants no rights in any data, in any model, or in the Sciweon name.
+A permissive code license does not make the data permissive.
 
-  - PubChem (NIH NCBI):       Public Domain
-  - ChEMBL (EMBL-EBI):        Creative Commons Attribution-ShareAlike 3.0
-  - ClinicalTrials.gov:       Public Domain
-  - OpenAlex (OurResearch):   Creative Commons Zero (CC0)
-  - PubMed (NIH NCBI):        Public Domain
-  - UniProt (EMBL-EBI):       Creative Commons Attribution 4.0
-  - UniChem (EMBL-EBI):       Creative Commons Attribution 4.0
-  - openFDA (US FDA):         Public Domain
-  - KEGG (Kyoto University):  Academic Free / Commercial Restricted
-  - Retraction Watch:         CC BY-NC 4.0 (non-commercial)
-  - RxNorm (NLM):             Public Domain
-  - Semantic Scholar:         Open Data Commons Attribution
-  - PubChem BioAssay:         Public Domain
-  - EU CTIS (EMA):            Public access, non-commercial preferred
+Data rights are qualified PER SOURCE and PER FIELD, not per dataset. Two
+fields in the same record can carry different obligations. The classes:
 
-Consumers of Sciweon data must comply with the most restrictive applicable
-upstream license. Aggregated entity records carry provenance.sources fields
-naming the original provider; check those before commercial redistribution.
+  FIELD-QUALIFIED PUBLIC
+    PubChem (NIH NCBI), PubChem BioAssay
+      Public-domain status applies per field, NOT to the resource as a whole.
+      NCBI states it "has no rights to transfer to a third party" for
+      contributed content, and depositor-provided fields may carry their own
+      terms. No unconditional clean-commercial grant is asserted or implied.
+    ClinicalTrials.gov, openFDA (US FDA)
+      US federal works. Sponsor-contributed free text within a record is not
+      necessarily US-government-authored; treat it separately.
+
+  SHARE-ALIKE
+    ChEMBL (EMBL-EBI) -- Creative Commons Attribution-ShareAlike 3.0 Unported.
+      Attribution AND share-alike attach to any distributed derivative. Note
+      that CC BY-SA 3.0 Unported grants no sui generis database right; the
+      EU/UK database right in the underlying database is NOT licensed by it.
+
+  ATTRIBUTION REQUIRED, NO LICENSE GRANTED
+    PubMed / MEDLINE / RxNorm (NLM)
+      NLM asserts contractual acknowledgement, not a copyright license.
+      Republishers must additionally state, clearly and conspicuously, when
+      the data does not reflect the most current NLM data.
+    OpenAlex (OurResearch) -- CC0 for the metadata. Reconstructed abstracts
+      are excluded pending confirmation of publisher rights.
+
+  WITHHELD -- not served, not redistributed
+    UniProt, UniChem, MedDRA, KEGG, Semantic Scholar, DrugBank-proprietary,
+    UMLS `cui` (universally withheld across all UMLS vocabularies).
+    Withholding is emitted as an explicit machine-readable state on the API:
+    a withheld field is reported as withheld, never silently dropped.
+
+  UNVERIFIED -- treated as restricted until confirmed
+    Retraction Watch, EU CTIS (EMA) document reuse terms.
+    Prior versions of this notice asserted specific licenses for these
+    sources; those assertions were not supported by current primary evidence
+    and have been withdrawn rather than restated.
+
+Consumers must comply with the most restrictive applicable upstream terms for
+the SPECIFIC FIELDS they use. Entity records carry provenance naming the
+originating source; check those before any redistribution or commercial use.
 
 Sciweon makes no warranty regarding upstream data accuracy or completeness.
-Data flows through validated extraction pipelines but original-source
-errors / retractions / corrections may not be reflected in real time.
+Original-source errors, retractions and corrections may not be reflected in
+any given snapshot. Every API response carries the identity of the snapshot
+it was served from; no refresh cadence is promised.
+
+RESEARCH USE ONLY. Sciweon reports observed records with provenance. It does
+not assess causality, risk or clinical significance, and makes no clinical,
+diagnostic, dosing or regulatory recommendation.
