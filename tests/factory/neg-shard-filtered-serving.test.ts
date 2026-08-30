@@ -158,7 +158,11 @@ describe('neg sharded path — event_type-FILTERED serving', () => {
         expect(sharded.negative_signals_count).toBe(leg.negative_signals_count);
         expect(sharded.signals_by_severity).toEqual(leg.signals_by_severity);
         expect(sharded.signals_by_evidence_type).toEqual(leg.signals_by_evidence_type);
-        expect(sharded.verdict.highest_severity).toBe(leg.verdict.highest_severity);
+        // P0 safety repair: no verdict on either path; the evidence-use boundary
+        // must be byte-identical across sharded and legacy serving.
+        expect((sharded as Record<string, unknown>).verdict).toBeUndefined();
+        expect((leg as Record<string, unknown>).verdict).toBeUndefined();
+        expect(sharded.evidence_use_boundary).toEqual(leg.evidence_use_boundary);
         // Same id SET (legacy = file order, sharded = (key,id)-sorted page order).
         expect(new Set(sharded.signals.map(s => s.id))).toEqual(new Set(leg.signals.map(s => s.id)));
         expect(sharded.signals.length).toBe(leg.signals.length);

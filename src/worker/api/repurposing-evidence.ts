@@ -2,12 +2,13 @@
  * GET /api/v1/compound/:id/repurposing-evidence — V0.5.8 Wave C1-3 Phase 1.
  *
  * Fuses 3 evidence layers (positive trials + bioactivities, negative
- * NegEvidence signals, retracted papers) in one call and synthesizes a
- * repurposing_signal verdict. Replaces the 4-endpoint stitching today
- * agents must do manually.
+ * NegEvidence signals, retracted papers) in one call. Replaces the
+ * 4-endpoint stitching today agents must do manually. Emits NO synthesized
+ * verdict -- the layers are returned side by side and the consumer
+ * adjudicates.
  *
  * Contract per SCIWEON_DATA_ARCHITECTURE §3.0:
- *   200  full repurposing assessment
+ *   200  three-layer evidence bundle
  *   400  malformed compound ID
  *   404  invalid path
  *   405  non-GET method

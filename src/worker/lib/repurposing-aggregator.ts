@@ -7,11 +7,12 @@
  *   retracted = papers with is_retracted=true
  *
  * Agent UX: replaces 4 separate round-trips (/trials + /bioactivities +
- * /negative-evidence + /papers + filter) with one canonical call that also
- * synthesizes a single repurposing_signal verdict (strong/mixed/weak/none).
+ * /negative-evidence + /papers + filter) with one canonical call that returns
+ * the three layers side by side, each with its own provenance.
  *
- * Pure summarizers + verdict are exported separately for unit testing.
- * The orchestrator wires loaders in parallel.
+ * It deliberately emits NO synthesized verdict. The consumer adjudicates.
+ * Pure summarizers are exported separately for unit testing. The orchestrator
+ * wires loaders in parallel.
  */
 
 import { fetchR2JsonText } from './r2-fetch';
@@ -19,6 +20,7 @@ import { loadTrialsForCompound } from './trial-loader';
 import { loadBioactivitiesForCompound } from './bioactivity-loader';
 import { loadPapersForCompound } from './paper-loader';
 import { loadNegEvidenceSummary, type NegSummary } from './neg-evidence-loader';
+import { evidenceUseBoundary, type EvidenceUseBoundary } from './neg-evidence-response';
 import { type SnapshotContext, loadSnapshotContext } from './snapshot-context';
 import { toSourceLoadError } from './source-load-error';
 
@@ -58,10 +60,7 @@ export interface RepurposingResponse {
     compound: { id: string; url: string };
     snapshot_date: string | null;
     summary: RepurposingSummary;
-    verdict: {
-        repurposing_signal: 'strong' | 'mixed' | 'weak' | 'none';
-        recommendation: string;
-    };
+    evidence_use_boundary: EvidenceUseBoundary;
 }
 
 export function summarizeTrials(trials: Record<string, unknown>[]): RepurposingSummary['positive']['trials'] {
@@ -127,53 +126,19 @@ export function summarizeNegative(neg: NegSummary): RepurposingSummary['negative
     };
 }
 
-export function decideRepurposingVerdict(summary: RepurposingSummary): RepurposingResponse['verdict'] {
-    const posTotal = summary.positive.trials.total + summary.positive.bioactivities.total;
-    const negTotal = summary.negative.signals_count;
-    const critical = summary.negative.signals_by_severity.critical;
-    const retracted = summary.retracted.papers_count;
-
-    if (critical > 0) {
-        return {
-            repurposing_signal: 'none',
-            recommendation: 'Critical negative signal present (drug withdrawal / black box). Repurposing is not viable without explicit risk-benefit reassessment.',
-        };
-    }
-    if (posTotal === 0 && negTotal === 0 && retracted === 0) {
-        return {
-            repurposing_signal: 'none',
-            recommendation: 'No repurposing evidence on file. Insufficient data to recommend.',
-        };
-    }
-    if (posTotal === 0 && retracted > 0) {
-        return {
-            repurposing_signal: 'weak',
-            recommendation: 'No positive evidence; only retracted-paper signals present. Treat any historical claim with caution.',
-        };
-    }
-    if (summary.positive.trials.total >= 2 && negTotal <= 2) {
-        return {
-            repurposing_signal: 'strong',
-            recommendation: 'Multiple progressed trials and few negative signals — strong repurposing candidate.',
-        };
-    }
-    if (posTotal > 0 && negTotal === 0) {
-        return {
-            repurposing_signal: 'strong',
-            recommendation: 'Positive evidence present with no negative signals on record.',
-        };
-    }
-    if (posTotal > 0 && negTotal > 2) {
-        return {
-            repurposing_signal: 'mixed',
-            recommendation: 'Positive evidence weighed against multiple negative signals. Agent should surface both layers.',
-        };
-    }
-    return {
-        repurposing_signal: 'weak',
-        recommendation: 'Sparse evidence; treat any single-source claim with caution.',
-    };
-}
+/*
+ * REMOVED (P0 public scientific-safety repair): `decideRepurposingVerdict`.
+ *
+ * It synthesized a single `repurposing_signal` of strong/mixed/weak/none plus
+ * a hardcoded recommendation string -- including, on a threshold of ONE
+ * critical signal, a flat declaration that repurposing was not viable absent a
+ * formal risk/benefit re-review. That is an adjudication Sciweon is not
+ * positioned to make, it is clinical-decision-adjacent, and it collapsed the
+ * competing layers the evidence model exists to preserve.
+ *
+ * The aggregation of positive / negative / retracted layers is retained in
+ * `summary` verbatim. The consumer performs its own synthesis.
+ */
 
 export async function aggregateRepurposingEvidence(
     bucket: R2Bucket,
@@ -222,7 +187,7 @@ export async function aggregateRepurposingEvidence(
         compound: { id: compoundId, url: `${baseUrl}/api/v1/entity/${encodeURIComponent(compoundId)}` },
         snapshot_date: snapshotDate,
         summary,
-        verdict: decideRepurposingVerdict(summary),
+        evidence_use_boundary: evidenceUseBoundary(),
     };
     // Note: POSITIVE_TRIAL_STATUSES reserved for Phase 2 weighted-tier scoring.
     void POSITIVE_TRIAL_STATUSES;

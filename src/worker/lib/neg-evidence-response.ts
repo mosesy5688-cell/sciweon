@@ -13,6 +13,7 @@
  */
 
 import { type EvidenceType, isKnownEvidenceType } from './event-type-taxonomy';
+import { TYPE_FAERS_ADR_SIGNAL } from '../../lib/schemas/neg-evidence-types.js';
 import type { NegManifestEntry } from './neg-manifest-loader';
 
 const SEVERITY_KEYS = ['critical', 'major', 'minor', 'unknown'] as const;
@@ -43,20 +44,69 @@ function severityFromRollup(r: [number, number, number, number]): Record<Severit
     return { critical: r[0] ?? 0, major: r[1] ?? 0, minor: r[2] ?? 0, unknown: r[3] ?? 0 };
 }
 
-function highestSeverity(by: Record<SeverityKey, number>): SeverityKey | 'none' {
-    if (by.critical > 0) return 'critical';
-    if (by.major > 0) return 'major';
-    if (by.minor > 0) return 'minor';
-    if (by.unknown > 0) return 'unknown';
-    return 'none';
+/**
+ * Evidence-use boundary carried on every negative-evidence response.
+ *
+ * Sciweon reports observed records with provenance and rights state. It does
+ * NOT assess causality, risk or clinical significance, and emits no clinical,
+ * diagnostic, dosing or regulatory recommendation. Consumers -- including
+ * autonomous agents -- perform their own synthesis from `signals[]`.
+ *
+ * The `severity` on a record is a per-record SOURCE classification carried
+ * through from the producer. It is not a Sciweon risk assessment, and it must
+ * not be re-presented as one.
+ *
+ * Spontaneous adverse-event reporting systems (FDA FAERS, renamed AEMS) carry
+ * an additional structural limit: reports are unverified, may be duplicated,
+ * and have NO exposure denominator. Their counts cannot establish causation
+ * and cannot yield incidence, rate or per-patient risk. Absence of reports is
+ * not evidence of absence of risk.
+ */
+const SPONTANEOUS_REPORT_TYPES: readonly string[] = [TYPE_FAERS_ADR_SIGNAL];
+
+const BOUNDARY_STATEMENT =
+    'Research use only. Sciweon reports observed records with provenance and rights state. '
+    + 'It does not assess causality, risk or clinical significance and makes no clinical, '
+    + 'diagnostic, dosing or regulatory recommendation. Per-record severity is a source '
+    + 'classification carried through from the producer, not a Sciweon risk assessment.';
+
+const SPONTANEOUS_REPORT_CAVEAT =
+    'Counts derived from spontaneous adverse-event reporting (FDA FAERS/AEMS) are report '
+    + 'counts only. Reports are unverified, may be duplicated, and have no exposure '
+    + 'denominator: they cannot establish causation and cannot be used to derive incidence, '
+    + 'rate or per-patient risk. Absence of reports is not evidence of absence of risk.';
+
+export interface EvidenceUseBoundary {
+    research_use_only: true;
+    clinical_decision_support: false;
+    causality_assessed: false;
+    incidence_or_rate_derivable: false;
+    statement: string;
+    spontaneous_report_types_present: string[];
+    spontaneous_report_caveat: string;
 }
 
-function recommendationFor(highest: SeverityKey | 'none'): string {
-    if (highest === 'critical') return 'Material negative evidence present — agent should treat this compound as carrying critical risk and require explicit justification for any clinical-decision use case.';
-    if (highest === 'major') return 'Substantive negative evidence — agent should surface findings prominently in any recommendation and weigh against alternatives.';
-    if (highest === 'minor') return 'Minor negative signals only — agent may proceed with normal caution and disclose findings.';
-    if (highest === 'unknown') return 'Negative signals exist but severity is unclassified — agent should fetch source records for human review.';
-    return 'No negative evidence found in current snapshot. Absence of signal is not absence of risk — agent should still consult primary literature.';
+/**
+ * The caveat is UNCONDITIONAL: both the paged negative-evidence response and
+ * the repurposing aggregation can carry spontaneous-report-derived counts, and
+ * a consumer must not have to infer the limit from whether a type happens to
+ * appear on the current page. `spontaneous_report_types_present` reports what
+ * is actually present in the aggregate; the caveat states the boundary either
+ * way. Pass `byType` when the caller can enumerate types; omit it otherwise.
+ */
+export function evidenceUseBoundary(byType?: Record<string, number>): EvidenceUseBoundary {
+    const present = byType
+        ? SPONTANEOUS_REPORT_TYPES.filter(t => (byType[t] ?? 0) > 0)
+        : [];
+    return {
+        research_use_only: true,
+        clinical_decision_support: false,
+        causality_assessed: false,
+        incidence_or_rate_derivable: false,
+        statement: BOUNDARY_STATEMENT,
+        spontaneous_report_types_present: present,
+        spontaneous_report_caveat: SPONTANEOUS_REPORT_CAVEAT,
+    };
 }
 
 function signalUrl(baseUrl: string, id: string): string {
@@ -120,16 +170,12 @@ export function shapePagedResponse(
         ? { ...filtered.byType }
         : (entry ? { ...entry.type_rollup } : {});
     const unknownTypes = Object.keys(byType).filter(t => !isKnownEvidenceType(t)).sort();
-    const highest = highestSeverity(bySeverity);
     const returned = pageRecords.length;
     const hasMore = offset + returned < total;
     const pagination: Pagination = {
         offset, limit, returned, has_more: hasMore,
         next_offset: hasMore ? offset + returned : null,
     };
-    const summary = total === 0
-        ? 'No negative signals recorded for this compound in current snapshot.'
-        : `${total} negative signal${total === 1 ? '' : 's'} across ${Object.keys(byType).length} evidence type${Object.keys(byType).length === 1 ? '' : 's'}; highest severity: ${highest}.`;
     return {
         compound: { id: compoundId, url: signalUrl(baseUrl, compoundId) },
         snapshot_date: snapshotDate,
@@ -139,7 +185,7 @@ export function shapePagedResponse(
         signals_by_evidence_type: byType,
         unknown_event_types: unknownTypes,
         signals: pageRecords.map(r => shapeSignal(r, baseUrl)),
-        verdict: { summary, highest_severity: highest, agent_recommendation: recommendationFor(highest) },
+        evidence_use_boundary: evidenceUseBoundary(byType),
     };
 }
 
