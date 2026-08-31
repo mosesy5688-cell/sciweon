@@ -22,7 +22,7 @@ import {
     detectZeroDeltas, loadStagingDelta, loadPreviousAggregated,
     uploadAggregated, cleanupStaging,
 } from './lib/incremental-merge-helpers.js';
-import { mergePreservingConflicts } from './lib/merge-conflict.js';
+import { mergePreservingConflicts, MergeClaimOverflowError } from './lib/merge-conflict.js';
 
 // Source importance order: primary structural sources first.
 // Determines which source "wins" when same entity id appears in multiple deltas.
@@ -45,12 +45,23 @@ function parseArgs() {
 // displaced value is NO LONGER DESTROYED: F0-MERGE-INTEGRITY retains it as an
 // attributed competing claim. See lib/merge-conflict.js for why.
 function applyDelta(cumulative, records, source) {
-    let added = 0, updated = 0, conflicted = 0, claims = 0;
+    let added = 0, updated = 0, conflicted = 0, claims = 0, preserved = 0;
     for (const record of records) {
         if (!record?.id) continue;
         if (cumulative.has(record.id)) {
             const existing = cumulative.get(record.id);
-            const { merged, conflicts } = mergePreservingConflicts(existing, record, source);
+            let out;
+            try {
+                out = mergePreservingConflicts(existing, record, source);
+            } catch (err) {
+                if (err instanceof MergeClaimOverflowError) {
+                    // Fail LOUD. Silently trimming evidence to keep a record
+                    // small is the failure this module exists to prevent.
+                    console.error(`[MERGE][FATAL] ${err.message}`);
+                }
+                throw err;
+            }
+            const { merged, conflicts, nullPreserved } = out;
             if (conflicts.length > 0) {
                 conflicted++;
                 claims += conflicts.length;
@@ -58,6 +69,11 @@ function applyDelta(cumulative, records, source) {
                     console.log(`[MERGE][CONFLICT] ${record.id} field=${c.field} `
                         + `displaced_by=${source} (previous value retained as a competing claim)`);
                 }
+            }
+            for (const n of nullPreserved) {
+                preserved++;
+                console.log(`[MERGE][PRESERVED] ${record.id} field=${n.field} `
+                    + `delta=${source} sent no value; existing value KEPT (absence is not a retraction)`);
             }
             cumulative.set(record.id, merged);
             updated++;
@@ -67,8 +83,9 @@ function applyDelta(cumulative, records, source) {
         }
     }
     console.log(`[MERGE] ${source}: +${added} added, ~${updated} updated, `
-        + `${conflicted} record(s) with conflicts, ${claims} claim(s) retained`);
-    return { added, updated, conflicted, claims };
+        + `${conflicted} record(s) with conflicts, ${claims} claim(s) retained, `
+        + `${preserved} field(s) preserved against an empty incoming value`);
+    return { added, updated, conflicted, claims, preserved };
 }
 
 async function main() {
