@@ -24,29 +24,94 @@ SOFTWARE.
 
 DATA LICENSE NOTICE
 
-The Sciweon code (this MIT license) is distinct from the data Sciweon
-aggregates. Data sourced from upstream providers retains the original
-licenses of those providers:
+The MIT license above covers the SOURCE CODE in this repository and NOTHING
+ELSE. It grants no rights in any data, in any model, or in the Sciweon name.
+A permissive code license does not make the data permissive.
 
-  - PubChem (NIH NCBI):       Public Domain
-  - ChEMBL (EMBL-EBI):        Creative Commons Attribution-ShareAlike 3.0
-  - ClinicalTrials.gov:       Public Domain
-  - OpenAlex (OurResearch):   Creative Commons Zero (CC0)
-  - PubMed (NIH NCBI):        Public Domain
-  - UniProt (EMBL-EBI):       Creative Commons Attribution 4.0
-  - UniChem (EMBL-EBI):       Creative Commons Attribution 4.0
-  - openFDA (US FDA):         Public Domain
-  - KEGG (Kyoto University):  Academic Free / Commercial Restricted
-  - Retraction Watch:         CC BY-NC 4.0 (non-commercial)
-  - RxNorm (NLM):             Public Domain
-  - Semantic Scholar:         Open Data Commons Attribution
-  - PubChem BioAssay:         Public Domain
-  - EU CTIS (EMA):            Public access, non-commercial preferred
+DATA IS NOT COVERED BY THE MIT LICENSE. Data rights can vary by SOURCE, by
+RECORD, by FIELD, by CONTRIBUTOR, by how a value was TRANSFORMED, and by the
+FORM in which it is OUTPUT. There is no single license that describes
+"Sciweon data", and this notice does not create one.
 
-Consumers of Sciweon data must comply with the most restrictive applicable
-upstream license. Aggregated entity records carry provenance.sources fields
-naming the original provider; check those before commercial redistribution.
+WHAT HAS ACTUALLY BEEN ADJUDICATED
+
+A specific, frozen set of 25 rights-bearing FIELDS across three planes. These
+are field-level determinations. A source named below is qualified FOR THOSE
+FIELDS ONLY; it does not mean the whole resource carries that class.
+
+  FIELD-QUALIFIED PUBLIC -- 5 named PubChem fields.
+    Field-qualified, not a blanket public-domain grant. NCBI states it has no
+    rights to transfer to a third party for contributed content, and
+    depositor-provided fields may carry their own terms. No unconditional
+    clean-commercial grant is asserted for PubChem as a resource.
+
+  SHARE-ALIKE -- 14 named ChEMBL fields.
+    ChEMBL is distributed by EMBL-EBI under CC BY-SA 3.0 Unported. Attribution
+    and share-alike attach to distributed derivatives.
+    NOTE, AS AN OPEN QUESTION AND NOT A CONCLUSION: CC BY-SA 3.0 Unported
+    licenses copyright; whether and how the EU/UK sui generis database right
+    in the underlying database is engaged has NOT been determined here and is
+    referred to qualified counsel. Nothing in this file should be read as a
+    legal conclusion on that point, in either direction.
+
+  BIBLIOGRAPHIC -- 6 named PubMed fields.
+    Attribution required; no license granted. NLM additionally requires
+    republishers to state clearly when data does not reflect the most current
+    NLM data.
+
+  NOT IN ANY APPROVED OUTPUT PLANE.
+    UniProt and UniChem. Gate-5B placed no field of either into an output
+    plane, so nothing from them is approved for publication. This is an
+    adjudication about what MAY be published; see the enforcement note below
+    for what is actually prevented at runtime, which is a different and
+    narrower thing.
+
+ANY SOURCE OR FIELD NOT IN THE ADJUDICATED SET IS UNRESOLVED, and must be
+treated as restricted rather than assumed open. This explicitly includes
+sources that may look open at the resource level -- among them PubChem
+BioAssay, ClinicalTrials.gov, openFDA, RxNorm and OpenAlex. Their overall
+posture has not been adjudicated field by field, and a resource-level
+impression is not a rights determination.
+
+Where a previous version of this notice asserted a specific license for a
+source without supporting primary evidence, that assertion has been WITHDRAWN
+rather than replaced with a different guess.
+
+WHAT THE RUNTIME ACTUALLY ENFORCES -- AND WHY THAT IS NOT THE SAME CLAIM
+
+An ADJUDICATION is a determination about what may be published. An
+ENFORCEMENT is a control that prevents publication. They are not the same,
+and this notice keeps them apart deliberately.
+
+The only rights control operating at runtime today is a limited MedDRA and
+KEGG containment filter applied at the serving boundary. It is a denylist over
+recognised shapes: an unrecognised source, a renamed field or a reshaped
+payload is not caught by it.
+
+There is NO runtime mechanism enforcing the 25-field approved set, and NO
+runtime mechanism enforcing the UniProt or UniChem position. Those rest on the
+adjudication alone.
+
+This repository must not be represented as providing per-field rights
+enforcement, and a reader must not infer a runtime control from the presence
+of the approved-plane table above.
+
+OBLIGATIONS ON CONSUMERS
+
+Comply with the most restrictive applicable upstream terms for the SPECIFIC
+FIELDS you use, and verify those terms against the upstream source rather than
+relying on this file. Entity records carry provenance naming the originating
+source; check it before any redistribution or commercial use.
+
+NO WARRANTY AND NO FRESHNESS PROMISE
 
 Sciweon makes no warranty regarding upstream data accuracy or completeness.
-Data flows through validated extraction pipelines but original-source
-errors / retractions / corrections may not be reflected in real time.
+Original-source errors, retractions and corrections may not be reflected in
+any given snapshot. Evidence responses report the snapshot date they were
+served from; no refresh cadence is promised.
+
+RESEARCH USE ONLY
+
+Sciweon reports observed records with their provenance. It does not assess
+causality, risk or clinical significance, and makes no clinical, diagnostic,
+dosing or regulatory recommendation.
