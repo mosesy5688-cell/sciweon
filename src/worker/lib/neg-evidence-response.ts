@@ -92,7 +92,19 @@ export interface EvidenceUseBoundary {
     causality_assessed: false;
     incidence_or_rate_derivable: false;
     statement: string;
-    spontaneous_report_types_present: string[];
+    /**
+     * Whether the caller was able to enumerate evidence types at all.
+     * FALSE means "not determined", which is NOT the same claim as "none
+     * present" and must never be rendered as one.
+     */
+    spontaneous_report_types_enumerated: boolean;
+    /**
+     * The spontaneous-report types actually present, or NULL when the caller
+     * could not enumerate. An empty array asserts that none are present; null
+     * asserts nothing. Returning [] for an unenumerable caller would state a
+     * fact Sciweon does not have.
+     */
+    spontaneous_report_types_present: string[] | null;
     spontaneous_report_caveat: string;
 }
 
@@ -100,21 +112,27 @@ export interface EvidenceUseBoundary {
  * The caveat is UNCONDITIONAL: both the paged negative-evidence response and
  * the repurposing aggregation can carry spontaneous-report-derived counts, and
  * a consumer must not have to infer the limit from whether a type happens to
- * appear on the current page. `spontaneous_report_types_present` reports what
- * is actually present in the aggregate; the caveat states the boundary either
- * way. Pass `byType` when the caller can enumerate types; omit it otherwise.
+ * appear on the current page.
+ *
+ * UNKNOWN IS NOT EMPTY. A caller that cannot enumerate types gets
+ * `spontaneous_report_types_enumerated: false` and
+ * `spontaneous_report_types_present: null` -- never `[]`. An empty array is an
+ * assertion that none are present; null asserts nothing. Rendering an
+ * unenumerable case as `[]` would state a fact Sciweon does not have, which is
+ * the same class of error as the removed severity grade.
  */
 export function evidenceUseBoundary(byType?: Record<string, number>): EvidenceUseBoundary {
-    const present = byType
-        ? SPONTANEOUS_REPORT_TYPES.filter(t => (byType[t] ?? 0) > 0)
-        : [];
+    const enumerated = byType !== undefined && byType !== null;
     return {
         research_use_only: true,
         clinical_decision_support: false,
         causality_assessed: false,
         incidence_or_rate_derivable: false,
         statement: BOUNDARY_STATEMENT,
-        spontaneous_report_types_present: present,
+        spontaneous_report_types_enumerated: enumerated,
+        spontaneous_report_types_present: enumerated
+            ? SPONTANEOUS_REPORT_TYPES.filter(t => (byType[t] ?? 0) > 0)
+            : null,
         spontaneous_report_caveat: SPONTANEOUS_REPORT_CAVEAT,
     };
 }

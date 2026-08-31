@@ -142,12 +142,36 @@ describe('evidence-use boundary', () => {
     });
 
     it('reports which spontaneous-report types are actually present', () => {
-        expect(evidenceUseBoundary({ faers_adr_signal: 30, inactive_bioassay: 26 })
-            .spontaneous_report_types_present).toEqual(['faers_adr_signal']);
-        expect(evidenceUseBoundary({ trial_failure: 3 })
-            .spontaneous_report_types_present).toEqual([]);
-        // Unenumerable caller (aggregator): empty list, caveat still carried.
-        expect(evidenceUseBoundary().spontaneous_report_types_present).toEqual([]);
+        const withFaers = evidenceUseBoundary({ faers_adr_signal: 30, inactive_bioassay: 26 });
+        expect(withFaers.spontaneous_report_types_enumerated).toBe(true);
+        expect(withFaers.spontaneous_report_types_present).toEqual(['faers_adr_signal']);
+
+        // Enumerated and genuinely none present -> [] is a true assertion.
+        const withoutFaers = evidenceUseBoundary({ trial_failure: 3 });
+        expect(withoutFaers.spontaneous_report_types_enumerated).toBe(true);
+        expect(withoutFaers.spontaneous_report_types_present).toEqual([]);
+    });
+
+    it('UNKNOWN IS NOT EMPTY: an unenumerable caller gets null, never []', () => {
+        // The repurposing aggregator cannot enumerate evidence types. Emitting
+        // [] there would assert "no spontaneous-report data present", a fact
+        // Sciweon does not have -- the same class of error as the removed
+        // severity grade, one field further down.
+        for (const b of [evidenceUseBoundary(), evidenceUseBoundary(undefined)]) {
+            expect(b.spontaneous_report_types_enumerated).toBe(false);
+            expect(b.spontaneous_report_types_present).toBeNull();
+            expect(b.spontaneous_report_types_present).not.toEqual([]);
+            // The caveat still travels regardless of enumerability.
+            expect(b.spontaneous_report_caveat).toContain('cannot establish causation');
+        }
+    });
+
+    it('the repurposing bundle reports unknown, not empty', async () => {
+        const { evidenceUseBoundary: eub } = await import('../../src/worker/lib/neg-evidence-response');
+        const b = eub();
+        expect(b.spontaneous_report_types_enumerated).toBe(false);
+        expect(b.spontaneous_report_types_present).toBeNull();
+        expect(JSON.stringify(b)).not.toContain('"spontaneous_report_types_present":[]');
     });
 
     it('travels on the paged response itself', () => {
@@ -158,6 +182,7 @@ describe('evidence-use boundary', () => {
             0, 50, '2026-06-14', BASE,
         );
         expect(out.evidence_use_boundary.spontaneous_report_types_present).toEqual(['faers_adr_signal']);
+        expect(out.evidence_use_boundary.spontaneous_report_types_enumerated).toBe(true);
         expect(out.evidence_use_boundary.research_use_only).toBe(true);
     });
 });

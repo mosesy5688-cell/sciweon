@@ -149,10 +149,10 @@ export async function aggregateRepurposingEvidence(
     // bioactivities + papers). No sub-loader re-reads latest.json, so a composed
     // request reads the pointer once and pins one snapshot identity for all
     // layers. A SnapshotContractError (unknown/mixed/corrupt) PROPAGATES (LOUD —
-    // never a partial/empty/'none' verdict). A plain absent/unreadable pointer is
+    // never a partial/empty/'none' RESULT). A plain absent/unreadable pointer is
     // a source READ failure: surface it as a typed SourceLoadError (LOUD, the
     // route maps it to a retryable 503) rather than degrading to a falsely-empty
-    // verdict — the loaders can no longer best-effort over a missing pointer
+    // result -- the loaders can no longer best-effort over a missing pointer
     // because they all consume this one ctx.
     let ctx: SnapshotContext;
     try {

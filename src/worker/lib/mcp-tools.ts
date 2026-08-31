@@ -69,7 +69,7 @@ export const MCP_TOOLS = [
     },
     {
         name: 'sciweon_get_repurposing_evidence',
-        description: 'Get the three-layer repurposing evidence bundle for a compound by PubChem CID. Fuses positive (progressed trials + active bioactivities), negative (NegEvidence v2 typed taxonomy records), and retracted (papers with is_retracted=true) in one call, each layer with its own counts, examples and provenance. Sciweon emits no repurposing verdict, score, severity grade or recommendation -- the layers are returned side by side and the consumer adjudicates. Use this to avoid stitching 4 endpoints client-side. See evidence_use_boundary: research use only, no causality assessed. Read-only.',
+        description: 'Get the three-layer repurposing evidence bundle for a compound by PubChem CID. Fuses positive (progressed trials + active bioactivities), negative (NegEvidence v2 typed taxonomy records), and retracted (papers with is_retracted=true) in one call, each layer with its own counts and a few identifier-level examples. NOTE: the examples in this bundle carry identifiers and evidence type only, NOT per-record provenance; call sciweon_get_negative_evidence for the provenance-bearing records. Sciweon emits no repurposing verdict, score, severity grade or recommendation -- the layers are returned side by side and the consumer adjudicates. Use this to avoid stitching 4 endpoints client-side. See evidence_use_boundary: research use only, no causality assessed. Read-only.',
         inputSchema: {
             type: 'object',
             properties: {
