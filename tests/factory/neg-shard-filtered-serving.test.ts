@@ -135,7 +135,9 @@ describe('neg sharded path — event_type-FILTERED serving', () => {
         expect(Object.keys(r.signals_by_evidence_type)).toEqual(['trial_failure']);
         expect(r.signals_by_evidence_type.trial_failure).toBe(counts.trial_failure);
         // trial_failure alternates critical/major over 80 -> 40 critical + 40 major.
-        expect(r.signals_by_severity).toEqual({ critical: 40, major: 40, minor: 0, unknown: 0 });
+        // trial_failure alternates critical/major over 80 internally, but no
+        // severity rollup is published.
+        expect(r.signals_by_severity).toBeUndefined();
         await fs.rm(dir, { recursive: true });
     });
 
@@ -156,7 +158,8 @@ describe('neg sharded path — event_type-FILTERED serving', () => {
         const sharded = await loadNegEvidenceForCompound(store.bucket, COMPOUND, BASE, f, { offset: 0, limit: 200 });
         const leg = await loadNegEvidenceForCompound(legacy.bucket, COMPOUND, BASE, f, { offset: 0, limit: 200 });
         expect(sharded.negative_signals_count).toBe(leg.negative_signals_count);
-        expect(sharded.signals_by_severity).toEqual(leg.signals_by_severity);
+        expect(sharded.signals_by_severity).toBeUndefined();
+        expect(leg.signals_by_severity).toBeUndefined();
         expect(sharded.signals_by_evidence_type).toEqual(leg.signals_by_evidence_type);
         // P0 safety repair: no verdict on either path; the evidence-use boundary
         // must be byte-identical across sharded and legacy serving.
@@ -176,7 +179,7 @@ describe('neg sharded path — event_type-FILTERED serving', () => {
         expect(r.negative_signals_count).toBe(0);
         expect(r.signals.length).toBe(0);
         expect(r.pagination.has_more).toBe(false);
-        expect(r.signals_by_severity).toEqual({ critical: 0, major: 0, minor: 0, unknown: 0 });
+        expect(r.signals_by_severity).toBeUndefined();
         await fs.rm(dir, { recursive: true });
     });
 

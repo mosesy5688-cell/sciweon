@@ -122,7 +122,9 @@ describe('RC-3A REST output - negative-evidence MedDRA (deleted, not tokenized)'
         expect(body.signals[0].id).toBeUndefined();
         expect(body.signals[0].url).toBeUndefined();
         expect(body.signals[0].id_visibility.source_family).toBe('meddra');
-        expect(body.signals[0].severity).toBe('critical');
+        // Severity is withheld from public output; the RAW count it was
+        // derived from is preserved so the consumer can judge for itself.
+        expect(body.signals[0].severity).toBeUndefined();
         expect(body.signals[0].detail.report_count).toBe(15000);
         expect(body.source_visibility.withheld.some((m: any) => m.source_family === 'meddra')).toBe(true);
     });

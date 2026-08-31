@@ -47,8 +47,7 @@ export interface RepurposingSummary {
     };
     negative: {
         signals_count: number;
-        signals_by_severity: { critical: number; major: number; minor: number; unknown: number };
-        examples: Array<{ id: string; evidence_type: string; severity: string }>;
+        examples: Array<{ id: string; evidence_type: string }>;
     };
     retracted: {
         papers_count: number;
@@ -113,15 +112,15 @@ export function summarizeRetracted(papers: Record<string, unknown>[]): Repurposi
 }
 
 export function summarizeNegative(neg: NegSummary): RepurposingSummary['negative'] {
-    // PR-T1.1-LEVER: the summary loader returns rollups (manifest entry) + a
-    // few first-page examples — already exactly the negative-summary shape, so
-    // this is now a pass-through that maps the {critical,major,minor,unknown}
-    // rollup. No full neg-evidence load occurs on the aggregator path.
+    // PR-T1.1-LEVER: the summary loader returns the manifest count + a few
+    // first-page examples. No full neg-evidence load occurs on this path.
+    // The severity rollup is NOT carried: Sciweon assigns severity itself from
+    // raw report counts (neg-builders-fda.js), so publishing it would restate
+    // an unsupported risk inference on a public surface.
     return {
         signals_count: neg.signals_count,
-        signals_by_severity: neg.signals_by_severity,
         examples: neg.examples.slice(0, 5).map(s => ({
-            id: s.id, evidence_type: String(s.evidence_type), severity: String(s.severity),
+            id: s.id, evidence_type: String(s.evidence_type),
         })),
     };
 }
@@ -184,7 +183,7 @@ export async function aggregateRepurposingEvidence(
     };
 
     return {
-        compound: { id: compoundId, url: `${baseUrl}/api/v1/entity/${encodeURIComponent(compoundId)}` },
+        compound: { id: compoundId, url: `${baseUrl}/api/v1/compound/${encodeURIComponent(compoundId)}` },
         snapshot_date: snapshotDate,
         summary,
         evidence_use_boundary: evidenceUseBoundary(),

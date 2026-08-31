@@ -40,6 +40,7 @@ function record(id: string, type: string, severity: NegEvidenceRecord['severity'
         id,
         evidence_type: type,
         severity,
+        detail: { report_count: 15000 },
         provenance: { primary_source: 'openfda_faers', source_id: id },
     };
 }
@@ -63,21 +64,53 @@ describe('no synthesized verdict is emitted on the negative-evidence surface', (
         }
     });
 
-    it('preserves raw evidence: counts, pagination, provenance and unknown types', () => {
+    it('preserves RAW evidence while withholding the derived grade', () => {
         const e = entry([30, 0, 26, 0], { faers_adr_signal: 30, inactive_bioassay: 26 });
         const out = shapePagedResponse(
             'sciweon::compound::CID:2244', e,
             [record('n1', 'faers_adr_signal', 'critical')],
             0, 50, '2026-06-14', BASE,
-        );
-        // Source-classified severity counts survive verbatim -- the repair
-        // removes the ADJUDICATION, never the evidence.
-        expect(out.signals_by_severity).toEqual({ critical: 30, major: 0, minor: 26, unknown: 0 });
+        ) as Record<string, any>;
+        // WITHHELD: the grade. Sciweon derives severity itself from raw report
+        // counts (neg-builders-fda.js thresholds), so it is not evidence.
+        expect(out.signals_by_severity).toBeUndefined();
+        expect(out.signals[0].severity).toBeUndefined();
+        // PRESERVED: everything the consumer needs to judge for itself.
         expect(out.negative_signals_count).toBe(56);
+        expect(out.signals_by_evidence_type).toEqual({ faers_adr_signal: 30, inactive_bioassay: 26 });
         expect(out.pagination).toEqual({
             offset: 0, limit: 50, returned: 1, has_more: true, next_offset: 1,
         });
+        expect(out.signals[0].evidence_type).toBe('faers_adr_signal');
+        expect(out.signals[0].detail.report_count).toBe(15000);
         expect(out.signals[0].provenance).toEqual({ primary_source: 'openfda_faers', source_id: 'n1' });
+    });
+
+    it('publishes no risk-grade vocabulary anywhere in the payload', () => {
+        const out = shapePagedResponse(
+            'sciweon::compound::CID:2244',
+            entry([30, 0, 26, 0], { faers_adr_signal: 30, inactive_bioassay: 26 }),
+            [record('n1', 'faers_adr_signal', 'critical')],
+            0, 50, '2026-06-14', BASE,
+        );
+        const raw = JSON.stringify(out);
+        for (const banned of ['signals_by_severity', '"severity"', 'highest_severity',
+            'agent_recommendation', 'critical risk', 'risk-benefit']) {
+            expect(raw).not.toContain(banned);
+        }
+    });
+
+    it('links only to routes that exist', () => {
+        const out = shapePagedResponse(
+            'sciweon::compound::CID:2244',
+            entry([1, 0, 0, 0], { faers_adr_signal: 1 }),
+            [record('n1', 'faers_adr_signal', 'critical')],
+            0, 50, '2026-06-14', BASE,
+        ) as Record<string, any>;
+        // /api/v1/entity/... is not a registered route -- it must not be minted.
+        expect(JSON.stringify(out)).not.toContain('/api/v1/entity/');
+        expect(out.compound.url).toBe(`${BASE}/api/v1/compound/sciweon%3A%3Acompound%3A%3ACID%3A2244`);
+        expect(out.signals[0].url).toBeUndefined();
     });
 
     it('zero signals is not reported as a reassuring conclusion', () => {

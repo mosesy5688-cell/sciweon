@@ -147,8 +147,10 @@ describe('handleNegativeEvidence', () => {
         const body = await res.json() as any;
         expect(body.compound.id).toBe('sciweon::compound::CID:2244');
         expect(body.negative_signals_count).toBe(2);
-        expect(body.signals_by_severity.critical).toBe(1);
-        expect(body.signals_by_severity.major).toBe(1);
+        // Severity grading is NOT published: Sciweon assigns it itself from raw
+        // source counts, so it is withheld from every public surface.
+        expect(body.signals_by_severity).toBeUndefined();
+        expect(body.signals[0].severity).toBeUndefined();
         // P0 safety repair: raw source-classified counts are preserved, but no
         // synthesized verdict / risk grade / recommendation is emitted.
         expect(body.verdict).toBeUndefined();
