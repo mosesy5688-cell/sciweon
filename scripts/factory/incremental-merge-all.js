@@ -22,6 +22,7 @@ import {
     detectZeroDeltas, loadStagingDelta, loadPreviousAggregated,
     uploadAggregated, cleanupStaging,
 } from './lib/incremental-merge-helpers.js';
+import { mergePreservingConflicts } from './lib/merge-conflict.js';
 
 // Source importance order: primary structural sources first.
 // Determines which source "wins" when same entity id appears in multiple deltas.
@@ -40,20 +41,24 @@ function parseArgs() {
     return { dryRun, runId };
 }
 
-// Replace-by-id merge: new record wins on conflict; provenance sources are union-merged.
+// Replace-by-id merge. The incoming record still wins the served value, but a
+// displaced value is NO LONGER DESTROYED: F0-MERGE-INTEGRITY retains it as an
+// attributed competing claim. See lib/merge-conflict.js for why.
 function applyDelta(cumulative, records, source) {
-    let added = 0, updated = 0;
+    let added = 0, updated = 0, conflicted = 0, claims = 0;
     for (const record of records) {
         if (!record?.id) continue;
         if (cumulative.has(record.id)) {
             const existing = cumulative.get(record.id);
-            const merged   = { ...existing, ...record };
-            // Union-merge provenance sources to preserve multi-source tracking
-            const existingSrcs = existing.provenance?.sources ?? [];
-            const newSrcs      = record.provenance?.sources ?? [];
-            const seen = new Set(existingSrcs.map(s => s.source));
-            const allSrcs = [...existingSrcs, ...newSrcs.filter(s => !seen.has(s.source))];
-            if (merged.provenance) merged.provenance.sources = allSrcs;
+            const { merged, conflicts } = mergePreservingConflicts(existing, record, source);
+            if (conflicts.length > 0) {
+                conflicted++;
+                claims += conflicts.length;
+                for (const c of conflicts) {
+                    console.log(`[MERGE][CONFLICT] ${record.id} field=${c.field} `
+                        + `displaced_by=${source} (previous value retained as a competing claim)`);
+                }
+            }
             cumulative.set(record.id, merged);
             updated++;
         } else {
@@ -61,8 +66,9 @@ function applyDelta(cumulative, records, source) {
             added++;
         }
     }
-    console.log(`[MERGE] ${source}: +${added} added, ~${updated} updated`);
-    return { added, updated };
+    console.log(`[MERGE] ${source}: +${added} added, ~${updated} updated, `
+        + `${conflicted} record(s) with conflicts, ${claims} claim(s) retained`);
+    return { added, updated, conflicted, claims };
 }
 
 async function main() {
