@@ -147,9 +147,17 @@ describe('handleNegativeEvidence', () => {
         const body = await res.json() as any;
         expect(body.compound.id).toBe('sciweon::compound::CID:2244');
         expect(body.negative_signals_count).toBe(2);
-        expect(body.signals_by_severity.critical).toBe(1);
-        expect(body.signals_by_severity.major).toBe(1);
-        expect(body.verdict.highest_severity).toBe('critical');
+        // Severity grading is NOT published: Sciweon assigns it itself from raw
+        // source counts, so it is withheld from every public surface.
+        expect(body.signals_by_severity).toBeUndefined();
+        expect(body.signals[0].severity).toBeUndefined();
+        // P0 safety repair: raw source-classified counts are preserved, but no
+        // synthesized verdict / risk grade / recommendation is emitted.
+        expect(body.verdict).toBeUndefined();
+        expect(body.evidence_use_boundary.research_use_only).toBe(true);
+        expect(body.evidence_use_boundary.clinical_decision_support).toBe(false);
+        expect(body.evidence_use_boundary.causality_assessed).toBe(false);
+        expect(body.evidence_use_boundary.incidence_or_rate_derivable).toBe(false);
         expect(body.signals.length).toBe(2);
         expect(body.snapshot_date).toBe('2026-05-16');
     });
@@ -167,8 +175,13 @@ describe('handleNegativeEvidence', () => {
         expect(res.status).toBe(200);
         const body = await res.json() as any;
         expect(body.negative_signals_count).toBe(0);
-        expect(body.verdict.highest_severity).toBe('none');
+        // Zero signals must NOT be reported as a reassuring verdict: absence of
+        // evidence is not evidence of absence. Boundary still travels.
+        expect(body.verdict).toBeUndefined();
+        expect(body.evidence_use_boundary.research_use_only).toBe(true);
+        expect(body.evidence_use_boundary.spontaneous_report_caveat).toContain('not evidence of absence');
     });
+
 
     it('returns 400 for malformed ID', async () => {
         const res = await call('not-a-valid-id', makeEnv(bucket));

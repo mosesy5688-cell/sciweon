@@ -13,6 +13,7 @@
  */
 
 import { type EvidenceType, isKnownEvidenceType } from './event-type-taxonomy';
+import { TYPE_FAERS_ADR_SIGNAL } from '../../lib/schemas/neg-evidence-types.js';
 import type { NegManifestEntry } from './neg-manifest-loader';
 
 const SEVERITY_KEYS = ['critical', 'major', 'minor', 'unknown'] as const;
@@ -39,41 +40,128 @@ export interface Pagination {
     next_offset: number | null;
 }
 
-function severityFromRollup(r: [number, number, number, number]): Record<SeverityKey, number> {
-    return { critical: r[0] ?? 0, major: r[1] ?? 0, minor: r[2] ?? 0, unknown: r[3] ?? 0 };
+/*
+ * `severityFromRollup` REMOVED with the public severity surface. `SeverityKey`
+ * is retained because the stored record and the loader's internal filtered
+ * aggregate still carry the field -- it simply never reaches a response.
+ */
+
+/**
+ * Evidence-use boundary carried on every negative-evidence response.
+ *
+ * Sciweon reports observed records with their provenance. It does NOT assess
+ * causality, risk or clinical significance, and emits no clinical, diagnostic,
+ * dosing or regulatory recommendation. Consumers -- including autonomous
+ * agents -- perform their own synthesis from `signals[]`.
+ *
+ * WHY `severity` IS NOT PUBLISHED.
+ * The stored `severity` is NOT a source classification. Sciweon assigns it
+ * itself: `scripts/factory/lib/neg-builders-fda.js` maps a raw FAERS report
+ * count onto a risk word (>= 10000 -> critical, >= 1000 -> major,
+ * >= 100 -> minor), and hardcodes `critical` for black-box and withdrawal
+ * records. A spontaneous-report count has no exposure denominator, so a
+ * threshold over it cannot carry risk meaning. Publishing the grade would
+ * republish the same unsupported inference the removed verdict made, one
+ * level down. The grade is therefore withheld from every public surface; the
+ * raw `report_count` that produced it is published instead, so a consumer can
+ * see the evidence and draw its own conclusion.
+ *
+ * Spontaneous adverse-event reporting systems (FDA FAERS, renamed AEMS) carry
+ * a further structural limit: reports are unverified, may be duplicated, and
+ * have NO exposure denominator. Their counts cannot establish causation and
+ * cannot yield incidence, rate or per-patient risk. Absence of reports is not
+ * evidence of absence of risk.
+ */
+const SPONTANEOUS_REPORT_TYPES: readonly string[] = [TYPE_FAERS_ADR_SIGNAL];
+
+const BOUNDARY_STATEMENT =
+    'Research use only. Sciweon reports observed records with their provenance. '
+    + 'It does not assess causality, risk or clinical significance and makes no clinical, '
+    + 'diagnostic, dosing or regulatory recommendation. No severity or risk grading is '
+    + 'published: raw source counts are returned instead so the consumer can judge.';
+
+const SPONTANEOUS_REPORT_CAVEAT =
+    'Counts derived from spontaneous adverse-event reporting (FDA FAERS/AEMS) are report '
+    + 'counts only. Reports are unverified, may be duplicated, and have no exposure '
+    + 'denominator: they cannot establish causation and cannot be used to derive incidence, '
+    + 'rate or per-patient risk. Absence of reports is not evidence of absence of risk.';
+
+export interface EvidenceUseBoundary {
+    research_use_only: true;
+    clinical_decision_support: false;
+    causality_assessed: false;
+    incidence_or_rate_derivable: false;
+    statement: string;
+    /**
+     * Whether the caller was able to enumerate evidence types at all.
+     * FALSE means "not determined", which is NOT the same claim as "none
+     * present" and must never be rendered as one.
+     */
+    spontaneous_report_types_enumerated: boolean;
+    /**
+     * The spontaneous-report types actually present, or NULL when the caller
+     * could not enumerate. An empty array asserts that none are present; null
+     * asserts nothing. Returning [] for an unenumerable caller would state a
+     * fact Sciweon does not have.
+     */
+    spontaneous_report_types_present: string[] | null;
+    spontaneous_report_caveat: string;
 }
 
-function highestSeverity(by: Record<SeverityKey, number>): SeverityKey | 'none' {
-    if (by.critical > 0) return 'critical';
-    if (by.major > 0) return 'major';
-    if (by.minor > 0) return 'minor';
-    if (by.unknown > 0) return 'unknown';
-    return 'none';
+/**
+ * The caveat is UNCONDITIONAL: both the paged negative-evidence response and
+ * the repurposing aggregation can carry spontaneous-report-derived counts, and
+ * a consumer must not have to infer the limit from whether a type happens to
+ * appear on the current page.
+ *
+ * UNKNOWN IS NOT EMPTY. A caller that cannot enumerate types gets
+ * `spontaneous_report_types_enumerated: false` and
+ * `spontaneous_report_types_present: null` -- never `[]`. An empty array is an
+ * assertion that none are present; null asserts nothing. Rendering an
+ * unenumerable case as `[]` would state a fact Sciweon does not have, which is
+ * the same class of error as the removed severity grade.
+ */
+export function evidenceUseBoundary(byType?: Record<string, number>): EvidenceUseBoundary {
+    const enumerated = byType !== undefined && byType !== null;
+    return {
+        research_use_only: true,
+        clinical_decision_support: false,
+        causality_assessed: false,
+        incidence_or_rate_derivable: false,
+        statement: BOUNDARY_STATEMENT,
+        spontaneous_report_types_enumerated: enumerated,
+        spontaneous_report_types_present: enumerated
+            ? SPONTANEOUS_REPORT_TYPES.filter(t => (byType[t] ?? 0) > 0)
+            : null,
+        spontaneous_report_caveat: SPONTANEOUS_REPORT_CAVEAT,
+    };
 }
 
-function recommendationFor(highest: SeverityKey | 'none'): string {
-    if (highest === 'critical') return 'Material negative evidence present — agent should treat this compound as carrying critical risk and require explicit justification for any clinical-decision use case.';
-    if (highest === 'major') return 'Substantive negative evidence — agent should surface findings prominently in any recommendation and weigh against alternatives.';
-    if (highest === 'minor') return 'Minor negative signals only — agent may proceed with normal caution and disclose findings.';
-    if (highest === 'unknown') return 'Negative signals exist but severity is unclassified — agent should fetch source records for human review.';
-    return 'No negative evidence found in current snapshot. Absence of signal is not absence of risk — agent should still consult primary literature.';
+/**
+ * Canonical compound URL. This points at a route that EXISTS
+ * (`/api/v1/compound/:id`, registered in `src/worker.ts`).
+ *
+ * The previous `/api/v1/entity/<id>` self-link was minted on every signal and
+ * on the compound, and NO such route is registered -- every one of those links
+ * 404s. Signals no longer carry a `url` at all rather than advertise a
+ * dereference Sciweon cannot honour; `id` remains, and is stable.
+ */
+function compoundUrl(baseUrl: string, compoundId: string): string {
+    return `${baseUrl}/api/v1/compound/${encodeURIComponent(compoundId)}`;
 }
 
-function signalUrl(baseUrl: string, id: string): string {
-    return `${baseUrl}/api/v1/entity/${encodeURIComponent(id)}`;
-}
-
-function shapeSignal(rec: NegEvidenceRecord, baseUrl: string) {
+function shapeSignal(rec: NegEvidenceRecord) {
     return {
         id: rec.id,
-        url: signalUrl(baseUrl, rec.id),
         evidence_type: rec.evidence_type,
-        severity: rec.severity,
         reason_category: rec.failure?.reason_category,
         occurred_date: rec.occurred_date,
         observed_date: rec.observed_date,
         confidence: rec.confidence?.overall,
         subject: rec.subject,
+        // `detail` carries the RAW source count (e.g. `report_count`) that the
+        // withheld severity grade was derived from. Rights-restricted members
+        // (e.g. `meddra_pt`) are removed downstream by source-rights-filter.
         detail: rec.detail,
         provenance: rec.provenance,
     };
@@ -82,8 +170,8 @@ function shapeSignal(rec: NegEvidenceRecord, baseUrl: string) {
 /**
  * Pre-computed FILTERED aggregates for an event_type-filtered request. When
  * present, these OVERRIDE the entry's unfiltered rollups so the response's
- * `negative_signals_count` / `signals_by_severity` / `signals_by_evidence_type`
- * describe the FILTERED set exactly (count == |matched-after-filter|, paginable
+ * `negative_signals_count` / `signals_by_evidence_type` (and the INTERNAL
+ * `bySeverity`, which is never emitted) describe the FILTERED set exactly (count == |matched-after-filter|, paginable
  * to completion). The loader computes these O(1) from the manifest's
  * `type_rollup` + `sev_by_type` cross-tab (no full-corpus scan).
  */
@@ -113,33 +201,27 @@ export function shapePagedResponse(
     filtered?: NegFilteredAgg | null,
 ) {
     const total = filtered ? filtered.total : (entry?.total ?? 0);
-    const bySeverity = filtered
-        ? filtered.bySeverity
-        : (entry ? severityFromRollup(entry.severity_rollup) : { critical: 0, major: 0, minor: 0, unknown: 0 });
     const byType: Record<string, number> = filtered
         ? { ...filtered.byType }
         : (entry ? { ...entry.type_rollup } : {});
     const unknownTypes = Object.keys(byType).filter(t => !isKnownEvidenceType(t)).sort();
-    const highest = highestSeverity(bySeverity);
     const returned = pageRecords.length;
     const hasMore = offset + returned < total;
     const pagination: Pagination = {
         offset, limit, returned, has_more: hasMore,
         next_offset: hasMore ? offset + returned : null,
     };
-    const summary = total === 0
-        ? 'No negative signals recorded for this compound in current snapshot.'
-        : `${total} negative signal${total === 1 ? '' : 's'} across ${Object.keys(byType).length} evidence type${Object.keys(byType).length === 1 ? '' : 's'}; highest severity: ${highest}.`;
+    // NOTE: the severity rollup is deliberately NOT emitted. `entry` still
+    // carries `severity_rollup` for internal use; it stops at this boundary.
     return {
-        compound: { id: compoundId, url: signalUrl(baseUrl, compoundId) },
+        compound: { id: compoundId, url: compoundUrl(baseUrl, compoundId) },
         snapshot_date: snapshotDate,
         negative_signals_count: total,
         pagination,
-        signals_by_severity: bySeverity,
         signals_by_evidence_type: byType,
         unknown_event_types: unknownTypes,
-        signals: pageRecords.map(r => shapeSignal(r, baseUrl)),
-        verdict: { summary, highest_severity: highest, agent_recommendation: recommendationFor(highest) },
+        signals: pageRecords.map(r => shapeSignal(r)),
+        evidence_use_boundary: evidenceUseBoundary(byType),
     };
 }
 
@@ -149,11 +231,11 @@ export function shapePagedResponse(
  */
 export function shapeSummaryResponse(entry: NegManifestEntry | null, firstPage: NegEvidenceRecord[]) {
     const total = entry?.total ?? 0;
-    const bySeverity = entry ? severityFromRollup(entry.severity_rollup) : { critical: 0, major: 0, minor: 0, unknown: 0 };
+    // No severity rollup and no per-example severity: the repurposing surface
+    // is public and must not carry the grade either.
     return {
         signals_count: total,
-        signals_by_severity: bySeverity,
-        examples: firstPage.slice(0, 5).map(s => ({ id: s.id, evidence_type: s.evidence_type, severity: s.severity })),
+        examples: firstPage.slice(0, 5).map(s => ({ id: s.id, evidence_type: s.evidence_type })),
     };
 }
 

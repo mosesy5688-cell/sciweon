@@ -15,7 +15,7 @@
  *   sciweon_search                  fuzzy search over compounds
  *   sciweon_get_negative_evidence   negative signals per compound
  *   sciweon_resolve_entity          exact identifier -> canonical compound
- *   sciweon_get_repurposing_evidence  3-layer fusion verdict per compound
+ *   sciweon_get_repurposing_evidence  3-layer evidence bundle per compound (no verdict)
  *   sciweon_get_target_drugs        target (UniProt) -> compounds/trials/neg
  *
  * Error contract: -32600 invalid request / -32601 method not found /

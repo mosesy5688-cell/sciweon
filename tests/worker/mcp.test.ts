@@ -184,7 +184,7 @@ describe('handleMcp — tools/call sciweon_get_negative_evidence', () => {
         const inner = JSON.parse(body.result.content[0].text);
         expect(inner.compound.id).toBe('sciweon::compound::CID:2244');
         expect(inner.negative_signals_count).toBe(1);
-        expect(inner.verdict.highest_severity).toBe('major');
+        expect([inner.verdict, inner.evidence_use_boundary.research_use_only]).toEqual([undefined, true]);
     });
 
     it('accepts canonical full ID', async () => {

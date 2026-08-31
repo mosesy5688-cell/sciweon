@@ -35,7 +35,7 @@ export const MCP_TOOLS = [
     },
     {
         name: 'sciweon_get_negative_evidence',
-        description: 'Get the negative evidence profile for a drug compound by PubChem CID. Returns 0+ signals across the canonical event_type taxonomy (see event_types enum), grouped by severity (critical / major / minor / unknown), with provenance and confidence per signal. Pass event_types to narrow the response server-side. The result includes a synthesized verdict + agent_recommendation; agents may ignore the synthesis and read signals[] directly. Read-only.',
+        description: 'Get the negative evidence records for a drug compound by PubChem CID. Returns 0+ signals across the canonical event_type taxonomy (see event_types enum), each with its evidence type, dates, raw source counts, confidence and provenance. Pass event_types to narrow the response server-side. Sciweon publishes NO severity grade, risk grade, verdict or recommendation -- read signals[] and adjudicate yourself. See evidence_use_boundary in the response: research use only, no causality assessed, and counts from spontaneous adverse-event reporting (FAERS/AEMS) have no exposure denominator and cannot yield incidence, rate or risk. Read-only.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -69,7 +69,7 @@ export const MCP_TOOLS = [
     },
     {
         name: 'sciweon_get_repurposing_evidence',
-        description: 'Get the complete drug-repurposing assessment for a compound by PubChem CID. Fuses three evidence layers in one call: positive (progressed trials + active bioactivities), negative (NegEvidence v2 typed taxonomy signals), and retracted (papers with is_retracted=true). Returns layer summaries with counts + examples, plus a verdict (strong / mixed / weak / none) and a human-readable recommendation. Use this when an agent needs a single repurposing decision rather than stitching 4 endpoints client-side. Read-only.',
+        description: 'Get the three-layer repurposing evidence bundle for a compound by PubChem CID. Fuses positive (progressed trials + active bioactivities), negative (NegEvidence v2 typed taxonomy records), and retracted (papers with is_retracted=true) in one call, each layer with its own counts and a few identifier-level examples. NOTE: the examples in this bundle carry identifiers and evidence type only, NOT per-record provenance; call sciweon_get_negative_evidence for the provenance-bearing records. Sciweon emits no repurposing verdict, score, severity grade or recommendation -- the layers are returned side by side and the consumer adjudicates. Use this to avoid stitching 4 endpoints client-side. See evidence_use_boundary: research use only, no causality assessed. Read-only.',
         inputSchema: {
             type: 'object',
             properties: {

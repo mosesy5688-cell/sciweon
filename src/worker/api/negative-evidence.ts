@@ -6,7 +6,7 @@
  * invisible to any caller — backbone work without a faucet.
  *
  * Contract per SCIWEON_DATA_ARCHITECTURE §3.0:
- *   200  full negative-evidence response (signals + verdict)
+ *   200  negative-evidence response (signals + evidence-use boundary; no verdict)
  *   400  malformed compound ID
  *   404  no R2 binding configured OR snapshot pointer missing
  *   500  unexpected server error (never leaks internal architecture)

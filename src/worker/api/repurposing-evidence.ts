@@ -2,12 +2,13 @@
  * GET /api/v1/compound/:id/repurposing-evidence — V0.5.8 Wave C1-3 Phase 1.
  *
  * Fuses 3 evidence layers (positive trials + bioactivities, negative
- * NegEvidence signals, retracted papers) in one call and synthesizes a
- * repurposing_signal verdict. Replaces the 4-endpoint stitching today
- * agents must do manually.
+ * NegEvidence signals, retracted papers) in one call. Replaces the
+ * 4-endpoint stitching today agents must do manually. Emits NO synthesized
+ * verdict -- the layers are returned side by side and the consumer
+ * adjudicates.
  *
  * Contract per SCIWEON_DATA_ARCHITECTURE §3.0:
- *   200  full repurposing assessment
+ *   200  three-layer evidence bundle
  *   400  malformed compound ID
  *   404  invalid path
  *   405  non-GET method
@@ -50,7 +51,7 @@ export async function handleRepurposingEvidence(req: Request, env: Env, _ctx: Ex
         const response = await aggregateRepurposingEvidence(env.SCIWEON_R2, parsed.canonical, baseUrl);
         // RC-3A: composed-route serialization boundary. negative.examples[].id
         // may be a faers NegEvidence id whose slug encodes a MedDRA PT; the
-        // shared filter neutralizes it (the fused verdict is unaffected).
+        // shared filter neutralizes it (the fused bundle is unaffected).
         return jsonWithRights(response, {
             status: 200,
             headers: {
@@ -61,9 +62,9 @@ export async function handleRepurposingEvidence(req: Request, env: Env, _ctx: Ex
         });
     } catch (err) {
         // RK-13: a loader source-failure PROPAGATES through the aggregator (it is
-        // NOT caught-and-emptied) so the verdict is never computed on falsely-empty
+        // NOT caught-and-emptied) so the summary is never computed on falsely-empty
         // data. Map it to a retryable status (parse_failed -> 502, else 503), never
-        // a 'none' verdict at 200.
+        // a falsely-empty result at 200.
         if (err instanceof SourceLoadError) {
             return Response.json(
                 {
@@ -71,7 +72,7 @@ export async function handleRepurposingEvidence(req: Request, env: Env, _ctx: Ex
                     source: err.source,
                     failure_class: err.failure_class,
                     retryable: err.retryable,
-                    detail: 'An upstream evidence source read failed; this is NOT a no-evidence verdict. Retry shortly.',
+                    detail: 'An upstream evidence source read failed. This is a SOURCE FAILURE and NOT a finding that no evidence exists.',
                 },
                 { status: err.failure_class === 'parse_failed' ? 502 : 503 },
             );

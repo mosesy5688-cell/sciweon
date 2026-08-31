@@ -109,12 +109,12 @@ export async function handleToolRepurposingEvidence(args: Record<string, unknown
         return textContent(response);
     } catch (err) {
         // RK-13: a loader source-failure PROPAGATES through the aggregator (never
-        // caught-and-emptied) so the verdict is never computed on falsely-empty
-        // data. Surface as a retryable service error, never a 'none' verdict.
+        // caught-and-emptied) so the summary is never computed on falsely-empty
+        // data. Surface as a service error, never a falsely-empty result.
         if (err instanceof SourceLoadError) {
             throw new ToolError(
                 -32000,
-                `Repurposing evidence source unavailable (${err.source}: ${err.failure_class}); this is NOT a no-evidence verdict, retry shortly`,
+                `Repurposing evidence source unavailable (${err.source}: ${err.failure_class}); this is a SOURCE FAILURE and NOT a finding that no evidence exists`,
             );
         }
         throw err;
