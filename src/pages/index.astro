@@ -13,7 +13,7 @@ const canonical = 'https://sciweon.com/';
   <meta name="description" content={description} />
   <link rel="canonical" href={canonical} />
   <meta property="og:title" content={title} />
-  <meta property="og:description" content="Structured, agent-ready scientific data and evidence, with provenance and rights state on every value." />
+  <meta property="og:description" content="Structured, agent-ready scientific data and evidence for AI agents." />
   <meta property="og:url" content={canonical} />
   <meta property="og:type" content="website" />
   <meta name="twitter:card" content="summary" />
@@ -23,7 +23,7 @@ const canonical = 'https://sciweon.com/';
     <header>
       <h1>Sciweon</h1>
       <p class="tagline">Data infrastructure for AI agents</p>
-      <p class="lede">Structured, agent-ready scientific data and evidence. Agents get cross-source facts, provenance, quantified confidence, and the rights state of every value - not guesses.</p>
+      <p class="lede">Structured, agent-ready scientific data and evidence. Records carry their source and, where recorded, a confidence score - so an agent can check a claim instead of taking it on trust.</p>
     </header>
     <section>
       <h2>Domains</h2>
@@ -40,21 +40,21 @@ const canonical = 'https://sciweon.com/';
       <ul class="principles">
         <li><strong>Agent-first</strong> Designed for machines to consume directly. No human search-UX overhead in the data layer.</li>
         <li><strong>Cross-source</strong> Same fact verified across independent providers. Disagreement is captured, not hidden.</li>
-        <li><strong>Provenance</strong> Every value carries its source, timestamp, and extraction method. Auditable end to end.</li>
-        <li><strong>Confidence quantified</strong> Single-source values capped. Multi-source consensus boosts confidence. Agents see the score.</li>
+        <li><strong>Provenance</strong> Records carry the source, timestamp and extraction method they were built from, so a claim can be traced back.</li>
+        <li><strong>Confidence recorded</strong> Where a confidence score is computed it is returned rather than hidden. It is a recorded score, not a guarantee of correctness.</li>
         <li><strong>Negative evidence</strong> Failed trials, retractions, withdrawn drugs, post-market signals - collected as first-class data.</li>
-        <li><strong>Dated snapshots</strong> Every response carries the identity of the snapshot it was served from. Snapshots are immutable and retained, so a result can be re-derived exactly. No refresh cadence is promised.</li>
+        <li><strong>Dated snapshots</strong> Evidence responses report the snapshot date they were served from, so an answer can be pinned to a point in time. No refresh cadence is promised.</li>
       </ul>
     </section>
     <section>
       <h2>For AI agents</h2>
       <p>Sciweon is not a search engine for humans. The intended user is an AI agent doing real research work - selecting compound leads, scoring trial designs, and avoiding prior-failure repeats.</p>
-      <p>API and MCP server are in private alpha. Public access targeting Q3 2026. To get on the alpha list: <a href="mailto:hello@sciweon.com">hello@sciweon.com</a></p>
+      <p>API and MCP server are in private alpha. No public release date is published. To get on the alpha list: <a href="mailto:hello@sciweon.com">hello@sciweon.com</a></p>
     </section>
   </main>
   <footer>
     Sciweon - Data infrastructure for AI agents.<br />
-    Drug Discovery alpha live. Public API targeting Q3 2026.
+    Drug Discovery alpha. No public release date is published.
   </footer>
 </body>
 </html>

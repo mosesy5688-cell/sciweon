@@ -28,54 +28,73 @@ The MIT license above covers the SOURCE CODE in this repository and NOTHING
 ELSE. It grants no rights in any data, in any model, or in the Sciweon name.
 A permissive code license does not make the data permissive.
 
-Data rights are qualified PER SOURCE and PER FIELD, not per dataset. Two
-fields in the same record can carry different obligations. The classes:
+DATA IS NOT COVERED BY THE MIT LICENSE. Data rights can vary by SOURCE, by
+RECORD, by FIELD, by CONTRIBUTOR, by how a value was TRANSFORMED, and by the
+FORM in which it is OUTPUT. There is no single license that describes
+"Sciweon data", and this notice does not create one.
 
-  FIELD-QUALIFIED PUBLIC
-    PubChem (NIH NCBI), PubChem BioAssay
-      Public-domain status applies per field, NOT to the resource as a whole.
-      NCBI states it "has no rights to transfer to a third party" for
-      contributed content, and depositor-provided fields may carry their own
-      terms. No unconditional clean-commercial grant is asserted or implied.
-    ClinicalTrials.gov, openFDA (US FDA)
-      US federal works. Sponsor-contributed free text within a record is not
-      necessarily US-government-authored; treat it separately.
+WHAT HAS ACTUALLY BEEN ADJUDICATED
 
-  SHARE-ALIKE
-    ChEMBL (EMBL-EBI) -- Creative Commons Attribution-ShareAlike 3.0 Unported.
-      Attribution AND share-alike attach to any distributed derivative. Note
-      that CC BY-SA 3.0 Unported grants no sui generis database right; the
-      EU/UK database right in the underlying database is NOT licensed by it.
+A specific, frozen set of 25 rights-bearing FIELDS across three planes. These
+are field-level determinations. A source named below is qualified FOR THOSE
+FIELDS ONLY; it does not mean the whole resource carries that class.
 
-  ATTRIBUTION REQUIRED, NO LICENSE GRANTED
-    PubMed / MEDLINE / RxNorm (NLM)
-      NLM asserts contractual acknowledgement, not a copyright license.
-      Republishers must additionally state, clearly and conspicuously, when
-      the data does not reflect the most current NLM data.
-    OpenAlex (OurResearch) -- CC0 for the metadata. Reconstructed abstracts
-      are excluded pending confirmation of publisher rights.
+  FIELD-QUALIFIED PUBLIC -- 5 named PubChem fields.
+    Field-qualified, not a blanket public-domain grant. NCBI states it has no
+    rights to transfer to a third party for contributed content, and
+    depositor-provided fields may carry their own terms. No unconditional
+    clean-commercial grant is asserted for PubChem as a resource.
 
-  WITHHELD -- not served, not redistributed
-    UniProt, UniChem, MedDRA, KEGG, Semantic Scholar, DrugBank-proprietary,
-    UMLS `cui` (universally withheld across all UMLS vocabularies).
-    Withholding is emitted as an explicit machine-readable state on the API:
-    a withheld field is reported as withheld, never silently dropped.
+  SHARE-ALIKE -- 14 named ChEMBL fields.
+    ChEMBL is distributed by EMBL-EBI under CC BY-SA 3.0 Unported. Attribution
+    and share-alike attach to distributed derivatives.
+    NOTE, AS AN OPEN QUESTION AND NOT A CONCLUSION: CC BY-SA 3.0 Unported
+    licenses copyright; whether and how the EU/UK sui generis database right
+    in the underlying database is engaged has NOT been determined here and is
+    referred to qualified counsel. Nothing in this file should be read as a
+    legal conclusion on that point, in either direction.
 
-  UNVERIFIED -- treated as restricted until confirmed
-    Retraction Watch, EU CTIS (EMA) document reuse terms.
-    Prior versions of this notice asserted specific licenses for these
-    sources; those assertions were not supported by current primary evidence
-    and have been withdrawn rather than restated.
+  BIBLIOGRAPHIC -- 6 named PubMed fields.
+    Attribution required; no license granted. NLM additionally requires
+    republishers to state clearly when data does not reflect the most current
+    NLM data.
 
-Consumers must comply with the most restrictive applicable upstream terms for
-the SPECIFIC FIELDS they use. Entity records carry provenance naming the
-originating source; check those before any redistribution or commercial use.
+  WITHHELD -- not served, not redistributed.
+    UniProt, UniChem, MedDRA, KEGG, and UMLS `cui` across all vocabularies.
+
+ANY SOURCE OR FIELD NOT IN THE ADJUDICATED SET IS UNRESOLVED, and must be
+treated as restricted rather than assumed open. This explicitly includes
+sources that may look open at the resource level -- among them PubChem
+BioAssay, ClinicalTrials.gov, openFDA, RxNorm and OpenAlex. Their overall
+posture has not been adjudicated field by field, and a resource-level
+impression is not a rights determination.
+
+Where a previous version of this notice asserted a specific license for a
+source without supporting primary evidence, that assertion has been WITHDRAWN
+rather than replaced with a different guess.
+
+WHAT THE RUNTIME ACTUALLY ENFORCES
+
+Limited MedDRA/KEGG containment at the serving boundary. That is NOT a
+complete per-field rights adjudication, and this repository must not be
+represented as providing one.
+
+OBLIGATIONS ON CONSUMERS
+
+Comply with the most restrictive applicable upstream terms for the SPECIFIC
+FIELDS you use, and verify those terms against the upstream source rather than
+relying on this file. Entity records carry provenance naming the originating
+source; check it before any redistribution or commercial use.
+
+NO WARRANTY AND NO FRESHNESS PROMISE
 
 Sciweon makes no warranty regarding upstream data accuracy or completeness.
 Original-source errors, retractions and corrections may not be reflected in
-any given snapshot. Every API response carries the identity of the snapshot
-it was served from; no refresh cadence is promised.
+any given snapshot. Evidence responses report the snapshot date they were
+served from; no refresh cadence is promised.
 
-RESEARCH USE ONLY. Sciweon reports observed records with provenance. It does
-not assess causality, risk or clinical significance, and makes no clinical,
-diagnostic, dosing or regulatory recommendation.
+RESEARCH USE ONLY
+
+Sciweon reports observed records with their provenance. It does not assess
+causality, risk or clinical significance, and makes no clinical, diagnostic,
+dosing or regulatory recommendation.
