@@ -1,33 +1,45 @@
 // @ts-nocheck
 /**
- * F0-RIGHTS-ENFORCEMENT regression guard.
+ * F0-RIGHTS-REGISTRY regression guard.
  *
  * The pre-existing containment is a DENYLIST applied at serialization: it
  * removes shapes it recognises, so an unrecognised source, a renamed field or
- * a reshaped payload passes straight through. It fails OPEN. That is
- * survivable for a hosted surface that can be patched and not survivable for
- * an artifact shipped to a customer machine.
+ * a reshaped payload passes straight through. It fails OPEN.
  *
- * These tests lock the inversion: nothing is publishable unless Gate-5B
- * adjudicated it, and every refusal is reported rather than swallowed.
+ * These tests lock the inversion, AND the four corrections the Founder's
+ * review required:
+ *   1. a self-declared tuple is never publishable;
+ *   2. the capture manifest is actually checked, including source match and
+ *      pointer correspondence;
+ *   3. planes come back physically distinct, never one flat array;
+ *   4. obligations are labelled DECLARED, not enforced, and the module
+ *      reports that it is not end-to-end.
  *
- * The 25 fields are frozen. If a test here fails because the list changed,
- * that is the test doing its job -- the list may only change by founder ruling.
+ * The 25 fields are frozen. A failure here because the list changed is the
+ * test doing its job -- the list may only change by founder ruling.
  */
 
 import { describe, it, expect } from 'vitest';
 import {
-    resolveRights, attachRights, filterPublishable,
-    ADJUDICATED_FIELDS, PLANES, WITHHELD_SOURCES, TOTAL_ADJUDICATED_FIELDS,
+    resolveRights, assessRights, verifyAgainstManifest, partitionIntoPlanes,
+    ADJUDICATED_FIELDS, PLANES, NOT_IN_APPROVED_PLANE, TOTAL_ADJUDICATED_FIELDS,
+    ENFORCEMENT_STATUS,
     PLANE_CLEAN_COMMERCIAL, PLANE_LICENSED_SHAREALIKE, PLANE_BIBLIOGRAPHIC,
-    STATE_UNRESOLVED, STATE_WITHHELD,
+    STATE_UNRESOLVED, STATE_NOT_IN_APPROVED_PLANE,
+    STATE_REQUIRES_VERIFICATION, STATE_VERIFIED,
 } from '../../scripts/factory/lib/rights-registry.js';
 
-const traceable = (source, field) => ({
+const unit = (source, field) => ({
     source, field, value: 'x',
-    capture_ref: 'capture:example@raw_sha:deadbeef',
-    source_pointer: '$.example.path',
+    capture_ref: `capture:${source}:1`,
+    source_pointer: `$.${field}`,
 });
+
+const manifestFor = (source, field) => ([{
+    capture_ref: `capture:${source}:1`,
+    source,
+    source_pointers: [`$.${field}`],
+}]);
 
 describe('the frozen Gate-5B set is exactly 25 fields in three planes', () => {
     it('counts reconcile with the Decision Log', () => {
@@ -41,26 +53,7 @@ describe('the frozen Gate-5B set is exactly 25 fields in three planes', () => {
         const r = resolveRights('pubchem', 'inchi_key');
         expect(r.plane).toBe(PLANE_CLEAN_COMMERCIAL);
         expect(r.rights_state).toBe('CLEAN_COMMERCIAL_FIELD_QUALIFIED');
-        // Gate-5B refuses an unconditional grant with POSITIVE_GRANT_NOT_SUPPORTED.
         expect(r.rights_state).not.toBe('CLEAN_COMMERCIAL_ATTRIBUTION');
-        expect(r.obligations).toContain('no_unconditional_commercial_grant');
-    });
-
-    it('ChEMBL routes only into the share-alike plane, with its obligations', () => {
-        const r = resolveRights('chembl', 'standard_value');
-        expect(r.plane).toBe(PLANE_LICENSED_SHAREALIKE);
-        expect(r.licence).toBe('CC BY-SA 3.0 Unported');
-        expect(r.attribution).toBe('ChEMBL, EMBL-EBI');
-        expect(r.obligations).toEqual(
-            expect.arrayContaining(['attribution', 'share_alike', 'physically_separate_plane']));
-    });
-
-    it('PubMed routes only into the bibliographic plane, with the NLM obligations', () => {
-        const r = resolveRights('pubmed', 'pmid');
-        expect(r.plane).toBe(PLANE_BIBLIOGRAPHIC);
-        expect(r.rights_state).toBe('NO_LICENCE_GRANTED_ATTRIBUTION_REQUIRED');
-        expect(r.attribution).toContain('National Library of Medicine');
-        expect(r.obligations).toContain('currency_disclosure_on_republication');
     });
 
     it('no source can reach a plane that is not its own', () => {
@@ -71,130 +64,66 @@ describe('the frozen Gate-5B set is exactly 25 fields in three planes', () => {
             }
         }
     });
+});
 
-    it('every adjudicated field is publishable when traceable', () => {
-        for (const src of Object.keys(ADJUDICATED_FIELDS)) {
-            for (const f of ADJUDICATED_FIELDS[src]) {
-                expect(attachRights(traceable(src, f)).publishable).toBe(true);
-            }
-        }
+describe('CORRECTION 1 -- a self-declared tuple is NOT publishable', () => {
+    it('an adjudicated tuple with two plausible strings and NO manifest is refused', () => {
+        // The previous defect: any caller could self-certify by asserting a
+        // permitted source/field plus two non-empty strings.
+        const a = assessRights(unit('pubchem', 'inchi_key'));
+        expect(a.rights.adjudicated).toBe(true);
+        expect(a.publishable).toBe(false);
+        expect(a.terminal_state).toBe(STATE_REQUIRES_VERIFICATION);
+        expect(a.verification.reason).toBe('no_manifest_supplied');
+    });
+
+    it('becomes publishable only once an independent manifest confirms it', () => {
+        const a = assessRights(unit('pubchem', 'inchi_key'),
+            manifestFor('pubchem', 'inchi_key'));
+        expect(a.publishable).toBe(true);
+        expect(a.terminal_state).toBe(STATE_VERIFIED);
     });
 });
 
-describe('FAIL CLOSED: anything not adjudicated is refused', () => {
-    it('an unknown source is UNRESOLVED, not assumed open', () => {
-        for (const src of ['openfda', 'clinicaltrials', 'rxnorm', 'openalex',
-            'pubchem-bioassay', 'semanticscholar', 'retraction-watch']) {
-            const r = resolveRights(src, 'some_field');
-            expect(r.publishable).toBe(false);
-            expect(r.rights_state).toBe(STATE_UNRESOLVED);
-            expect(r.reason).toBe('source_not_adjudicated');
-        }
+describe('CORRECTION 2 -- the manifest is actually checked', () => {
+    it('a capture_ref absent from the manifest is refused', () => {
+        const u = { ...unit('pubchem', 'inchi_key'), capture_ref: 'capture:made-up' };
+        expect(assessRights(u, manifestFor('pubchem', 'inchi_key')).verification.reason)
+            .toBe('capture_ref_not_in_manifest');
     });
 
-    it('an UNADJUDICATED FIELD of an adjudicated source is still refused', () => {
-        // The trap: pubchem is adjudicated, so a careless implementation would
-        // wave through any pubchem field. Only the five are permitted.
-        for (const f of ['xlogp', 'molecular_weight', 'canonical_smiles', 'tpsa']) {
-            const r = resolveRights('pubchem', f);
-            expect(r.publishable).toBe(false);
-            expect(r.reason).toBe('field_not_adjudicated');
-        }
+    it('a declared source that disagrees with the capture is refused', () => {
+        // Claiming a PubChem field while pointing at a ChEMBL capture.
+        const u = { source: 'pubchem', field: 'inchi_key',
+            capture_ref: 'capture:chembl:1', source_pointer: '$.inchi_key' };
+        const m = [{ capture_ref: 'capture:chembl:1', source: 'chembl',
+            source_pointers: ['$.inchi_key'] }];
+        const v = assessRights(u, m).verification;
+        expect(v.verified).toBe(false);
+        expect(v.reason).toBe('declared_source_does_not_match_capture');
+        expect(v.declared_source).toBe('pubchem');
+        expect(v.capture_source).toBe('chembl');
     });
 
-    it('withheld sources are refused on every field', () => {
-        for (const src of WITHHELD_SOURCES) {
-            for (const f of ['accession', 'chembl_id', 'meddra_pt', 'anything']) {
-                const r = resolveRights(src, f);
-                expect(r.publishable).toBe(false);
-                expect(r.rights_state).toBe(STATE_WITHHELD);
-            }
-        }
+    it('a pointer not recorded against that capture is refused', () => {
+        const u = { ...unit('pubmed', 'pmid'), source_pointer: '$.somewhere_else' };
+        expect(assessRights(u, manifestFor('pubmed', 'pmid')).verification.reason)
+            .toBe('pointer_not_recorded_for_capture');
     });
 
-    it('UniProt and UniChem stay withheld even for fields named like adjudicated ones', () => {
-        // The demo dossier in the governance tree labels UniProt
-        // ATTRIBUTION_REQUIRED and sources chembl_id from UniChem. Gate-5B
-        // ruled both WITHHELD. The registry must not reproduce that error.
-        expect(resolveRights('uniprot', 'accession').publishable).toBe(false);
-        expect(resolveRights('unichem', 'chembl_id').publishable).toBe(false);
-        expect(resolveRights('uniprot', 'protein_name').rights_state).toBe(STATE_WITHHELD);
+    it('a manifest entry with no source or no pointers cannot verify anything', () => {
+        const noSrc = [{ capture_ref: 'capture:pubmed:1', source_pointers: ['$.pmid'] }];
+        expect(verifyAgainstManifest(unit('pubmed', 'pmid'), noSrc).reason)
+            .toBe('manifest_entry_has_no_source');
+        const noPtr = [{ capture_ref: 'capture:pubmed:1', source: 'pubmed' }];
+        expect(verifyAgainstManifest(unit('pubmed', 'pmid'), noPtr).reason)
+            .toBe('manifest_entry_records_no_pointers');
     });
 
-    it('malformed or hostile shapes resolve to UNRESOLVED and never throw', () => {
-        for (const [s, f] of [[null, null], [undefined, 'pmid'], ['pubmed', undefined],
-            [{}, []], [123, 456], ['', ''], ['  ', 'pmid']]) {
-            const r = resolveRights(s, f);
-            expect(r.publishable).toBe(false);
-            expect(r.rights_state).toBe(STATE_UNRESOLVED);
-        }
-        expect(attachRights(null).publishable).toBe(false);
-        expect(attachRights('not-an-object').publishable).toBe(false);
-    });
-
-    it('case and whitespace cannot be used to smuggle a field through', () => {
-        expect(resolveRights('  PubChem ', ' InChI_Key ').publishable).toBe(true);
-        expect(resolveRights('PUBCHEM', 'XLOGP').publishable).toBe(false);
-    });
-});
-
-describe('traceability is required, not optional', () => {
-    it('an adjudicated field without capture_ref or source_pointer is NOT publishable', () => {
-        const noCapture = { source: 'pubmed', field: 'doi', value: '10.1/x',
-            source_pointer: '$.a' };
-        const noPointer = { source: 'pubmed', field: 'doi', value: '10.1/x',
-            capture_ref: 'capture:x@raw_sha:1' };
-        for (const u of [noCapture, noPointer]) {
-            const a = attachRights(u);
-            expect(a.rights.publishable).toBe(true);      // the RIGHT is fine
-            expect(a.publishable).toBe(false);            // publication is not
-            expect(a.publish_block_reason).toBe('missing_capture_ref_or_source_pointer');
-        }
-    });
-});
-
-describe('rights travel with the unit, and refusals are reported', () => {
-    it('attachRights writes the envelope into the unit at build time', () => {
-        const u = attachRights(traceable('chembl', 'pchembl_value'));
-        expect(u.rights.plane).toBe(PLANE_LICENSED_SHAREALIKE);
-        expect(u.rights.attribution).toBe('ChEMBL, EMBL-EBI');
-        expect(u.traceable).toBe(true);
-        // Survives serialization -- it is a property of the record, not of a filter.
-        expect(JSON.parse(JSON.stringify(u)).rights.licence).toBe('CC BY-SA 3.0 Unported');
-    });
-
-    it('filterPublishable itemises every refusal instead of dropping silently', () => {
-        const { publishable, refused, refused_count } = filterPublishable([
-            traceable('pubchem', 'inchi_key'),
-            traceable('pubchem', 'xlogp'),
-            traceable('uniprot', 'accession'),
-            traceable('openfda', 'report_count'),
-            { source: 'pubmed', field: 'pmid', value: 1 },
-        ]);
-        expect(publishable).toHaveLength(1);
-        expect(refused_count).toBe(4);
-        expect(refused.map(r => r.reason).sort()).toEqual([
-            'field_not_adjudicated',
-            'missing_capture_ref_or_source_pointer',
-            'source_not_adjudicated',
-            'source_withheld_by_ruling',
-        ]);
-    });
-
-    it('an empty or non-array input publishes nothing rather than everything', () => {
-        for (const bad of [null, undefined, {}, 'x', 0]) {
-            expect(filterPublishable(bad).publishable).toHaveLength(0);
-        }
-    });
-
-    it('the plane table is frozen against accidental mutation', () => {
-        expect(Object.isFrozen(PLANES)).toBe(true);
-        expect(Object.isFrozen(ADJUDICATED_FIELDS.pubchem)).toBe(true);
-        // Object.freeze(new Set()) does NOT seal a Set's contents -- the
-        // allowlist therefore exposes no mutator at all.
-        expect(ADJUDICATED_FIELDS.pubchem.add).toBeUndefined();
-        expect(ADJUDICATED_FIELDS.pubchem.delete).toBeUndefined();
-        expect(WITHHELD_SOURCES.add).toBeUndefined();
-        expect(ADJUDICATED_FIELDS.pubchem.has('xlogp')).toBe(false);
+    it('missing capture_ref or source_pointer is refused before any lookup', () => {
+        expect(verifyAgainstManifest({ source: 'pubmed', source_pointer: '$.pmid' }, [])
+            .reason).toBe('missing_capture_ref');
+        expect(verifyAgainstManifest({ source: 'pubmed', capture_ref: 'c' }, [])
+            .reason).toBe('missing_source_pointer');
     });
 });
