@@ -24,7 +24,10 @@ Request alpha access: [hello@sciweon.com](mailto:hello@sciweon.com)
 ## First principles
 
 1. **Agent-first.** Designed for machines to consume directly. No human-search overhead in the data layer.
-2. **Data quality is the lifeline.** Six enforced quality rules: machine-readable types + validation + explicit gaps + provenance + quantified confidence + negative evidence.
+2. **Data quality is the lifeline.** Six intended quality properties: machine-readable
+   types, validation, explicit gaps, provenance, quantified confidence and negative
+   evidence. These are design commitments and are enforced to differing degrees; they
+   are not claimed as uniformly enforced today.
 
 ## Development
 
@@ -65,15 +68,25 @@ does not mean the whole resource carries that class:
 | Field-qualified public | 5 named PubChem fields. Field-qualified, not a blanket public-domain grant; NCBI transfers no third-party rights and depositor-contributed fields may carry their own terms |
 | Share-alike | 14 named ChEMBL fields. ChEMBL is CC BY-SA 3.0 Unported; attribution and share-alike attach to distributed derivatives |
 | Bibliographic | 6 named PubMed fields. Attribution required; no licence granted. NLM additionally requires a currency disclosure when data is republished |
-| Withheld | UniProt, UniChem, MedDRA, KEGG -- not served, not redistributed |
+| Not in any approved plane | UniProt, UniChem -- Gate-5B placed no field of either in an output plane |
 
 Any source or field **not** in that adjudicated set is unresolved, and must be
 treated as restricted rather than assumed open.
 
-**What the runtime actually enforces today is narrow.** There is limited
-MedDRA/KEGG containment at the serving boundary. That is *not* a complete
-per-field rights adjudication, and this repository should not be read as
-providing one.
+### Two different things, kept apart
+
+**What Gate-5B APPROVED FOR OUTPUT** is the 25-field set above. UniProt and
+UniChem have no field in any approved plane, so nothing from them is approved
+for output. That is an adjudication outcome about what may be published.
+
+**What the RUNTIME ACTUALLY ENFORCES** today is narrower and different: a
+limited MedDRA/KEGG containment filter at the serving boundary. There is no
+runtime mechanism that enforces the 25-field allowlist, and none that enforces
+the UniProt or UniChem position.
+
+An adjudication is not an enforcement. This repository should not be read as
+providing per-field rights enforcement, and a reader must not infer from the
+approved-plane table that a runtime control exists behind it.
 
 The code licence conveys no data, model, trademark or name rights. Anyone
 reusing Sciweon output must comply with the most restrictive applicable

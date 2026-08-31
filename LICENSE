@@ -59,8 +59,12 @@ FIELDS ONLY; it does not mean the whole resource carries that class.
     republishers to state clearly when data does not reflect the most current
     NLM data.
 
-  WITHHELD -- not served, not redistributed.
-    UniProt, UniChem, MedDRA, KEGG, and UMLS `cui` across all vocabularies.
+  NOT IN ANY APPROVED OUTPUT PLANE.
+    UniProt and UniChem. Gate-5B placed no field of either into an output
+    plane, so nothing from them is approved for publication. This is an
+    adjudication about what MAY be published; see the enforcement note below
+    for what is actually prevented at runtime, which is a different and
+    narrower thing.
 
 ANY SOURCE OR FIELD NOT IN THE ADJUDICATED SET IS UNRESOLVED, and must be
 treated as restricted rather than assumed open. This explicitly includes
@@ -73,11 +77,24 @@ Where a previous version of this notice asserted a specific license for a
 source without supporting primary evidence, that assertion has been WITHDRAWN
 rather than replaced with a different guess.
 
-WHAT THE RUNTIME ACTUALLY ENFORCES
+WHAT THE RUNTIME ACTUALLY ENFORCES -- AND WHY THAT IS NOT THE SAME CLAIM
 
-Limited MedDRA/KEGG containment at the serving boundary. That is NOT a
-complete per-field rights adjudication, and this repository must not be
-represented as providing one.
+An ADJUDICATION is a determination about what may be published. An
+ENFORCEMENT is a control that prevents publication. They are not the same,
+and this notice keeps them apart deliberately.
+
+The only rights control operating at runtime today is a limited MedDRA and
+KEGG containment filter applied at the serving boundary. It is a denylist over
+recognised shapes: an unrecognised source, a renamed field or a reshaped
+payload is not caught by it.
+
+There is NO runtime mechanism enforcing the 25-field approved set, and NO
+runtime mechanism enforcing the UniProt or UniChem position. Those rest on the
+adjudication alone.
+
+This repository must not be represented as providing per-field rights
+enforcement, and a reader must not infer a runtime control from the presence
+of the approved-plane table above.
 
 OBLIGATIONS ON CONSUMERS
 
