@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: deploy-${{ github.ref }}
+  group: sciweon-production-deploy
   cancel-in-progress: false
 
 permissions:
@@ -31,9 +31,77 @@ jobs:
       - name: Build static site
         run: npm run build
 
+      # Runs AFTER the build: wrangler.toml declares `[assets] directory =
+      # "./dist"`, which `npm run build` produces, and the dry run resolves the
+      # assets directory. It proves wrangler.toml parses, that the
+      # CF_VERSION_METADATA binding is recognised, and that `--tag` is accepted.
+      # `--dry-run` performs NO deployment and needs no credentials.
+      - name: Wrangler dry run (no deployment)
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler deploy --dry-run --tag ${{ github.sha }} --outdir "$RUNNER_TEMP/wrangler-dry"
+
+      # A regression guard against a future `ref:` override on actions/checkout.
+      # It is NOT evidence about the deployed bundle. Given checkout's current
+      # default on these triggers it cannot fail today.
+      - name: Assert checkout identity
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+
       - name: Deploy
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy
+          command: deploy --tag ${{ github.sha }}
+
+      # Post-deploy black-box assertion. Gated OFF by default: the repository
+      # variable DEPLOY_IDENTITY_ASSERT is unset, so this step is skipped.
+      # Without the gate it would run unrehearsed against production on its
+      # first-ever execution, and a failure would leave a DEPLOYED worker with
+      # a RED Deploy. Bound: 6 attempts, 15 s apart, plus 6 x 10 s of curl
+      # budget -- worst case ~150 s. Cloudflare gradual deployments can serve
+      # two versions at once, so a pass proves "at least one edge response
+      # reported the expected SHA", not "all production traffic is the new
+      # version".
+      - name: Assert deployed identity
+        if: vars.DEPLOY_IDENTITY_ASSERT == 'true'
+        run: |
+          set -euo pipefail
+          url='https://sciweon.com/api/v1/_health'
+          expected='${{ github.sha }}'
+          body=''
+          attempt=0
+          while [ "$attempt" -lt 6 ]; do
+            attempt=$((attempt + 1))
+            target="$url?cb=$(date +%s)-$attempt"
+            if ! body=$(curl --fail-with-body --silent --show-error --max-time 10 -H 'Cache-Control: no-cache' "$target"); then
+              echo "attempt $attempt: request failed"
+              echo "received body: $body"
+              sleep 15
+              continue
+            fi
+            if ! status=$(printf '%s' "$body" | jq -r '.deployment_identity_status'); then
+              echo "attempt $attempt: could not read deployment_identity_status"
+              echo "received body: $body"
+              sleep 15
+              continue
+            fi
+            if ! sha=$(printf '%s' "$body" | jq -r '.git_sha'); then
+              echo "attempt $attempt: could not read git_sha"
+              echo "received body: $body"
+              sleep 15
+              continue
+            fi
+            if [ "$status" = 'available' ] && [ "$sha" != 'null' ] && [ "${#sha}" -eq 40 ] && [ "$sha" = "$expected" ]; then
+              echo "deployment identity confirmed on attempt $attempt"
+              exit 0
+            fi
+            echo "attempt $attempt: status=$status git_sha=$sha expected=$expected"
+            echo "received body: $body"
+            sleep 15
+          done
+          echo "deployment identity assertion FAILED after $attempt attempts"
+          echo "received body: $body"
+          exit 1
