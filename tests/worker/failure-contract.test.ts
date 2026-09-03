@@ -1,10 +1,9 @@
 // @ts-nocheck
 /**
- * P0.1 public error contract - per-class serialization, the not-produced
- * guard, and the enumerated-file source lint.
- *
- * Every case here drives the REAL worker entry and reads the SERIALIZED body,
- * so what is asserted is what a caller receives - not an internal object.
+ * P0.1 public error contract - per-class serialization, the exact route/class
+ * membership oracle, the not-produced guard, the enumerated-file source lint.
+ * Every case drives the REAL worker entry and reads the SERIALIZED body, so
+ * what is asserted is what a caller receives - not an internal object.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -17,14 +16,11 @@ import { negManifestKeyFor } from '../../src/worker/lib/neg-shard-router';
 import { negBucketOf } from '../../src/lib/neg-bucket-hash.js';
 
 beforeAll(() => {
-    if (typeof globalThis.caches === 'undefined') {
-        globalThis.caches = { default: { async match() { return undefined; }, async put() { } } };
-    }
+    if (typeof globalThis.caches === 'undefined') globalThis.caches = { default: { async match() { return undefined; }, async put() { } } };
 });
 
-// A temporal or future-process term. Anchored on word boundaries and full
-// phrases: bare `available` / `temporar` substrings fire on labels this lane
-// KEEPS and on an upstream trial status served in 200 bodies.
+// A temporal or future-process term, anchored on word boundaries and full phrases:
+// bare `available` / `temporar` fire on labels this lane KEEPS and on a 200-body status.
 export const FORBIDDEN = [
     /\bshortly\b/i, /\bsoon\b/i, /\blater\b/i, /\bmomentarily\b/i,
     /\bin a moment\b/i, /\bin a few\b/i, /\btry again in\b/i,
@@ -44,10 +40,8 @@ export function stringValues(node, out = []) {
 }
 
 export function assertNoForbiddenTerm(values, where) {
-    for (const v of values) {
-        for (const re of FORBIDDEN) {
-            expect(re.test(v), `${where}: forbidden term ${re} in ${JSON.stringify(v)}`).toBe(false);
-        }
+    for (const v of values) for (const re of FORBIDDEN) {
+        expect(re.test(v), `${where}: forbidden term ${re} in ${JSON.stringify(v)}`).toBe(false);
     }
 }
 
@@ -64,9 +58,8 @@ const CANON = parseCompoundId(CID).canonical;
 const MKEY = negManifestKeyFor(DATE, negBucketOf(CANON));
 const PTR = JSON.stringify({ latest_snapshot_date: DATE });
 
-// neg-manifest-loader keeps a per-isolate cache keyed by snapshot IDENTITY, so
-// two scenarios sharing one date would share one cached manifest. Each sharded
-// scenario therefore gets its own date, which is its own identity.
+// neg-manifest-loader keeps a per-isolate cache keyed by snapshot IDENTITY, so two
+// scenarios sharing one date would share one cached manifest: each gets its own date.
 function shardScenario(date, manifestJson, opts) {
     const key = negManifestKeyFor(date, negBucketOf(CANON));
     const ptr = JSON.stringify({ latest_snapshot_date: date, neg_evidence_manifest_key: key });
@@ -83,17 +76,11 @@ export function store(pairs) {
 export function bucket(st, opts = {}) {
     const hit = (k) => opts.throwOn && opts.throwOn(k);
     return {
-        async head(k) {
-            if (hit(k)) throw opts.error;
-            const o = st[k];
-            return o ? { size: o.bytes.length, etag: o.etag } : null;
-        },
+        async head(k) { if (hit(k)) throw opts.error; const o = st[k]; return o ? { size: o.bytes.length, etag: o.etag } : null; },
         async get(k) {
             if (hit(k)) throw opts.error;
             if (opts.getNull && opts.getNull(k)) return null;
-            const o = st[k];
-            if (!o) return null;
-            const b = o.bytes;
+            const o = st[k]; if (!o) return null; const b = o.bytes;
             return { etag: o.etag, async arrayBuffer() { return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength); } };
         },
     };
@@ -136,6 +123,10 @@ const boom = () => env(bucket(store([]), { throwOn: () => true, error: new Error
 const shardRead = shardScenario('2026-07-02', '{"entries":[]}', (k) => ({ getNull: (x) => x === k }));
 // entries is not an array: the shape guard types it at its source.
 const shardInvalid = shardScenario('2026-07-03', '{"entries":"nope"}');
+// xrefs: a VALID pointer on its own date, with the xref-index object VISIBLE to
+// head() but ABSENT from get() - an R2 read fault -> R2ReadError('disappeared').
+const XKEY = 'snapshots/2026-07-04/xref-index.json.gz';
+const xrefGone = () => env(bucket(store([[LATEST, enc('{"latest_snapshot_date":"2026-07-04"}')], [XKEY, gz('{}')]]), { getNull: (k) => k === XKEY }));
 
 // [class, route, status, env]. A class is exercised on every route that can
 // produce it; a route/class pair the code cannot construct is not invented.
@@ -153,6 +144,9 @@ const CASES = [
     ['source_unavailable', 'papers', 503, ptrOnly],
     ['source_unavailable', 'repurposing', 503, emptyBucket],
     ['source_unavailable', 'target', 503, ptrOnly],
+    // compound and xrefs carry no catch of their own: the read fault reaches json500.
+    ['source_unavailable', 'compound', 500, emptyBucket],
+    ['source_unavailable', 'xrefs', 500, xrefGone],
     ['parse_failed', 'bio', 502, corruptGz(`${PFX}bioactivities.jsonl.gz`)],
     ['parse_failed', 'trials', 502, corruptGz(`${PFX}trial-links.jsonl.gz`)],
     ['parse_failed', 'papers', 502, corruptGz(`${PFX}papers.jsonl.gz`)],
@@ -197,19 +191,32 @@ describe('9b.1 - per-class serialization on every route that emits the class', (
         const live = FAILURE_CLASSES.filter(c => FAILURE_CONTRACT[c].produced);
         expect([...new Set(CASES.map(c => c[0]))].sort()).toEqual([...live].sort());
     });
+
+    // 9b.1a - the EXACT membership oracle. These 36 pairs are hand-written from the
+    // contract table and the per-route census, deliberately NOT derived from CASES:
+    // an expectation computed from the thing under test proves nothing.
+    it('CASES holds exactly the 36 hand-listed route/class pairs', () => {
+        const want = Object.entries({
+            data_layer_unconfigured: 'compound neg bio trials papers repurposing target xrefs',
+            snapshot_contract: 'compound neg bio trials papers repurposing target xrefs',
+            source_unavailable: 'compound neg bio trials papers repurposing target xrefs',
+            parse_failed: 'bio trials papers', timeout: 'bio trials papers repurposing',
+            shard_read_unavailable: 'neg', shard_manifest_invalid: 'neg', unclassified: 'compound neg target',
+        }).flatMap(([cls, routes]) => routes.split(' ').map(r => `${cls}|${r}`));
+        expect(want).toHaveLength(36);
+        expect(CASES.map(c => `${c[0]}|${c[1]}`).sort()).toEqual([...want].sort());
+    });
 });
 
 describe('9b.2 - declared-not-produced guard', () => {
     it('no emitting path yields object_integrity', async () => {
         for (const [, route, , mkEnv] of CASES) {
-            const body = await (await call(ROUTES[route], mkEnv())).json();
-            expect(body.failure_class).not.toBe('object_integrity');
+            expect((await (await call(ROUTES[route], mkEnv())).json()).failure_class).not.toBe('object_integrity');
         }
     });
 });
 
-// 9b.8 - an ENUMERATED file list, never a directory walk. src/worker/api/health.ts
-// does not exist at this base and is excluded by construction.
+// 9b.8 - an ENUMERATED file list, never a directory walk. src/worker/api/health.ts does not exist at this base.
 const LINTED = [
     'src/worker.ts',
     ...['bioactivities', 'compound', 'mcp', 'negative-evidence', 'papers',
