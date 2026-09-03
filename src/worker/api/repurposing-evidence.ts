@@ -13,14 +13,20 @@
  *   404  invalid path
  *   405  non-GET method
  *   503  R2 binding missing
- *   502  data integrity error (upstream object missing / etag drift)
+ *   502  upstream object could not be read intact, or could not be decoded
  *   500  unexpected
+ *
+ * Every failure body above carries failure_class + retryable. HTTP status is
+ * NOT a retryability signal here: `retryable` is the only retry carrier.
  */
 
 import type { Env } from '../../worker';
 import { parseCompoundId } from '../lib/id-parse';
 import { aggregateRepurposingEvidence } from '../lib/repurposing-aggregator';
 import { SourceLoadError } from '../lib/source-load-error';
+import { SnapshotContractError } from '../lib/snapshot-context';
+import { R2ReadError } from '../lib/r2-fetch';
+import { classifyThrown, failureBody } from '../lib/failure-contract';
 import { jsonWithRights } from '../lib/source-rights-filter';
 
 const PATH_RE = /^\/api\/v1\/compound\/([^/]+)\/repurposing-evidence$/;
@@ -41,7 +47,8 @@ export async function handleRepurposingEvidence(req: Request, env: Env, _ctx: Ex
 
     if (!env.SCIWEON_R2) {
         return Response.json(
-            { error: 'Data layer not configured', detail: 'R2 binding SCIWEON_R2 is not bound to this Worker.' },
+            failureBody('Data layer not configured', 'data_layer_unconfigured',
+                'R2 binding SCIWEON_R2 is not bound to this Worker.'),
             { status: 503 },
         );
     }
@@ -68,24 +75,34 @@ export async function handleRepurposingEvidence(req: Request, env: Env, _ctx: Ex
         if (err instanceof SourceLoadError) {
             return Response.json(
                 {
-                    error: 'Source unavailable',
                     source: err.source,
-                    failure_class: err.failure_class,
-                    retryable: err.retryable,
-                    detail: 'An upstream evidence source read failed. This is a SOURCE FAILURE and NOT a finding that no evidence exists.',
+                    ...failureBody('Source unavailable', err.failure_class,
+                        'An upstream evidence source read failed. This is a SOURCE FAILURE and NOT a finding that no evidence exists.'),
                 },
                 { status: err.failure_class === 'parse_failed' ? 502 : 503 },
             );
         }
-        const message = err instanceof Error ? err.message : String(err);
-        if (/Short read|etag drifted|disappeared/i.test(message)) {
+        // Observer census: SnapshotContractError is rethrown by the aggregator
+        // and had no typed branch here. 6e freezes the status it already had.
+        if (err instanceof SnapshotContractError) {
             return Response.json(
-                { error: 'Data integrity error', detail: 'Upstream object failed integrity validation. Retry shortly.' },
+                failureBody('Internal server error', 'snapshot_contract'),
+                { status: 500 },
+            );
+        }
+        // Rule 4c.1: dispatch on the throw site's structural discriminant.
+        if (err instanceof R2ReadError
+            && (err.discriminant === 'short_read' || err.discriminant === 'etag_drift'
+                || err.discriminant === 'disappeared')) {
+            return Response.json(
+                failureBody('Data integrity error', 'source_unavailable',
+                    'An upstream object could not be read intact. This is a READ failure and NOT a finding that no evidence exists.'),
                 { status: 502 },
             );
         }
+        // Residual: the underlying message is NEVER echoed into a public body.
         return Response.json(
-            { error: 'Internal server error', detail: message.length > 200 ? 'Unexpected upstream failure' : message },
+            failureBody('Internal server error', classifyThrown(err)),
             { status: 500 },
         );
     }

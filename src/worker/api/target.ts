@@ -11,16 +11,20 @@
  * Contract:
  *   200  full target response
  *   400  malformed uniprot accession
- *   404  target not found in the current snapshot, OR snapshot pointer
- *        missing, OR target-index.json absent (next factory-1 cron will
- *        produce it)
- *   503  R2 binding not configured
+ *   404  target not found in the current snapshot
+ *   500  unexpected internal failure
+ *   502  upstream object or snapshot contract could not be validated
+ *   503  R2 binding not configured, OR the target index could not be read
+ *
+ * Every failure body above carries failure_class + retryable. HTTP status is
+ * NOT a retryability signal here: `retryable` is the only retry carrier.
  */
 
 import type { Env } from '../../worker';
 import { parseUniprotId, loadTargetIndex, getTargetEntry, type TargetEntry } from '../lib/target-loader';
 import { loadSnapshotContext, SnapshotContractError } from '../lib/snapshot-context';
-import { fetchR2JsonText } from '../lib/r2-fetch';
+import { fetchR2JsonText, R2ReadError } from '../lib/r2-fetch';
+import { classifyThrown, failureBody } from '../lib/failure-contract';
 import { jsonWithRights } from '../lib/source-rights-filter';
 
 export type TargetSection = 'drugs' | 'trials' | 'negative_evidence';
@@ -80,7 +84,8 @@ export async function handleTarget(req: Request, env: Env, _ctx: ExecutionContex
 
     if (!env.SCIWEON_R2) {
         return Response.json(
-            { error: 'Data layer not configured', detail: 'R2 binding SCIWEON_R2 is not bound to this Worker.' },
+            failureBody('Data layer not configured', 'data_layer_unconfigured',
+                'R2 binding SCIWEON_R2 is not bound to this Worker.'),
             { status: 503 },
         );
     }
@@ -97,25 +102,35 @@ export async function handleTarget(req: Request, env: Env, _ctx: ExecutionContex
         // (LOUD), never the genuine-absence 404 path below.
         if (err instanceof SnapshotContractError) {
             return Response.json(
-                { error: 'Data integrity error', detail: 'snapshots/latest.json failed contract validation. Retry shortly.' },
+                failureBody('Data integrity error', 'snapshot_contract'),
                 { status: 502 },
             );
         }
-        const message = err instanceof Error ? err.message : String(err);
-        if (/not found|disappeared|missing/i.test(message)) {
-            return Response.json(
-                { error: 'Target index not available', detail: 'snapshots/<date>/target-index.json absent — next factory-1 cron will produce it.' },
-                { status: 404 },
-            );
+        // Rule 4c.1: dispatch on the throw site's structural discriminant, never
+        // on message text. Rule 4c.2: a transport fault is never served as a
+        // domain 404 - an unreadable index is a READ failure, not an absence.
+        if (err instanceof R2ReadError) {
+            if (err.discriminant === 'not_found') {
+                return Response.json(
+                    failureBody('Target index not available', 'source_unavailable',
+                        'The target index could not be read from the current snapshot. This is a READ failure and NOT a finding that the target is absent.'),
+                    { status: 503 },
+                );
+            }
+            if (err.discriminant === 'disappeared' || err.discriminant === 'etag_drift'
+                || err.discriminant === 'short_read') {
+                return Response.json(
+                    failureBody('Data integrity error', 'source_unavailable',
+                        'An upstream object could not be read intact. This is a READ failure and NOT a finding that the target is absent.'),
+                    { status: 502 },
+                );
+            }
+            // range_failed / short_range_read keep their generic-500 outcome.
         }
-        if (/Short read|etag drifted/i.test(message)) {
-            return Response.json(
-                { error: 'Data integrity error', detail: 'Upstream object failed integrity validation. Retry shortly.' },
-                { status: 502 },
-            );
-        }
+        // Residual: only after every typed error in the union has been tested.
+        // The underlying message is NEVER echoed - it can carry R2 object keys.
         return Response.json(
-            { error: 'Internal server error', detail: message.length > 200 ? 'Unexpected upstream failure' : message },
+            failureBody('Internal server error', classifyThrown(err)),
             { status: 500 },
         );
     }

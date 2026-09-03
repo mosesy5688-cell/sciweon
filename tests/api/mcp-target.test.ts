@@ -2,8 +2,10 @@
  * Tests for sciweon_get_target_drugs MCP tool (cycle 20 closeout).
  *
  * Validates: catalog registration, JSON-RPC happy path, input validation
- * errors (-32602), data layer missing (-32603), and the soft-fail
- * "resolved: false" content payload for unknown targets / missing index.
+ * errors (-32602), data layer missing (-32603), the soft-fail
+ * "resolved: false" content payload for a target genuinely absent from the
+ * index, and the carrier-bearing error for an index that cannot be READ
+ * (which must never be served as a false-clean resolved:false payload).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -150,16 +152,17 @@ describe('sciweon_get_target_drugs MCP tool', () => {
         expect(payload.snapshot_date).toBe(SNAPSHOT_DATE);
     });
 
-    it('missing target-index.json returns soft {resolved:false} content', async () => {
-        // Pointer present but index file absent — first cron after deploy
+    it('unreadable target-index returns a carrier-bearing error, NOT a false-clean', async () => {
+        // Pointer present but the index object cannot be read. A false-clean
+        // resolved:false carries no retryable field at all, so the caller
+        // cannot tell a read failure from a genuine absence.
         const store: Record<string, MockObject> = {
             'snapshots/latest.json': { bytes: utf8(JSON.stringify({ latest_snapshot_date: SNAPSHOT_DATE })), etag: 'etag-ptr' },
         };
         const bucket = makeMockBucket(store);
         const body = await callRpc('tools/call', { name: 'sciweon_get_target_drugs', arguments: { target_id: 'P00533' } }, makeEnv(bucket));
-        expect(body.error).toBeUndefined();
-        const payload = JSON.parse(body.result.content[0].text);
-        expect(payload.resolved).toBe(false);
-        expect(payload.reason).toMatch(/index/i);
+        expect(body.result).toBeUndefined();
+        expect(body.error.code).toBe(-32000);
+        expect(body.error.data).toEqual({ failure_class: 'source_unavailable', retryable: true });
     });
 });

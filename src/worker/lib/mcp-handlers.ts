@@ -12,7 +12,8 @@
 
 import type { Env } from '../../worker';
 import { parseCompoundId } from './id-parse';
-import { loadNegEvidenceForCompound, NegShardError } from './neg-evidence-loader';
+import { loadNegEvidenceForCompound } from './neg-evidence-loader';
+import { NegShardError } from './neg-shard-error';
 import { SourceLoadError } from './source-load-error';
 import { searchCompounds } from './compound-search';
 import { EVIDENCE_TYPES, isKnownEvidenceType, type EvidenceType } from './event-type-taxonomy';
@@ -21,7 +22,8 @@ import { aggregateRepurposingEvidence } from './repurposing-aggregator';
 import { parseUniprotId, loadTargetIndex, getTargetEntry } from './target-loader';
 import { pickTargetView, type TargetSection } from '../api/target';
 import { loadSnapshotContext, SnapshotContractError } from './snapshot-context';
-import { fetchR2JsonText } from './r2-fetch';
+import { fetchR2JsonText, R2ReadError } from './r2-fetch';
+import { failureData } from './failure-contract';
 import { applySourceRightsFilter } from './source-rights-filter';
 
 export class ToolError extends Error {
@@ -34,7 +36,11 @@ function originOf(req: Request): string {
 
 function requireR2(env: Env): R2Bucket {
     if (!env.SCIWEON_R2) {
-        throw new ToolError(-32603, 'Data layer not configured (R2 binding missing)');
+        throw new ToolError(
+            -32603,
+            'Data layer not configured (R2 binding missing)',
+            failureData('data_layer_unconfigured'),
+        );
     }
     return env.SCIWEON_R2;
 }
@@ -95,7 +101,11 @@ export async function handleToolNegativeEvidence(args: Record<string, unknown>, 
         // to the legacy whole-file path). Surface as a retryable service error
         // rather than a generic internal error.
         if (err instanceof NegShardError) {
-            throw new ToolError(-32000, 'Negative-evidence service unavailable (sharded read failed); retry shortly');
+            throw new ToolError(
+                -32000,
+                'A sharded negative-evidence read failed. This is a READ failure and NOT a finding that no negative evidence exists.',
+                failureData(err.failure_class),
+            );
         }
         throw err;
     }
@@ -114,7 +124,8 @@ export async function handleToolRepurposingEvidence(args: Record<string, unknown
         if (err instanceof SourceLoadError) {
             throw new ToolError(
                 -32000,
-                `Repurposing evidence source unavailable (${err.source}: ${err.failure_class}); this is a SOURCE FAILURE and NOT a finding that no evidence exists`,
+                'An upstream evidence source read failed. This is a SOURCE FAILURE and NOT a finding that no evidence exists.',
+                { ...failureData(err.failure_class), source: err.source },
             );
         }
         throw err;
@@ -178,9 +189,15 @@ export async function handleToolGetTargetDrugs(args: Record<string, unknown>, en
         // RK-15 PR-A2: a latest.json contract violation is an integrity failure
         // (LOUD) — it must propagate, never the genuine-absence soft path below.
         if (err instanceof SnapshotContractError) throw err;
-        const m = err instanceof Error ? err.message : String(err);
-        if (/not found|disappeared|missing/i.test(m)) {
-            return textContent({ resolved: false, target_id: parsed.canonical, reason: 'Target index not yet built — next factory-1 cron will produce it.' });
+        // A transport fault must NOT be routed into a 200 resolved:false
+        // payload. A false-clean carries no retryable field at all, so the
+        // caller cannot tell an unreadable index from a genuine absence.
+        if (err instanceof R2ReadError) {
+            throw new ToolError(
+                -32000,
+                'The target index could not be read from the current snapshot. This is a READ failure and NOT a finding that the target is absent.',
+                failureData('source_unavailable'),
+            );
         }
         throw err;
     }

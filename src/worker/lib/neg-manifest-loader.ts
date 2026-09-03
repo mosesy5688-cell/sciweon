@@ -12,6 +12,7 @@
  */
 
 import { fetchR2JsonText } from './r2-fetch';
+import { ShardDataInvalidError } from './neg-shard-error';
 import { negManifestKeyForCtx } from './neg-shard-router';
 import { type SnapshotContext, snapshotIdentityToken } from './snapshot-context';
 
@@ -120,8 +121,18 @@ export async function loadNegBucketManifest(
     }
     const manifest = JSON.parse(text) as RawNegManifest;
 
+    // Shape guard, immediately after the parse: a manifest whose entries
+    // collection is not an array is producer-data invalid, and typing it HERE
+    // is what lets the classifier stay structural instead of catching a
+    // generic TypeError from the property access two lines down.
+    if (!Array.isArray(manifest?.entries)) {
+        throw new ShardDataInvalidError(
+            `Neg bucket manifest ${bucketIndex} has no entries array — malformed manifest, refusing to load.`,
+        );
+    }
+
     if (manifest.entries.length > MAX_MANIFEST_ENTRIES) {
-        throw new Error(
+        throw new ShardDataInvalidError(
             `Neg bucket manifest ${bucketIndex} size ${manifest.entries.length} exceeds cap ${MAX_MANIFEST_ENTRIES} ` +
             `— pathological partition skew, refusing to load.`,
         );

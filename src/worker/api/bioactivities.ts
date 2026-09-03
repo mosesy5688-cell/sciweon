@@ -9,6 +9,7 @@ import { loadBioactivitiesForCompound } from '../lib/bioactivity-loader';
 import { SourceLoadError } from '../lib/source-load-error';
 import { loadSnapshotContext, SnapshotContractError } from '../lib/snapshot-context';
 import { fetchR2JsonText } from '../lib/r2-fetch';
+import { failureBody } from '../lib/failure-contract';
 
 const PATH_RE = /^\/api\/v1\/compound\/([^/]+)\/bioactivities$/;
 
@@ -40,7 +41,8 @@ export async function handleBioactivities(
 
     if (!env.SCIWEON_R2) {
         return Response.json(
-            { error: 'Data layer not configured', detail: 'R2 binding SCIWEON_R2 is not bound.' },
+            failureBody('Data layer not configured', 'data_layer_unconfigured',
+                'R2 binding SCIWEON_R2 is not bound.'),
             { status: 503 },
         );
     }
@@ -64,7 +66,7 @@ export async function handleBioactivities(
         // (LOUD), never a no-evidence 404/200. Map it to a retryable 502.
         if (err instanceof SnapshotContractError) {
             return Response.json(
-                { error: 'Data integrity error', detail: 'snapshots/latest.json failed contract validation. Retry shortly.' },
+                failureBody('Data integrity error', 'snapshot_contract'),
                 { status: 502 },
             );
         }
@@ -74,15 +76,15 @@ export async function handleBioactivities(
         if (err instanceof SourceLoadError) {
             return Response.json(
                 {
-                    error: 'Source unavailable',
                     source: err.source,
-                    failure_class: err.failure_class,
-                    retryable: err.retryable,
-                    detail: 'Upstream source read failed; this is NOT a no-evidence result. Retry shortly.',
+                    ...failureBody('Source unavailable', err.failure_class,
+                        'An upstream source read failed. This is a READ failure and NOT a finding that no bioactivity data exists.'),
                 },
                 { status: err.failure_class === 'parse_failed' ? 502 : 503 },
             );
         }
+        // Residual: json500 in src/worker.ts classifies by type and emits the
+        // contract carriers without ever echoing the underlying message.
         throw err;
     }
 }

@@ -20,6 +20,7 @@ import type { Env } from '../../worker';
 import { resolveEntity, isKeggSourceIdentifier } from '../lib/entity-resolver';
 import { loadTier1 } from '../lib/compound-loader';
 import { jsonWithRights } from '../lib/source-rights-filter';
+import { failureBody } from '../lib/failure-contract';
 
 export async function handleXrefs(req: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -53,7 +54,8 @@ export async function handleXrefs(req: Request, env: Env, _ctx: ExecutionContext
     }
     if (!env.SCIWEON_R2) {
         return Response.json(
-            { error: 'Data layer not configured', detail: 'R2 binding SCIWEON_R2 is not bound to this Worker.' },
+            failureBody('Data layer not configured', 'data_layer_unconfigured',
+                'R2 binding SCIWEON_R2 is not bound to this Worker.'),
             { status: 503 },
         );
     }

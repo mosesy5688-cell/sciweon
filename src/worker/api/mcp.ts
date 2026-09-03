@@ -20,6 +20,10 @@
  *
  * Error contract: -32600 invalid request / -32601 method not found /
  * -32602 invalid params / -32603 internal / -32000 tool execution error.
+ *
+ * Infrastructure-failure carriers travel in `error.data` as
+ * {failure_class, retryable}; the message carries prose only. Invalid-params
+ * (-32602) is client input and deliberately carries NO carriers.
  */
 
 import type { Env } from '../../worker';
@@ -32,6 +36,8 @@ import {
     handleToolRepurposingEvidence,
     handleToolGetTargetDrugs,
 } from '../lib/mcp-handlers';
+import { SnapshotContractError } from '../lib/snapshot-context';
+import { classifyThrown, failureData } from '../lib/failure-contract';
 
 const SERVER_INFO = { name: 'sciweon', version: '0.6.0' };
 const PROTOCOL_VERSION = '2025-03-26';
@@ -134,9 +140,19 @@ export async function handleMcp(req: Request, env: Env, _ctx: ExecutionContext):
         if (err instanceof ToolError) {
             return jsonrpcError(body.id, err.code, err.message, err.data);
         }
-        const message = err instanceof Error ? err.message : String(err);
-        const safe = message.length > 200 ? 'Internal server error' : message;
-        return jsonrpcError(body.id, -32603, safe);
+        // Observer census: every tool that rethrows lands here, so this typed
+        // branch is what makes ONE fault carry ONE class across all five tool
+        // aliases. 6e freezes the code this path already returned (-32603).
+        if (err instanceof SnapshotContractError) {
+            return jsonrpcError(
+                body.id, -32603,
+                'The snapshot pointer failed contract validation. Nothing is served from an unrecognized contract.',
+                failureData('snapshot_contract'),
+            );
+        }
+        // Residual, only after every typed error in the union has been tested.
+        // The underlying message is NEVER echoed - it can carry R2 object keys.
+        return jsonrpcError(body.id, -32603, 'Internal server error', failureData(classifyThrown(err)));
     }
 }
 

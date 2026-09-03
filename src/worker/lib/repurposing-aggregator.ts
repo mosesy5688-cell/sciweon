@@ -8,7 +8,10 @@
  *
  * Agent UX: replaces 4 separate round-trips (/trials + /bioactivities +
  * /negative-evidence + /papers + filter) with one canonical call that returns
- * the three layers side by side, each with its own provenance.
+ * the three layers side by side, each with its own counts and a few
+ * identifier-level examples. The examples carry identifiers and evidence type
+ * only, NOT per-record provenance: the provenance-bearing records are served
+ * by /negative-evidence itself.
  *
  * It deliberately emits NO synthesized verdict. The consumer adjudicates.
  * Pure summarizers are exported separately for unit testing. The orchestrator
