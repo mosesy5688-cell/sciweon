@@ -71,7 +71,7 @@ export async function handleNegativeEvidence(req: Request, env: Env, _ctx: Execu
             headers: {
                 'cache-control': 'public, max-age=300, s-maxage=900',
                 'x-sciweon-schema-minor': '1.2',
-                'x-sciweon-rights-filter': 'rc3a-v1',
+                'x-sciweon-rights-filter': 'rc3a-v2',
             },
         });
     } catch (err) {

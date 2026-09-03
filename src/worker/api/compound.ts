@@ -67,7 +67,7 @@ export async function handleCompound(
                 status: 200,
                 headers: {
                     'cache-control': 'public, max-age=300, s-maxage=900',
-                    'x-sciweon-rights-filter': 'rc3a-v1',
+                    'x-sciweon-rights-filter': 'rc3a-v2',
                 },
             },
         );
@@ -84,7 +84,7 @@ export async function handleCompound(
                 // Tier 2 is immutable bulk data — safe to cache longer.
                 headers: {
                     'cache-control': 'public, max-age=3600, s-maxage=86400',
-                    'x-sciweon-rights-filter': 'rc3a-v1',
+                    'x-sciweon-rights-filter': 'rc3a-v2',
                 },
             },
         );

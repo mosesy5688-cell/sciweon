@@ -28,16 +28,23 @@
  * NEVER removes non-restricted content; NEVER places a protected value (or a
  * digest of one) inside a marker. Operates on a structuredClone so
  * isolate-cached source records are never mutated in place.
+ *
+ * Lane 3S adds a SECOND, generic axis: six internal claim-metadata containers
+ * are removed wholesale at every depth and counted, and one payload-wide
+ * `claim_metadata_visibility` marker is attached at the business root. This is
+ * a serving-edge control only -- the containers remain inside the stored R2
+ * objects, which no serving-side filter can reach.
  */
 
 const WITHHELD_STATE = 'withheld_by_rights_policy';
 const POLICY = 'restricted_source_rights_containment_v1';
-const FAERS_NEG_ID_RE = /^sciweon::neg::faers::/;
+const FAERS_NEG_ID_PREFIX = 'sciweon::neg::faers::';
 
 export interface WithheldTally { meddra: number; kegg: number; }
 
 interface CountedMarker { source_visibility_state: string; source_family: 'meddra' | 'kegg'; withheld_item_count: number; }
 interface FamilyMarker { source_visibility_state: string; source_family: 'meddra' | 'kegg'; }
+interface ClaimTally { n: number; }
 
 function countedMarker(family: 'meddra' | 'kegg', count: number): CountedMarker {
     return { source_visibility_state: WITHHELD_STATE, source_family: family, withheld_item_count: count };
@@ -54,7 +61,7 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 // id. Detected structurally (id prefix OR openfda_faers provenance OR a
 // meddra_pt detail).
 function isFaersSignal(o: Record<string, unknown>): boolean {
-    if (typeof o.id === 'string' && FAERS_NEG_ID_RE.test(o.id)) return true;
+    if (typeof o.id === 'string' && o.id.startsWith(FAERS_NEG_ID_PREFIX)) return true;
     const prov = o.provenance;
     if (isPlainObject(prov) && prov.primary_source === 'openfda_faers') return true;
     const detail = o.detail;
@@ -63,7 +70,7 @@ function isFaersSignal(o: Record<string, unknown>): boolean {
 }
 
 function isFaersIdString(v: unknown): boolean {
-    return typeof v === 'string' && FAERS_NEG_ID_RE.test(v);
+    return typeof v === 'string' && v.startsWith(FAERS_NEG_ID_PREFIX);
 }
 
 // A thin FAERS "example" id-entry: a faers signal object that carries only
@@ -79,7 +86,7 @@ function isThinFaersExample(v: unknown): boolean {
 // reason_text, id and url (never tokenize); mark each site. Preserve every
 // non-MedDRA field (evidence_type / severity / report_count / confidence /
 // subject / provenance). Returns true if anything was withheld.
-function withholdFaersSignal(node: Record<string, unknown>): boolean {
+export function withholdFaersSignal(node: Record<string, unknown>): boolean {
     let did = false;
     const detail = node.detail;
     if (isPlainObject(detail) && 'meddra_pt' in detail) {
@@ -92,7 +99,7 @@ function withholdFaersSignal(node: Record<string, unknown>): boolean {
     if ('reason_text' in node) { // defense in depth: a future flattened shaper
         delete node.reason_text; node.reason_text_visibility = WITHHELD_STATE; did = true;
     }
-    if (typeof node.id === 'string' && FAERS_NEG_ID_RE.test(node.id)) {
+    if (typeof node.id === 'string' && node.id.startsWith(FAERS_NEG_ID_PREFIX)) {
         delete node.id; node.id_visibility = familyMarker('meddra'); did = true;
     }
     if (typeof node.url === 'string') { // the entity url embeds the faers id/term
@@ -104,7 +111,7 @@ function withholdFaersSignal(node: Record<string, unknown>): boolean {
 // KEGG keys + the compound MedDRA faers_top_adr_terms[] array + a safety-net
 // stray MedDRA PT scalar (strip a known MedDRA-term-bearing field even where
 // the current shaper omits it -- last public boundary).
-function withholdObjectKeys(node: Record<string, unknown>, tally: WithheldTally): void {
+export function withholdObjectKeys(node: Record<string, unknown>, tally: WithheldTally): void {
     if (node.kegg_drug != null) {
         delete node.kegg_drug; node.kegg_drug_visibility = countedMarker('kegg', 1); tally.kegg += 1;
     }
@@ -126,7 +133,7 @@ function withholdObjectKeys(node: Record<string, unknown>, tally: WithheldTally)
 // strings, or thin example objects). REMOVE those entries entirely and attach
 // a sibling <key>_visibility count marker. Preserve aggregate counts elsewhere
 // (e.g. counts.negative_evidence / signals_count) so withheld != absent.
-function pruneIdListArrays(node: Record<string, unknown>, tally: WithheldTally): void {
+export function pruneIdListArrays(node: Record<string, unknown>, tally: WithheldTally): void {
     for (const key of Object.keys(node)) {
         const val = node[key];
         if (!Array.isArray(val)) continue;
@@ -144,16 +151,26 @@ function pruneIdListArrays(node: Record<string, unknown>, tally: WithheldTally):
     }
 }
 
-function walk(node: unknown, tally: WithheldTally): void {
+// Lane 3S: the six generic claim-metadata containers are deleted FIRST on every
+// plain-object node -- before the FAERS/KEGG mechanisms and before recursion --
+// so a container's interior is never inspected and can never increment a family
+// tally. `claim_metadata_visibility` is serving-boundary-exclusive: a copy
+// arriving in the INPUT tree at any depth is a forgery, dropped here, uncounted.
+function walk(node: unknown, tally: WithheldTally, claims: ClaimTally): void {
     if (Array.isArray(node)) {
-        for (const el of node) walk(el, tally);
+        for (const el of node) walk(el, tally, claims);
         return;
     }
     if (!isPlainObject(node)) return;
+    for (const key of ['competing_claims', 'preserved_against_null', 'field_sources',
+        'claim_set_state', 'claim_overflow_fields', 'claim_overflow_counts']) {
+        if (key in node) { delete node[key]; claims.n += 1; }
+    }
+    delete node.claim_metadata_visibility;
     if (isFaersSignal(node) && withholdFaersSignal(node)) tally.meddra += 1;
     withholdObjectKeys(node, tally);
     pruneIdListArrays(node, tally); // removes restricted id-list entries before recursion
-    for (const key of Object.keys(node)) walk(node[key], tally);
+    for (const key of Object.keys(node)) walk(node[key], tally, claims);
 }
 
 /**
@@ -167,12 +184,16 @@ export function applySourceRightsFilter<T>(payload: T): { filtered: T; withheld:
         return { filtered: payload, withheld: tally };
     }
     const filtered = structuredClone(payload) as unknown;
-    walk(filtered, tally);
+    const claims: ClaimTally = { n: 0 };
+    walk(filtered, tally, claims);
     if (isPlainObject(filtered) && (tally.meddra > 0 || tally.kegg > 0)) {
         const withheld: CountedMarker[] = [];
         if (tally.meddra > 0) withheld.push(countedMarker('meddra', tally.meddra));
         if (tally.kegg > 0) withheld.push(countedMarker('kegg', tally.kegg));
         filtered.source_visibility = { policy: POLICY, withheld };
+    }
+    if (isPlainObject(filtered) && claims.n > 0) {
+        filtered.claim_metadata_visibility = { state: 'internal_claim_metadata_not_published', removed_key_count: claims.n };
     }
     return { filtered: filtered as T, withheld: tally };
 }

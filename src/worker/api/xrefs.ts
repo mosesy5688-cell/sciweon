@@ -48,7 +48,7 @@ export async function handleXrefs(req: Request, env: Env, _ctx: ExecutionContext
                 source_family: 'kegg',
                 detail: 'Public resolution of this source identifier is unavailable.',
             },
-            { status: 403, headers: { 'x-sciweon-rights-filter': 'rc3a-v1' } },
+            { status: 403, headers: { 'x-sciweon-rights-filter': 'rc3a-v2' } },
         );
     }
     if (!env.SCIWEON_R2) {
@@ -95,7 +95,7 @@ export async function handleXrefs(req: Request, env: Env, _ctx: ExecutionContext
         headers: {
             'cache-control': 'public, max-age=300, s-maxage=900',
             'x-sciweon-schema-minor': '1.1',
-            'x-sciweon-rights-filter': 'rc3a-v1',
+            'x-sciweon-rights-filter': 'rc3a-v2',
         },
     });
 }

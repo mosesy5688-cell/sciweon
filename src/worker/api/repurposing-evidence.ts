@@ -57,7 +57,7 @@ export async function handleRepurposingEvidence(req: Request, env: Env, _ctx: Ex
             headers: {
                 'cache-control': 'public, max-age=300, s-maxage=900',
                 'x-sciweon-schema-minor': '1.0',
-                'x-sciweon-rights-filter': 'rc3a-v1',
+                'x-sciweon-rights-filter': 'rc3a-v2',
             },
         });
     } catch (err) {
