@@ -3,9 +3,9 @@
  *
  *   200  full target response with shape-shifted body per suffix
  *   400  malformed uniprot accession
- *   404  target not in index OR index file missing
+ *   404  target not in index (a genuine absence)
  *   405  non-GET
- *   503  R2 binding missing
+ *   503  R2 binding missing, OR the target index could not be read
  */
 
 import { describe, it, expect } from 'vitest';
@@ -136,15 +136,20 @@ describe('handleTarget', () => {
         expect(res.status).toBe(404);
     });
 
-    it('returns 404 when target-index.json.gz file is missing', async () => {
-        // Pointer present, index absent — simulates the first cron after deploy.
+    it('returns 503 + carriers when target-index.json.gz cannot be read', async () => {
+        // Pointer present, index absent. An unreadable index is a READ failure,
+        // never a domain 404: routing it into a 404 tells the caller the target
+        // does not exist when Sciweon simply could not read its own data.
         const store: Record<string, MockObject> = {
             'snapshots/latest.json': { bytes: utf8(JSON.stringify({ latest_snapshot_date: SNAPSHOT_DATE })), etag: 'etag-ptr' },
         };
         const bucket = makeMockBucket(store);
         const req = new Request('https://x.test/api/v1/target/P00533');
         const res = await handleTarget(req, makeEnv(bucket), fakeCtx());
-        expect(res.status).toBe(404);
+        expect(res.status).toBe(503);
+        const body = await res.json() as any;
+        expect(body.failure_class).toBe('source_unavailable');
+        expect(body.retryable).toBe(true);
     });
 
     it('returns 503 when R2 binding missing', async () => {

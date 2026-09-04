@@ -11,6 +11,7 @@
  */
 
 import type { SnapshotContext } from './snapshot-context';
+import { ShardDataInvalidError } from './neg-shard-error';
 
 function pad4(n: number): string {
     return String(n).padStart(4, '0');
@@ -41,12 +42,12 @@ export function negManifestKeyFor(snapshotDate: string, bucket: number): string 
 function v2NegRoot(ctx: SnapshotContext): string {
     const key = ctx.neg_evidence_manifest_key;
     if (!key) {
-        throw new Error('immutable_snapshot_v2 context lacks neg_evidence_manifest_key');
+        throw new ShardDataInvalidError('immutable_snapshot_v2 context lacks neg_evidence_manifest_key');
     }
     const marker = '/neg-evidence/';
     const i = key.indexOf(marker);
     if (i < 0) {
-        throw new Error(`v2 neg_evidence_manifest_key has no /neg-evidence/ segment: ${key}`);
+        throw new ShardDataInvalidError(`v2 neg_evidence_manifest_key has no /neg-evidence/ segment: ${key}`);
     }
     return key.slice(0, i + marker.length); // ends with `neg-evidence/`
 }

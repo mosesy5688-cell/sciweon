@@ -10,7 +10,8 @@
  * pinned SnapshotContext is threaded through every manifest / shard / range read.
  */
 
-import { fetchR2GunzippedText, fetchR2JsonText } from './r2-fetch';
+import { fetchR2GunzippedText, fetchR2JsonText, R2ReadError } from './r2-fetch';
+import { NegShardError } from './neg-shard-error';
 import { type EvidenceType } from './event-type-taxonomy';
 import { negBucketOf } from '../../lib/neg-bucket-hash.js';
 import { negManifestKeyForCtx } from './neg-shard-router';
@@ -148,7 +149,7 @@ export async function loadNegEvidenceLegacy(
     // key derived from the pinned object_prefix, no re-read of latest.json.
     const key = `${ctx.object_prefix}neg-evidence.jsonl.gz`;
     const head = await bucket.head(key);
-    if (!head) throw new Error(`Legacy neg-evidence not found: ${key}`);
+    if (!head) throw new R2ReadError('not_found', `Legacy neg-evidence not found: ${key}`);
     if (head.size > LEGACY_MAX_BYTES) {
         throw new Error(`Legacy neg-evidence ${key} is ${head.size} bytes (> ${LEGACY_MAX_BYTES}); sharded path required.`);
     }
@@ -190,14 +191,6 @@ function synthEntry(key: string, recs: NegEvidenceRecord[]): NegManifestEntry {
 }
 
 /**
- * Thrown when the SHARDED path fails (manifest active but a shard/manifest read
- * threw). The API + MCP map this to a LOUD 503 and NEVER fall back to legacy.
- */
-export class NegShardError extends Error {
-    constructor(message: string) { super(message); this.name = 'NegShardError'; }
-}
-
-/**
  * Orchestrator (keeps the public name callers use). INVERTED dual-path:
  *   - manifest key present AND its object EXISTS -> loadNegEvidencePage; any
  *     throw -> NegShardError (LOUD 503, no fallback).
@@ -224,7 +217,7 @@ export async function loadNegEvidenceForCompound(
             manifestPresent = await negBucketManifestExists(bucket, ctx, compoundId);
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            throw new NegShardError(`Sharded neg-evidence read failed: ${msg}`);
+            throw new NegShardError(`Sharded neg-evidence read failed: ${msg}`, { cause: err });
         }
     }
     if (shardingActive && manifestPresent) {
@@ -234,14 +227,17 @@ export async function loadNegEvidenceForCompound(
             return await loadNegEvidencePage(bucket, ctx, compoundId, baseUrl, opts, eventTypeFilter);
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            throw new NegShardError(`Sharded neg-evidence read failed: ${msg}`);
+            throw new NegShardError(`Sharded neg-evidence read failed: ${msg}`, { cause: err });
         }
     }
     // Legacy whole-file fallback is v1-only (a v2 snapshot has no whole-file
     // contract). For v2 with no sharded manifest published, surface LOUD rather
     // than guess a v1 path.
     if (ctx.layout_version !== 'legacy_v1') {
-        throw new NegShardError('immutable_snapshot_v2 has no sharded neg manifest and no whole-file fallback');
+        throw new NegShardError(
+            'immutable_snapshot_v2 has no sharded neg manifest and no whole-file fallback',
+            { failure_class: 'shard_manifest_invalid' },
+        );
     }
     return loadNegEvidenceLegacy(bucket, ctx, compoundId, baseUrl, eventTypeFilter);
 }

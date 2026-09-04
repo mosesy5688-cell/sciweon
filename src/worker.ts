@@ -19,11 +19,11 @@
  * Error contract (per SCIWEON_DATA_ARCHITECTURE §3.0):
  *   400 — malformed entity ID
  *   404 — entity / compound not found
- *   429 — rate limited (not implemented yet; reserved)
- *   500 — server error (must never leak internal architecture)
+ *   500 — server error carrying failure_class + retryable, never the message
  */
 
 import { handleNegativeEvidence } from './worker/api/negative-evidence';
+import { classifyThrown, failureBody } from './worker/lib/failure-contract';
 import { handleMcp } from './worker/api/mcp';
 import { handleCompound } from './worker/api/compound';
 import { handleBioactivities } from './worker/api/bioactivities';
@@ -139,8 +139,8 @@ export default {
 } satisfies ExportedHandler<Env>;
 
 function json500(err: unknown): Response {
-    const message = err instanceof Error ? err.message : String(err);
-    // Sanitize: never expose R2 keys, paths, internal state.
-    const safe = message.length > 200 ? 'Internal server error' : message;
-    return Response.json({ error: 'Internal server error', detail: safe }, { status: 500 });
+    // The shared classifier covers /compound and /xrefs, which have no catch
+    // block of their own. The underlying message is NOT echoed: it can carry R2
+    // object keys, internal paths and snapshot identifiers.
+    return Response.json(failureBody('Internal server error', classifyThrown(err)), { status: 500 });
 }
