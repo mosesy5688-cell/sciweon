@@ -152,7 +152,7 @@ export async function handleTarget(req: Request, env: Env, _ctx: ExecutionContex
             status: 200,
             headers: {
                 'cache-control': 'public, max-age=300, s-maxage=900',
-                'x-sciweon-schema-minor': '0.6.0',
+                'x-sciweon-schema-minor': '0.6.1',
                 'x-sciweon-rights-filter': 'rc3a-v2',
             },
         },

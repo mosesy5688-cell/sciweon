@@ -39,7 +39,7 @@ import {
 import { SnapshotContractError } from '../lib/snapshot-context';
 import { classifyThrown, failureData } from '../lib/failure-contract';
 
-const SERVER_INFO = { name: 'sciweon', version: '0.6.0' };
+const SERVER_INFO = { name: 'sciweon', version: '0.6.1' };
 const PROTOCOL_VERSION = '2025-03-26';
 
 const JSONRPC_HEADERS = {
@@ -47,7 +47,7 @@ const JSONRPC_HEADERS = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    'x-sciweon-mcp-version': '0.6.0',
+    'x-sciweon-mcp-version': '0.6.1',
 };
 
 function jsonrpcResult(id: unknown, result: unknown): Response {

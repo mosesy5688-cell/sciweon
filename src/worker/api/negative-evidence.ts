@@ -80,7 +80,7 @@ export async function handleNegativeEvidence(req: Request, env: Env, _ctx: Execu
             status: 200,
             headers: {
                 'cache-control': 'public, max-age=300, s-maxage=900',
-                'x-sciweon-schema-minor': '1.2',
+                'x-sciweon-schema-minor': '1.3',
                 'x-sciweon-rights-filter': 'rc3a-v2',
             },
         });
