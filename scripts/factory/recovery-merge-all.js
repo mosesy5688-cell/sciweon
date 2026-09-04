@@ -26,7 +26,26 @@
  */
 
 import { S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
-import { mergeRecords, MERGE_FILES, KEY_FN_PER_FILE } from './lib/aggregated-merger.js';
+import { pathToFileURL } from 'node:url';
+import { mergeRecords, MERGE_FILES, KEY_FN_PER_FILE, MERGE_STRATEGY_PER_FILE } from './lib/aggregated-merger.js';
+
+const COMPOUND_FILE = 'compounds-enriched.jsonl';
+
+/**
+ * PURE compound-recovery merge (Founder F-2). Creates no client, reads no
+ * credential, touches no R2 object and advances no latest pointer, so a unit
+ * test can import THIS and nothing else.
+ *
+ * COMPOUND AXIS ONLY. The natural one-line wiring
+ * `MERGE_STRATEGY_PER_FILE[fname] || null` would also activate the drug-label
+ * strategy, which is out of scope, so the compound entry is wired explicitly.
+ * Without a strategy this recovery performed a wholesale record replace and
+ * destroyed claims history on every historical bundle it merged.
+ */
+export function recoveryMergeCompoundRecords(runRecords, accumulatedRecords) {
+    return mergeRecords(runRecords, accumulatedRecords,
+        KEY_FN_PER_FILE[COMPOUND_FILE], MERGE_STRATEGY_PER_FILE[COMPOUND_FILE]);
+}
 
 const STAGE_PREFIX = 'processed/aggregated/';
 const REQUIRED_ENV = ['R2_ENDPOINT', 'R2_BUCKET', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'];
@@ -132,7 +151,9 @@ async function main() {
             const records = parseJsonl(buf);
             const keyFn = KEY_FN_PER_FILE[fname];
             const currentAsList = [...accumByFile[fname].values(), ...noKeyByFile[fname]];
-            const { merged } = mergeRecords(records, currentAsList, keyFn);
+            const { merged } = fname === COMPOUND_FILE
+                ? recoveryMergeCompoundRecords(records, currentAsList)
+                : mergeRecords(records, currentAsList, keyFn);
             // Re-bucket: replace accumulator with new merged set
             accumByFile[fname] = new Map();
             noKeyByFile[fname] = [];
@@ -183,4 +204,10 @@ async function main() {
     console.log('[RECOVERY] Done. Dispatch factory-4-upload.yml to rebuild snapshot.');
 }
 
-main().catch(err => { console.error('[RECOVERY] Fatal:', err); process.exit(1); });
+// F-2: direct script execution behaviour is UNCHANGED, but a bare import no
+// longer executes main() -- which would kill the test runner with R2 env unset
+// and, with it set, list R2, upload a new run_id and ADVANCE THE LATEST POINTER.
+const invokedPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : '';
+if (import.meta.url === invokedPath) {
+    main().catch(err => { console.error('[RECOVERY] Fatal:', err); process.exit(1); });
+}

@@ -92,10 +92,11 @@ const KEY_FN_PER_FILE = {
 // PR-CORE-DRUG-LABEL-LEAK (2026-05-28): adds drug-labels axis to prevent
 // F2 emit of unhydrated cur from reverse-erasing PR-RXN-1b-pre-promote
 // hydrated ndcs[]/rxcui[] in prev.
-import { deepMergeCompound, deepMergeDrugLabel, bootstrapPrevRecords } from './aggregated-deep-merge.js';
+import { deepMergeDrugLabel, bootstrapPrevRecords, makeDeepMergeCounters } from './aggregated-deep-merge.js';
+import { mergeCompoundWithClaims, revalidatePrevClaims } from './merge-claims-wrapper.js';
 
 const MERGE_STRATEGY_PER_FILE = Object.freeze({
-    'compounds-enriched.jsonl': deepMergeCompound,
+    'compounds-enriched.jsonl': mergeCompoundWithClaims,
     'drug-labels.jsonl': deepMergeDrugLabel,
 });
 
@@ -124,10 +125,7 @@ export function mergeRecords(currentRecords, previousRecords, keyFn, strategyFn)
     let fromPrevious = 0;
     let fromCurrent = 0;
     let replaced = 0;
-    const deepCounters = strategyFn ? {
-        total: 0, preservedExternalIdFields: 0, unionedSources: 0,
-        preservedStructuralFields: 0, preservedF3Fields: 0, sample: [],
-    } : null;
+    const deepCounters = strategyFn ? makeDeepMergeCounters() : null;
 
     for (const rec of previousRecords) {
         const k = keyFn(rec);
@@ -166,12 +164,10 @@ export function mergeRecords(currentRecords, previousRecords, keyFn, strategyFn)
             no_key_passthrough: noKeyRecords.length,
             total: byKey.size + noKeyRecords.length,
             ...(deepCounters ? {
-                merged_deep_total: deepCounters.total,
-                merged_deep_preserved_external_id_fields: deepCounters.preservedExternalIdFields,
-                merged_deep_unioned_sources_count: deepCounters.unionedSources,
-                merged_deep_preserved_structural_fields: deepCounters.preservedStructuralFields,
-                merged_deep_preserved_f3_fields: deepCounters.preservedF3Fields,
-                merged_deep_sample: deepCounters.sample,
+                merged_deep_total: deepCounters.total, merged_deep_sample: deepCounters.sample,
+                merged_deep_preserved_external_id_fields: deepCounters.preservedExternalIdFields, merged_deep_unioned_sources_count: deepCounters.unionedSources,
+                merged_deep_preserved_structural_fields: deepCounters.preservedStructuralFields, merged_deep_preserved_f3_fields: deepCounters.preservedF3Fields,
+                merged_deep_claims: deepCounters.claims,
             } : {}),
         },
     };
@@ -222,10 +218,12 @@ export async function mergeLocalAggregatedWithPrevious(previousBuffers) {
 
         // PR-FDA-SRS-3c: prev-load boundary mass-backfill for compounds. Runs on
         // the FULL prev array (incl prev-only records that never enter
-        // deepMergeCompound; the misplaced SRS-3 call there silent-skipped 28,097).
+        // deepMergeCompound; the misplaced SRS-3 call there silent-skipped 28,097). LANE3 3j mirrors it for inherited-claim re-validation.
         let bootstrapStats = null;
+        let revalidateStats = null;
         if (fname === 'compounds-enriched.jsonl') {
             bootstrapStats = bootstrapPrevRecords(previousRecords);
+            revalidateStats = revalidatePrevClaims(previousRecords);
         }
 
         // TODO V0.6+: at ~200K cumulative compounds this in-memory merge
@@ -237,6 +235,7 @@ export async function mergeLocalAggregatedWithPrevious(previousBuffers) {
         if (bootstrapStats) {
             stats.prev_bootstrap_count = bootstrapStats.count;
             stats.prev_bootstrap_sample = bootstrapStats.sample;
+            stats.prev_claims_revalidate = revalidateStats;
         }
 
         await writeLocalFile(fname, serializeJsonl(merged));
