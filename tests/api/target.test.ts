@@ -171,6 +171,6 @@ describe('handleTarget', () => {
         const res = await handleTarget(req, makeEnv(bucket), fakeCtx());
         expect(res.status).toBe(200);
         expect(res.headers.get('cache-control')).toMatch(/max-age=300/);
-        expect(res.headers.get('x-sciweon-schema-minor')).toBe('0.6.0');
+        expect(res.headers.get('x-sciweon-schema-minor')).toBe('0.6.1');
     });
 });

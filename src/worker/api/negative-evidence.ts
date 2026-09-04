@@ -74,7 +74,7 @@ export async function handleNegativeEvidence(req: Request, env: Env, _ctx: Execu
         );
         // RC-3A: source-rights containment applied at the serialization
         // boundary (withholds the MedDRA PT + faers-id slug; keeps the signal).
-        // x-sciweon-schema-minor bumped 1.1 -> 1.2 as a response-version binding
+        // x-sciweon-schema-minor bumped 1.2 -> 1.3 as a response-version binding
         // so a cached pre-filter body is distinguishable post-deploy.
         return jsonWithRights(response, {
             status: 200,

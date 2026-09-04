@@ -155,6 +155,15 @@ describe('containment matrix: FILTER_REMOVAL surfaces (containers DO reach the f
         // The Tier-2 stub is ALSO spread into the response, so it is a second
         // FILTER_REMOVAL point. Lane 3S covered Tier-1 only; this row is the
         // composition gate closing the matrix.
+        //
+        // SCOPE OF THIS NUMBER: removed_key_count = 6 is a WIRING-CAPACITY
+        // measurement taken after six claim containers were ARTIFICIALLY
+        // INJECTED into the Tier-2 fixture. It is NOT a property of current
+        // production PubChem Tier-2 data: that shape does not carry these
+        // containers, and the filter is normally a no-op there. What this case
+        // proves is that the Tier-2 path is WIRED to the filter and WOULD
+        // remove the containers if they ever appeared -- not that six are
+        // removed in production.
         const res = await handleCompound(
             new Request('https://x.test/api/v1/compound/2244'), makeEnv(tier2Bucket()), fakeCtx());
         expect(res.status).toBe(200);
@@ -171,6 +180,7 @@ describe('containment matrix: UPSTREAM_PROJECTION surfaces (N = 0, no marker)', 
         const res = await handleXrefs(new Request('https://x.test/api/v1/xrefs?id=2244'),
             makeEnv(bucketFor('compounds-enriched.jsonl.gz', compoundRecord)), fakeCtx());
         expect(res.status).toBe(200);
+        expect(res.headers.get('x-sciweon-schema-minor')).toBe('1.2');
         const raw = await res.text();
         expect(JSON.parse(raw).xrefs.external_ids.drugbank_id).toBe('DB00945'); // control
         noContainers(raw);
@@ -182,6 +192,7 @@ describe('containment matrix: UPSTREAM_PROJECTION surfaces (N = 0, no marker)', 
             new Request('https://x.test/api/v1/compound/2244/negative-evidence'),
             makeEnv(bucketFor('neg-evidence.jsonl.gz', negRecord)), fakeCtx());
         expect(res.status).toBe(200);
+        expect(res.headers.get('x-sciweon-schema-minor')).toBe('1.3');
         const raw = await res.text();
         expect(raw).toContain('trial_failure'); // control: the record was served
         noContainers(raw);

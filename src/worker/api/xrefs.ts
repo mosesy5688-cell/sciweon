@@ -81,7 +81,7 @@ export async function handleXrefs(req: Request, env: Env, _ctx: ExecutionContext
     // RC-3A: source-rights containment applied at the serialization boundary
     // (excludes the KEGG-provenance external_ids.kegg_drug_id; all other xrefs
     // -- DrugBank / RxNorm / UniChem / UNII / ChEBI -- are unaffected).
-    // x-sciweon-schema-minor bumped 1.0 -> 1.1 as a response-version binding.
+    // x-sciweon-schema-minor bumped 1.1 -> 1.2 as a response-version binding.
     return jsonWithRights({
         resolved: true,
         canonical_id: resolved.canonical,

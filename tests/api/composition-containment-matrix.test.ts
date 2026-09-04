@@ -118,6 +118,7 @@ describe('composition gate: repurposing containment classification', () => {
     it('POSITIVE CONTROL: container-bearing records really reach the serializer', async () => {
         const { res, body } = await getRepurposing();
         expect(res.status).toBe(200);
+        expect(res.headers.get('x-sciweon-schema-minor')).toBe('1.1');
         expect(body.snapshot_date).toBe(DATE);
         // Open content projected out of the SAME records that carry containers.
         expect(body.summary.positive.trials.completed_count).toBe(1);
