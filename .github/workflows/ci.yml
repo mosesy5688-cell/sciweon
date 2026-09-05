@@ -20,6 +20,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Composition integration gate (F-3): read-only identity record.
+      # On a pull_request event GITHUB_SHA is the test-merge commit on
+      # refs/pull/N/merge; its two parents are the PR base and head, and that
+      # commit enters neither branch. `gh api` is used because it is
+      # server-side: actions/checkout@v4 defaults to fetch-depth 1, so a local
+      # `git log -1 --format=%P` returns empty here.
+      # TWO-LEVEL RULE: continue-on-error keeps a token or API failure from
+      # turning CI red, but the composition gate treats any absent or empty
+      # value below as a qualification failure.
+      - name: Record composition identity (read-only)
+        id: composition_identity
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo '## Composition identity'
+            echo "- GITHUB_SHA: ${{ github.sha }}"
+            echo "- PR base SHA: ${{ github.event.pull_request.base.sha }}"
+            echo "- PR head SHA: ${{ github.event.pull_request.head.sha }}"
+            echo "- merge-commit parents:"
+            gh api "repos/${{ github.repository }}/commits/${{ github.sha }}"               --jq '.parents[].sha' | sed 's/^/    - /'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:

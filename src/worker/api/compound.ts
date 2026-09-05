@@ -18,6 +18,7 @@ import type { Env } from '../../worker';
 import { parseCompoundId } from '../lib/id-parse';
 import { loadTier1, loadTier2 } from '../lib/compound-loader';
 import { jsonWithRights } from '../lib/source-rights-filter';
+import { failureBody } from '../lib/failure-contract';
 
 const COMPOUND_PATH_RE = /^\/api\/v1\/compound\/([^/]+)$/;
 
@@ -49,7 +50,8 @@ export async function handleCompound(
 
     if (!env.SCIWEON_R2) {
         return Response.json(
-            { error: 'Data layer not configured', detail: 'R2 binding SCIWEON_R2 is not bound.' },
+            failureBody('Data layer not configured', 'data_layer_unconfigured',
+                'R2 binding SCIWEON_R2 is not bound.'),
             { status: 503 },
         );
     }
@@ -67,7 +69,7 @@ export async function handleCompound(
                 status: 200,
                 headers: {
                     'cache-control': 'public, max-age=300, s-maxage=900',
-                    'x-sciweon-rights-filter': 'rc3a-v1',
+                    'x-sciweon-rights-filter': 'rc3a-v2',
                 },
             },
         );
@@ -84,7 +86,7 @@ export async function handleCompound(
                 // Tier 2 is immutable bulk data — safe to cache longer.
                 headers: {
                     'cache-control': 'public, max-age=3600, s-maxage=86400',
-                    'x-sciweon-rights-filter': 'rc3a-v1',
+                    'x-sciweon-rights-filter': 'rc3a-v2',
                 },
             },
         );

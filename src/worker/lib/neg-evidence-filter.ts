@@ -12,6 +12,7 @@
  */
 
 import { fetchR2RangeBytes } from './r2-fetch';
+import { ShardDataInvalidError } from './neg-shard-error';
 import { type EvidenceType } from './event-type-taxonomy';
 import { negBucketOf } from '../../lib/neg-bucket-hash.js';
 import type { NegManifestEntry, NegPageRef } from './neg-manifest-loader';
@@ -92,7 +93,7 @@ export function computeFilteredAgg(entry: NegManifestEntry, filter: Set<Evidence
         byType[t] = n;
         const vec = entry.sev_by_type?.[t];
         if (!vec) {
-            throw new Error(
+            throw new ShardDataInvalidError(
                 `Neg manifest entry ${entry.key} has type_rollup[${t}]=${n} but no sev_by_type[${t}] ` +
                 `— cannot serve a correct filtered severity breakdown (re-publish required).`,
             );

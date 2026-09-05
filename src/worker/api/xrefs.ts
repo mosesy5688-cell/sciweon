@@ -20,6 +20,7 @@ import type { Env } from '../../worker';
 import { resolveEntity, isKeggSourceIdentifier } from '../lib/entity-resolver';
 import { loadTier1 } from '../lib/compound-loader';
 import { jsonWithRights } from '../lib/source-rights-filter';
+import { failureBody } from '../lib/failure-contract';
 
 export async function handleXrefs(req: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -48,12 +49,13 @@ export async function handleXrefs(req: Request, env: Env, _ctx: ExecutionContext
                 source_family: 'kegg',
                 detail: 'Public resolution of this source identifier is unavailable.',
             },
-            { status: 403, headers: { 'x-sciweon-rights-filter': 'rc3a-v1' } },
+            { status: 403, headers: { 'x-sciweon-rights-filter': 'rc3a-v2' } },
         );
     }
     if (!env.SCIWEON_R2) {
         return Response.json(
-            { error: 'Data layer not configured', detail: 'R2 binding SCIWEON_R2 is not bound to this Worker.' },
+            failureBody('Data layer not configured', 'data_layer_unconfigured',
+                'R2 binding SCIWEON_R2 is not bound to this Worker.'),
             { status: 503 },
         );
     }
@@ -79,7 +81,7 @@ export async function handleXrefs(req: Request, env: Env, _ctx: ExecutionContext
     // RC-3A: source-rights containment applied at the serialization boundary
     // (excludes the KEGG-provenance external_ids.kegg_drug_id; all other xrefs
     // -- DrugBank / RxNorm / UniChem / UNII / ChEBI -- are unaffected).
-    // x-sciweon-schema-minor bumped 1.0 -> 1.1 as a response-version binding.
+    // x-sciweon-schema-minor bumped 1.1 -> 1.2 as a response-version binding.
     return jsonWithRights({
         resolved: true,
         canonical_id: resolved.canonical,
@@ -94,8 +96,8 @@ export async function handleXrefs(req: Request, env: Env, _ctx: ExecutionContext
         status: 200,
         headers: {
             'cache-control': 'public, max-age=300, s-maxage=900',
-            'x-sciweon-schema-minor': '1.1',
-            'x-sciweon-rights-filter': 'rc3a-v1',
+            'x-sciweon-schema-minor': '1.2',
+            'x-sciweon-rights-filter': 'rc3a-v2',
         },
     });
 }

@@ -17,7 +17,8 @@ import os from 'os';
 import path from 'path';
 import zlib from 'zlib';
 import { publishNegShards } from '../../scripts/factory/lib/neg-shard-publisher.js';
-import { loadNegEvidenceForCompound, NegShardError } from '../../src/worker/lib/neg-evidence-loader';
+import { loadNegEvidenceForCompound } from '../../src/worker/lib/neg-evidence-loader';
+import { NegShardError } from '../../src/worker/lib/neg-shard-error';
 
 const COMPOUND = 'sciweon::compound::CID:2244';
 const DATE = '2026-06-05';

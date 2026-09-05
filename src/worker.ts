@@ -1,5 +1,5 @@
 /**
- * Sciweon Worker entry (V0.5.5 — bioactivity/trial/paper endpoints).
+ * Sciweon Worker entry (bioactivity/trial/paper endpoints).
  *
  * Cloudflare Workers Static Assets pattern: this Worker handles `/api/*`
  * requests; everything else falls through to env.ASSETS (the static Astro
@@ -13,17 +13,17 @@
  *   GET /api/v1/compound/:id/trials             → clinical trials
  *   GET /api/v1/compound/:id/papers             → papers mentioning compound
  *   GET /api/v1/target/:uniprot{,/drugs,/trials,/negative-evidence}
- *                                               → C2-3 inverse pivot (V0.6)
- *   POST /api/mcp                               → MCP JSON-RPC 2.0 (V0.5.4)
+ *                                               → C2-3 inverse pivot
+ *   POST /api/mcp                               → MCP JSON-RPC 2.0
  *
  * Error contract (per SCIWEON_DATA_ARCHITECTURE §3.0):
  *   400 — malformed entity ID
  *   404 — entity / compound not found
- *   429 — rate limited (not implemented yet; reserved)
- *   500 — server error (must never leak internal architecture)
+ *   500 — server error carrying failure_class + retryable, never the message
  */
 
 import { handleNegativeEvidence } from './worker/api/negative-evidence';
+import { classifyThrown, failureBody } from './worker/lib/failure-contract';
 import { handleMcp } from './worker/api/mcp';
 import { handleCompound } from './worker/api/compound';
 import { handleBioactivities } from './worker/api/bioactivities';
@@ -32,6 +32,8 @@ import { handlePapers } from './worker/api/papers';
 import { handleXrefs } from './worker/api/xrefs';
 import { handleRepurposingEvidence } from './worker/api/repurposing-evidence';
 import { handleTarget } from './worker/api/target';
+import { handleHealth } from './worker/api/health';
+import type { VersionMetadataView } from './worker/api/health';
 
 export interface Env {
     ASSETS: Fetcher;
@@ -45,6 +47,11 @@ export interface Env {
     // default. Lets an operator tune the LOUD 503 tripwire after an R2 head of
     // the live compounds-enriched.jsonl.gz.
     COMPOUNDS_MAX_BYTES?: string;
+    // P0.2 deployment identity: the [version_metadata] binding declared in
+    // wrangler.toml. Optional, and typed as the open VersionMetadataView --
+    // never the ambient WorkerVersionMetadata, because this field describes
+    // an untrusted runtime object and must not be typed as a guarantee.
+    CF_VERSION_METADATA?: VersionMetadataView;
 }
 
 export default {
@@ -124,12 +131,7 @@ export default {
         }
 
         if (url.pathname === '/api/v1/_health') {
-            return Response.json({
-                status: 'ok',
-                version: 'V0.6',
-                r2_binding: !!env.SCIWEON_R2,
-                timestamp: new Date().toISOString(),
-            });
+            return await handleHealth(req, env, ctx);
         }
 
         return env.ASSETS.fetch(req);
@@ -137,8 +139,8 @@ export default {
 } satisfies ExportedHandler<Env>;
 
 function json500(err: unknown): Response {
-    const message = err instanceof Error ? err.message : String(err);
-    // Sanitize: never expose R2 keys, paths, internal state.
-    const safe = message.length > 200 ? 'Internal server error' : message;
-    return Response.json({ error: 'Internal server error', detail: safe }, { status: 500 });
+    // The shared classifier covers /compound and /xrefs, which have no catch
+    // block of their own. The underlying message is NOT echoed: it can carry R2
+    // object keys, internal paths and snapshot identifiers.
+    return Response.json(failureBody('Internal server error', classifyThrown(err)), { status: 500 });
 }

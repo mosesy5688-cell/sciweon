@@ -16,6 +16,36 @@
  * than serving zero-padded garbage.
  */
 
+/**
+ * Structural discriminant for every read fault this module raises. Rule 4c.1:
+ * the class is decided HERE, at the throw site, by type - consumers dispatch
+ * on `discriminant` and never on the message text.
+ */
+export type R2ReadDiscriminant =
+    | 'not_found'
+    | 'disappeared'
+    | 'etag_drift'
+    | 'short_read'
+    | 'range_failed'
+    | 'short_range_read';
+
+/**
+ * Typed R2 read failure. It extends Error and preserves the exact message
+ * text each site raised before it was typed, so every one of this module's
+ * importers that merely propagates the error is behaviourally unchanged:
+ * `instanceof Error` and `.message` are both preserved. Only the consumers
+ * that used to sniff the message read `discriminant`.
+ */
+export class R2ReadError extends Error {
+    readonly discriminant: R2ReadDiscriminant;
+
+    constructor(discriminant: R2ReadDiscriminant, message: string) {
+        super(message);
+        this.name = 'R2ReadError';
+        this.discriminant = discriminant;
+    }
+}
+
 interface R2FetchResult {
     bytes: Uint8Array;
     etag: string;
@@ -38,7 +68,7 @@ export async function fetchR2Object(bucket: R2Bucket, key: string): Promise<R2Fe
     // the body length matches what the object metadata claims.
     const head = await bucket.head(key);
     if (!head) {
-        throw new Error(`R2 object not found: ${key}`);
+        throw new R2ReadError('not_found', `R2 object not found: ${key}`);
     }
     const expectedSize = head.size;
     const etag = head.etag;
@@ -51,15 +81,16 @@ export async function fetchR2Object(bucket: R2Bucket, key: string): Promise<R2Fe
 
     const obj = await bucket.get(key);
     if (!obj) {
-        throw new Error(`R2 object disappeared between head() and get(): ${key}`);
+        throw new R2ReadError('disappeared', `R2 object disappeared between head() and get(): ${key}`);
     }
     if (obj.etag !== etag) {
-        throw new Error(`R2 etag drifted mid-fetch for ${key} (head=${etag}, get=${obj.etag}). Refusing to cache.`);
+        throw new R2ReadError('etag_drift', `R2 etag drifted mid-fetch for ${key} (head=${etag}, get=${obj.etag}). Refusing to cache.`);
     }
     const bytes = new Uint8Array(await obj.arrayBuffer());
 
     if (bytes.length !== expectedSize) {
-        throw new Error(
+        throw new R2ReadError(
+            'short_read',
             `Short read on ${key}: got ${bytes.length} bytes, expected ${expectedSize} (etag=${etag}). Refusing to cache poisoned chunk.`
         );
     }
@@ -120,11 +151,12 @@ export async function fetchR2RangeBytes(
 
     const obj = await bucket.get(key, { range: { offset, length } });
     if (!obj) {
-        throw new Error(`R2 range fetch failed: ${key} [${offset}, +${length})`);
+        throw new R2ReadError('range_failed', `R2 range fetch failed: ${key} [${offset}, +${length})`);
     }
     const bytes = new Uint8Array(await obj.arrayBuffer());
     if (bytes.length !== length) {
-        throw new Error(
+        throw new R2ReadError(
+            'short_range_read',
             `Short range read on ${key}@${offset}+${length}: got ${bytes.length} bytes. Refusing to cache.`
         );
     }

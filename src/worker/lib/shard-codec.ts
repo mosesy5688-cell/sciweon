@@ -17,6 +17,7 @@
  */
 
 import type { Env } from '../../worker';
+import { ShardDataInvalidError } from './neg-shard-error';
 
 /**
  * Decrypt payload bytes. Phase 1: no-op passthrough.
@@ -68,7 +69,9 @@ export function decompressPayload(bytes: Uint8Array, strict = false): string {
     } catch (err) {
         if (strict) {
             const msg = err instanceof Error ? err.message : String(err);
-            throw new Error(`Shard decode failure (strict): ${msg}`);
+            // Typed, not a bare Error: the strict branch used to re-wrap into a
+            // bare Error, destroying the structural signal the caller needs.
+            throw new ShardDataInvalidError(`Shard decode failure (strict): ${msg}`, { cause: err });
         }
         // Plaintext fallback (rare; ShardWriter line 71 always compresses)
         return new TextDecoder('utf-8').decode(bytes);
